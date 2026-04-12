@@ -118,8 +118,11 @@ class TestDqliteProtocol:
         body1 += encode_uint64(ROW_PART_MARKER)
         h1 = Header(size_words=len(body1) // 8, msg_type=7, schema=0)
 
-        # Continuation frame (has_more=False)
-        body2 = encode_row_header(types)
+        # Continuation frame (has_more=False) — C server always
+        # includes column_count + column_names in every ROWS frame
+        body2 = encode_uint64(2)
+        body2 += encode_text("id") + encode_text("name")
+        body2 += encode_row_header(types)
         body2 += encode_row_values([2, "bob"], types)
         body2 += encode_uint64(ROW_DONE_MARKER)
         h2 = Header(size_words=len(body2) // 8, msg_type=7, schema=0)

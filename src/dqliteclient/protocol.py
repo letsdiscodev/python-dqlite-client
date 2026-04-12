@@ -179,31 +179,21 @@ class DqliteProtocol:
         column_names = response.column_names
 
         # Handle multi-part responses via decode_continuation(),
-        # which uses the continuation-frame layout (no column header
-        # prefix) and correctly tracks the decoder's continuation
-        # state (issue 058 in python-dqlite-wire).
+        # which decodes each continuation frame using the same layout
+        # as the initial frame (column_count + column_names + rows +
+        # marker), matching the C dqlite server's wire format.
         all_rows = list(response.rows)
-        column_count = len(column_names)
         while response.has_more:
-            next_response = await self._read_continuation(
-                column_names, column_count
-            )
+            next_response = await self._read_continuation()
             all_rows.extend(next_response.rows)
             response = next_response
 
         return column_names, all_rows
 
-    async def _read_continuation(
-        self,
-        column_names: list[str],
-        column_count: int,
-    ) -> RowsResponse:
+    async def _read_continuation(self) -> RowsResponse:
         """Read and decode a ROWS continuation frame."""
         while True:
-            result = self._decoder.decode_continuation(
-                column_names=column_names,
-                column_count=column_count,
-            )
+            result = self._decoder.decode_continuation()
             if result is not None:
                 return result
             data = await self._reader.read(4096)
