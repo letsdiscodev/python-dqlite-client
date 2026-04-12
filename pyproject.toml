@@ -25,6 +25,9 @@ classifiers = [
 ]
 dependencies = ["dqlite-wire>=0.1.0"]
 
+[tool.uv.sources]
+dqlite-wire = { path = "../python-dqlite-wire", editable = true }
+
 [project.urls]
 Homepage = "https://github.com/letsdiscodev/python-dqlite-client"
 Repository = "https://github.com/letsdiscodev/python-dqlite-client"

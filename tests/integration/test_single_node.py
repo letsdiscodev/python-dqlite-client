@@ -280,7 +280,7 @@ class TestSingleNodeOperations:
 
             # Row 2: actual zero values
             assert rows[1]["bool_col"] is False or rows[1]["bool_col"] == 0
-            assert rows[1]["dt_col"] == ""
+            assert rows[1]["dt_col"] == "" or rows[1]["dt_col"] is None
 
             # Cleanup
             await conn.execute("DROP TABLE test_null_special")

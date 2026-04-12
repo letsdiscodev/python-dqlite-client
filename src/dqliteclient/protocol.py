@@ -178,17 +178,38 @@ class DqliteProtocol:
         # Store column names from first response
         column_names = response.column_names
 
-        # Handle multi-part responses
+        # Handle multi-part responses via decode_continuation(),
+        # which uses the continuation-frame layout (no column header
+        # prefix) and correctly tracks the decoder's continuation
+        # state (issue 058 in python-dqlite-wire).
         all_rows = list(response.rows)
+        column_count = len(column_names)
         while response.has_more:
-            next_response = await self._read_response()
-            if isinstance(next_response, RowsResponse):
-                all_rows.extend(next_response.rows)
-                response = next_response
-            else:
-                break
+            next_response = await self._read_continuation(
+                column_names, column_count
+            )
+            all_rows.extend(next_response.rows)
+            response = next_response
 
         return column_names, all_rows
+
+    async def _read_continuation(
+        self,
+        column_names: list[str],
+        column_count: int,
+    ) -> RowsResponse:
+        """Read and decode a ROWS continuation frame."""
+        while True:
+            result = self._decoder.decode_continuation(
+                column_names=column_names,
+                column_count=column_count,
+            )
+            if result is not None:
+                return result
+            data = await self._reader.read(4096)
+            if not data:
+                raise ConnectionError("Connection closed by server")
+            self._decoder.feed(data)
 
     async def _read_response(self) -> Message:
         """Read and decode the next response message."""

@@ -92,6 +92,49 @@ class TestDqliteProtocol:
         assert len(rows) == 1
         assert rows[0] == [1, "test"]
 
+    async def test_query_sql_multipart(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """Multi-part ROWS: initial frame + continuation drains correctly."""
+        from dqlitewire.constants import (
+            ROW_DONE_MARKER,
+            ROW_PART_MARKER,
+            ValueType,
+        )
+        from dqlitewire.messages.base import Header
+        from dqlitewire.messages.responses import RowsResponse
+        from dqlitewire.tuples import encode_row_header, encode_row_values
+        from dqlitewire.types import encode_text, encode_uint64
+
+        types = [ValueType.INTEGER, ValueType.TEXT]
+
+        # Initial frame (has_more=True)
+        body1 = encode_uint64(2)
+        body1 += encode_text("id") + encode_text("name")
+        body1 += encode_row_header(types)
+        body1 += encode_row_values([1, "alice"], types)
+        body1 += encode_uint64(ROW_PART_MARKER)
+        h1 = Header(size_words=len(body1) // 8, msg_type=7, schema=0)
+
+        # Continuation frame (has_more=False)
+        body2 = encode_row_header(types)
+        body2 += encode_row_values([2, "bob"], types)
+        body2 += encode_uint64(ROW_DONE_MARKER)
+        h2 = Header(size_words=len(body2) // 8, msg_type=7, schema=0)
+
+        # Feed both frames in one chunk
+        all_bytes = h1.encode() + body1 + h2.encode() + body2
+        mock_reader.read.return_value = all_bytes
+
+        columns, rows = await protocol.query_sql(1, "SELECT id, name FROM t")
+
+        assert columns == ["id", "name"]
+        assert len(rows) == 2
+        assert rows[0] == [1, "alice"]
+        assert rows[1] == [2, "bob"]
+
     async def test_close(
         self,
         protocol: DqliteProtocol,
