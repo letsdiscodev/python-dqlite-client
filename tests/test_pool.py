@@ -33,6 +33,40 @@ class TestConnectionPool:
                 pass
 
 
+    async def test_cancellation_does_not_leak_connection(self) -> None:
+        """Cancelling a task that holds a connection should clean it up."""
+        import asyncio
+
+        pool = ConnectionPool(["localhost:9001"], max_size=1)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+        initial_size = pool._size
+
+        async def hold_connection():
+            async with pool.acquire() as conn:
+                await asyncio.sleep(10)  # Hold forever
+
+        task = asyncio.create_task(hold_connection())
+        await asyncio.sleep(0.01)  # Let task acquire
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        # Connection should have been closed, size decremented
+        mock_conn.close.assert_called()
+        assert pool._size < initial_size
+
+
 class TestConnectionPoolIntegration:
     """Integration tests requiring mocked connections."""
 

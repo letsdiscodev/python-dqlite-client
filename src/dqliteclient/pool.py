@@ -82,11 +82,11 @@ class ConnectionPool:
                 await conn.connect()
 
             yield conn
-        except Exception:
-            # On error, close connection and create new one
+        except BaseException:
+            # On error (including cancellation), close connection
             import contextlib
 
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(BaseException):
                 await conn.close()
             self._size -= 1
             raise
