@@ -226,6 +226,56 @@ class TestDqliteConnection:
         # _in_transaction was cleaned up
         assert not conn._in_transaction
 
+    async def test_cancellation_invalidates_connection(self) -> None:
+        """CancelledError during a query must invalidate the connection."""
+        import asyncio
+
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        assert conn.is_connected
+
+        # Make the reader hang forever (will be cancelled)
+        read_entered = asyncio.Event()
+
+        async def hanging_read(*args, **kwargs):
+            read_entered.set()
+            await asyncio.sleep(100)
+
+        mock_reader.read.side_effect = hanging_read
+
+        async def do_execute():
+            await conn.execute("INSERT INTO t VALUES (1)")
+
+        task = asyncio.create_task(do_execute())
+        await read_entered.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Connection must be invalidated — the decoder may have partial data
+        assert not conn.is_connected, (
+            "Connection should be invalidated after CancelledError to prevent "
+            "decoder corruption from partial reads"
+        )
+
     async def test_connection_invalidated_after_protocol_error(self) -> None:
         """After a connection error, is_connected should return False."""
         conn = DqliteConnection("localhost:9001")
