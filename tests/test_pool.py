@@ -156,6 +156,49 @@ class TestConnectionPool:
                     pass
 
 
+    async def test_dead_conn_replacement_respects_max_size(self) -> None:
+        """Dead-connection replacement must not allow _size to exceed max_size."""
+        pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=2)
+
+        dead_conn = MagicMock()
+        dead_conn.is_connected = False
+        dead_conn.connect = AsyncMock()
+        dead_conn.close = AsyncMock()
+
+        with patch.object(pool._cluster, "connect", return_value=dead_conn):
+            await pool.initialize()
+
+        assert pool._size == 1
+
+        # Track whether the lock is held during dead-conn replacement.
+        # If _create_connection is called while the lock is NOT held,
+        # another coroutine could race and exceed max_size.
+        lock_was_held_during_create = False
+        original_create = pool._create_connection
+
+        async def tracking_create():
+            nonlocal lock_was_held_during_create
+            if pool._lock.locked():
+                lock_was_held_during_create = True
+            return await original_create()
+
+        new_conn = MagicMock()
+        new_conn.is_connected = True
+        new_conn.connect = AsyncMock()
+        new_conn.close = AsyncMock()
+
+        pool._create_connection = tracking_create
+        with patch.object(pool._cluster, "connect", return_value=new_conn):
+            async with pool.acquire() as conn:
+                assert conn is new_conn
+
+        assert lock_was_held_during_create, (
+            "Dead-connection replacement must hold the lock to prevent "
+            "_size race with concurrent acquire() calls"
+        )
+
+        await pool.close()
+
     async def test_dead_connection_triggers_leader_rediscovery(self) -> None:
         """A dead connection should be replaced via leader discovery, not reconnected."""
         pool = ConnectionPool(["localhost:9001"], max_size=1)

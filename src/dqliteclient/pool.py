@@ -103,8 +103,9 @@ class ConnectionPool:
 
         # If connection is dead, discard and create a fresh one with leader discovery
         if not conn.is_connected:
-            self._size -= 1
-            conn = await self._create_connection()
+            async with self._lock:
+                self._size -= 1
+                conn = await self._create_connection()
 
         self._in_use.add(conn)
         try:
