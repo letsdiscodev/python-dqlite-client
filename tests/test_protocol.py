@@ -104,7 +104,6 @@ class TestDqliteProtocol:
             ValueType,
         )
         from dqlitewire.messages.base import Header
-        from dqlitewire.messages.responses import RowsResponse
         from dqlitewire.tuples import encode_row_header, encode_row_values
         from dqlitewire.types import encode_text, encode_uint64
 
