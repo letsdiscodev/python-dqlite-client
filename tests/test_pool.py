@@ -73,6 +73,35 @@ class TestConnectionPool:
 
         await pool.close()
 
+    async def test_concurrent_initialize_creates_only_min_size_connections(self) -> None:
+        """Concurrent initialize() calls must not create 2*min_size connections."""
+        import asyncio
+
+        pool = ConnectionPool(["localhost:9001"], min_size=2, max_size=5)
+
+        create_count = 0
+
+        async def mock_connect(**kwargs):
+            nonlocal create_count
+            create_count += 1
+            await asyncio.sleep(0)  # Yield to allow interleaving
+            mock_conn = MagicMock()
+            mock_conn.is_connected = True
+            mock_conn.connect = AsyncMock()
+            mock_conn.close = AsyncMock()
+            return mock_conn
+
+        with patch.object(pool._cluster, "connect", side_effect=mock_connect):
+            await asyncio.gather(pool.initialize(), pool.initialize())
+
+        assert create_count == 2, (
+            f"Expected 2 connections (min_size), got {create_count}. "
+            f"Concurrent initialize() created duplicate connections."
+        )
+        assert pool._size == 2
+
+        await pool.close()
+
     async def test_initialize_retryable_after_failure(self) -> None:
         """If initialize() fails, it should be retryable (not permanently stuck)."""
         pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=5)
