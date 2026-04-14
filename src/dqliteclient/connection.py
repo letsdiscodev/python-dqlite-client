@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from dqliteclient.exceptions import ConnectionError
+from dqliteclient.exceptions import ConnectionError, ProtocolError
 from dqliteclient.protocol import DqliteProtocol
 
 
@@ -92,24 +92,41 @@ class DqliteConnection:
             raise ConnectionError("Not connected")
         return self._protocol, self._db_id
 
+    def _invalidate(self) -> None:
+        """Mark the connection as broken after an unrecoverable error."""
+        self._protocol = None
+        self._db_id = None
+
     async def execute(self, sql: str, params: list[Any] | None = None) -> tuple[int, int]:
         """Execute a SQL statement.
 
         Returns (last_insert_id, rows_affected).
         """
         protocol, db_id = self._ensure_connected()
-        return await protocol.exec_sql(db_id, sql, params)
+        try:
+            return await protocol.exec_sql(db_id, sql, params)
+        except (ConnectionError, ProtocolError):
+            self._invalidate()
+            raise
 
     async def fetch(self, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
         """Execute a query and return results as list of dicts."""
         protocol, db_id = self._ensure_connected()
-        columns, rows = await protocol.query_sql(db_id, sql, params)
+        try:
+            columns, rows = await protocol.query_sql(db_id, sql, params)
+        except (ConnectionError, ProtocolError):
+            self._invalidate()
+            raise
         return [dict(zip(columns, row, strict=True)) for row in rows]
 
     async def fetchall(self, sql: str, params: list[Any] | None = None) -> list[list[Any]]:
         """Execute a query and return results as list of lists."""
         protocol, db_id = self._ensure_connected()
-        _, rows = await protocol.query_sql(db_id, sql, params)
+        try:
+            _, rows = await protocol.query_sql(db_id, sql, params)
+        except (ConnectionError, ProtocolError):
+            self._invalidate()
+            raise
         return rows
 
     async def fetchone(self, sql: str, params: list[Any] | None = None) -> dict[str, Any] | None:
@@ -120,7 +137,11 @@ class DqliteConnection:
     async def fetchval(self, sql: str, params: list[Any] | None = None) -> Any:
         """Execute a query and return the first column of the first row."""
         protocol, db_id = self._ensure_connected()
-        _, rows = await protocol.query_sql(db_id, sql, params)
+        try:
+            _, rows = await protocol.query_sql(db_id, sql, params)
+        except (ConnectionError, ProtocolError):
+            self._invalidate()
+            raise
         if rows and rows[0]:
             return rows[0][0]
         return None

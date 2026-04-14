@@ -142,3 +142,37 @@ class TestDqliteConnection:
         assert "ROLLBACK" in call_log
         # _in_transaction was cleaned up
         assert not conn._in_transaction
+
+    async def test_connection_invalidated_after_protocol_error(self) -> None:
+        """After a connection error, is_connected should return False."""
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        assert conn.is_connected
+
+        # Now make the reader return empty (connection closed)
+        mock_reader.read.side_effect = [b""]
+
+        from dqliteclient.exceptions import ConnectionError as DqliteConnectionError
+
+        with pytest.raises(DqliteConnectionError):
+            await conn.execute("SELECT 1")
+
+        # Connection should be invalidated
+        assert not conn.is_connected
