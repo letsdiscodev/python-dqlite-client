@@ -16,6 +16,20 @@ class TestMemoryNodeStore:
         assert nodes[0].address == "localhost:9001"
         assert nodes[1].address == "localhost:9002"
 
+    async def test_initial_nodes_have_voter_role(self) -> None:
+        """Initial nodes should be VOTER (role=0), not STANDBY."""
+        store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
+        nodes = await store.get_nodes()
+        for node in nodes:
+            assert node.role == 0, f"Expected role=0 (VOTER), got role={node.role}"
+
+    async def test_initial_node_ids_start_at_one(self) -> None:
+        """Node IDs should start at 1, since 0 means 'no node' in dqlite."""
+        store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
+        nodes = await store.get_nodes()
+        assert nodes[0].node_id == 1
+        assert nodes[1].node_id == 2
+
     async def test_set_nodes(self) -> None:
         store = MemoryNodeStore()
         nodes = [

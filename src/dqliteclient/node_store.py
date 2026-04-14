@@ -10,7 +10,7 @@ class NodeInfo:
 
     node_id: int
     address: str
-    role: int  # 0=spare, 1=voter, 2=standby
+    role: int  # 0=voter, 1=standby, 2=spare
 
 
 class NodeStore(ABC):
@@ -34,7 +34,7 @@ class MemoryNodeStore(NodeStore):
         self._nodes: list[NodeInfo] = []
         if initial_addresses:
             for i, addr in enumerate(initial_addresses):
-                self._nodes.append(NodeInfo(node_id=i, address=addr, role=1))
+                self._nodes.append(NodeInfo(node_id=i + 1, address=addr, role=0))
 
     async def get_nodes(self) -> list[NodeInfo]:
         """Get list of known nodes."""
