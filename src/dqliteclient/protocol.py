@@ -47,13 +47,9 @@ class DqliteProtocol:
 
         Returns the heartbeat timeout from server.
         """
-        # Send protocol version
-        self._writer.write(self._encoder.encode_handshake())
-        await self._writer.drain()
-
-        # Send client registration
+        # Send protocol version + client registration together
         request = ClientRequest(client_id=client_id)
-        self._writer.write(request.encode())
+        self._writer.write(self._encoder.encode_handshake() + request.encode())
         await self._writer.drain()
 
         # Read welcome response
