@@ -147,21 +147,36 @@ class DqliteProtocol:
     ) -> tuple[int, int]:
         """Execute SQL directly.
 
-        Returns (last_insert_id, rows_affected).
+        Returns (last_insert_id, rows_affected). For multi-statement SQL
+        (semicolon-separated), returns the last statement's last_insert_id
+        and the sum of all rows_affected, matching the Go client behavior.
         """
         request = ExecSqlRequest(db_id=db_id, sql=sql, params=params or [])
         self._writer.write(request.encode())
         await self._writer.drain()
 
-        response = await self._read_response()
+        last_insert_id = 0
+        rows_affected = 0
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message)
+        while True:
+            response = await self._read_response()
 
-        if not isinstance(response, ResultResponse):
-            raise ProtocolError(f"Expected ResultResponse, got {type(response).__name__}")
+            if isinstance(response, FailureResponse):
+                raise OperationalError(response.code, response.message)
 
-        return response.last_insert_id, response.rows_affected
+            if not isinstance(response, ResultResponse):
+                raise ProtocolError(
+                    f"Expected ResultResponse, got {type(response).__name__}"
+                )
+
+            last_insert_id = response.last_insert_id
+            rows_affected += response.rows_affected
+
+            # Check for more results from multi-statement SQL
+            if not self._decoder.has_message():
+                break
+
+        return last_insert_id, rows_affected
 
     async def query_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None

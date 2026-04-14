@@ -112,6 +112,31 @@ class TestDqliteProtocol:
         assert last_id == 1
         assert rows_affected == 1
 
+    async def test_exec_sql_multi_statement(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """Multi-statement SQL should drain all ResultResponse messages."""
+        from dqlitewire.messages import ResultResponse
+
+        # Server sends two ResultResponse messages (one per statement)
+        result1 = ResultResponse(last_insert_id=1, rows_affected=1)
+        result2 = ResultResponse(last_insert_id=2, rows_affected=1)
+        # Both arrive in a single read
+        mock_reader.read.return_value = result1.encode() + result2.encode()
+
+        last_id, rows_affected = await protocol.exec_sql(
+            1, "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2)"
+        )
+
+        # Should return the last statement's result with accumulated rows_affected
+        assert last_id == 2
+        assert rows_affected == 2
+
+        # The decoder buffer should be clean -- no leftover messages
+        assert not protocol._decoder.has_message()
+
     async def test_query_sql(
         self,
         protocol: DqliteProtocol,
