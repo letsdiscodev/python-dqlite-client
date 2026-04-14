@@ -428,8 +428,9 @@ class TestDqliteConnection:
 
         assert conn.is_connected
 
-        # Server responds with "not leader" error (code 0)
-        not_leader = FailureResponse(code=0, message="not leader").encode()
+        # Server responds with "not leader" error
+        # SQLITE_IOERR_NOT_LEADER = SQLITE_IOERR | (40 << 8) = 10250
+        not_leader = FailureResponse(code=10250, message="not leader").encode()
         mock_reader.read.side_effect = [not_leader]
 
         from dqliteclient.exceptions import OperationalError

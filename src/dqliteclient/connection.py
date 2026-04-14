@@ -8,8 +8,10 @@ from typing import Any
 from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
 from dqliteclient.protocol import DqliteProtocol
 
-# dqlite error codes that indicate a leader change
-_LEADER_ERROR_CODES = {0, 4097}  # ErrNotLeader, ErrLeadershipLost
+# dqlite error codes that indicate a leader change (SQLite extended error codes)
+# SQLITE_IOERR_NOT_LEADER = SQLITE_IOERR | (40 << 8) = 10250
+# SQLITE_IOERR_LEADERSHIP_LOST = SQLITE_IOERR | (41 << 8) = 10506
+_LEADER_ERROR_CODES = {10250, 10506}
 
 
 def _parse_address(address: str) -> tuple[str, int]:
