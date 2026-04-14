@@ -22,37 +22,34 @@ class TestSingleNodeOperations:
 
     async def test_create_table_and_insert(self, cluster_address: str) -> None:
         async with await connect(cluster_address) as conn:
+            await conn.execute("DROP TABLE IF EXISTS test_single")
             await conn.execute(
-                "CREATE TABLE IF NOT EXISTS test_single (id INTEGER PRIMARY KEY, name TEXT)"
+                "CREATE TABLE test_single (id INTEGER PRIMARY KEY, name TEXT)"
             )
             await conn.execute("INSERT INTO test_single (name) VALUES (?)", ["test"])
 
             rows = await conn.fetch("SELECT * FROM test_single WHERE name = ?", ["test"])
-            assert len(rows) > 0
+            assert len(rows) == 1
             assert rows[0]["name"] == "test"
-
-            # Cleanup
-            await conn.execute("DELETE FROM test_single WHERE name = ?", ["test"])
 
     async def test_transaction_commit(self, cluster_address: str) -> None:
         async with await connect(cluster_address) as conn:
+            await conn.execute("DROP TABLE IF EXISTS test_tx")
             await conn.execute(
-                "CREATE TABLE IF NOT EXISTS test_tx (id INTEGER PRIMARY KEY, val TEXT)"
+                "CREATE TABLE test_tx (id INTEGER PRIMARY KEY, val TEXT)"
             )
 
             async with conn.transaction():
                 await conn.execute("INSERT INTO test_tx (val) VALUES (?)", ["committed"])
 
             rows = await conn.fetch("SELECT * FROM test_tx WHERE val = ?", ["committed"])
-            assert len(rows) > 0
-
-            # Cleanup
-            await conn.execute("DELETE FROM test_tx WHERE val = ?", ["committed"])
+            assert len(rows) == 1
 
     async def test_transaction_rollback(self, cluster_address: str) -> None:
         async with await connect(cluster_address) as conn:
+            await conn.execute("DROP TABLE IF EXISTS test_rollback")
             await conn.execute(
-                "CREATE TABLE IF NOT EXISTS test_rollback (id INTEGER PRIMARY KEY, val TEXT)"
+                "CREATE TABLE test_rollback (id INTEGER PRIMARY KEY, val TEXT)"
             )
 
             try:
@@ -64,14 +61,17 @@ class TestSingleNodeOperations:
             except ValueError:
                 pass
 
-            rows = await conn.fetch("SELECT * FROM test_rollback WHERE val = ?", ["rollback_test"])
+            rows = await conn.fetch(
+                "SELECT * FROM test_rollback WHERE val = ?", ["rollback_test"]
+            )
             assert len(rows) == 0
 
     async def test_unicode_text(self, cluster_address: str) -> None:
         """Test Unicode text handling including emojis, CJK, RTL."""
         async with await connect(cluster_address) as conn:
+            await conn.execute("DROP TABLE IF EXISTS test_unicode")
             await conn.execute(
-                "CREATE TABLE IF NOT EXISTS test_unicode (id INTEGER PRIMARY KEY, val TEXT)"
+                "CREATE TABLE test_unicode (id INTEGER PRIMARY KEY, val TEXT)"
             )
 
             unicode_values = [
@@ -102,14 +102,15 @@ class TestSingleNodeOperations:
                 assert len(rows) == 1, f"Failed to find: {repr(val)}"
                 assert rows[0]["val"] == val, f"Mismatch for: {repr(val)}"
 
-                # Cleanup
+                # Delete to keep table clean between iterations
                 await conn.execute("DELETE FROM test_unicode WHERE val = ?", [val])
 
     async def test_binary_blob(self, cluster_address: str) -> None:
         """Test binary blob handling including null bytes."""
         async with await connect(cluster_address) as conn:
+            await conn.execute("DROP TABLE IF EXISTS test_blob")
             await conn.execute(
-                "CREATE TABLE IF NOT EXISTS test_blob (id INTEGER PRIMARY KEY, data BLOB)"
+                "CREATE TABLE test_blob (id INTEGER PRIMARY KEY, data BLOB)"
             )
 
             blob_values = [
@@ -125,18 +126,18 @@ class TestSingleNodeOperations:
                 await conn.execute("INSERT INTO test_blob (data) VALUES (?)", [val])
 
                 # Retrieve and verify
-                rows = await conn.fetch("SELECT data FROM test_blob ORDER BY id DESC LIMIT 1")
+                rows = await conn.fetch(
+                    "SELECT data FROM test_blob ORDER BY id DESC LIMIT 1"
+                )
                 assert len(rows) == 1
                 assert rows[0]["data"] == val, f"Mismatch for blob: {repr(val)}"
-
-            # Cleanup
-            await conn.execute("DELETE FROM test_blob")
 
     async def test_numeric_types(self, cluster_address: str) -> None:
         """Test integer and float edge cases."""
         async with await connect(cluster_address) as conn:
+            await conn.execute("DROP TABLE IF EXISTS test_numeric")
             await conn.execute(
-                "CREATE TABLE IF NOT EXISTS test_numeric "
+                "CREATE TABLE test_numeric "
                 "(id INTEGER PRIMARY KEY, int_val INTEGER, float_val REAL)"
             )
 
@@ -167,14 +168,12 @@ class TestSingleNodeOperations:
                     f"Float mismatch for {float_val}"
                 )
 
-            # Cleanup
-            await conn.execute("DELETE FROM test_numeric")
-
     async def test_boolean_values(self, cluster_address: str) -> None:
         """Test boolean handling (SQLite uses INTEGER 0/1)."""
         async with await connect(cluster_address) as conn:
+            await conn.execute("DROP TABLE IF EXISTS test_bool")
             await conn.execute(
-                "CREATE TABLE IF NOT EXISTS test_bool (id INTEGER PRIMARY KEY, flag INTEGER)"
+                "CREATE TABLE test_bool (id INTEGER PRIMARY KEY, flag INTEGER)"
             )
 
             # Insert True and False as integers (SQLite doesn't have native BOOLEAN)
@@ -186,23 +185,26 @@ class TestSingleNodeOperations:
             assert rows[0]["flag"] == 1  # True
             assert rows[1]["flag"] == 0  # False
 
-            # Cleanup
-            await conn.execute("DELETE FROM test_bool")
-
     async def test_datetime_as_text(self, cluster_address: str) -> None:
         """Test datetime stored as ISO8601 text."""
         async with await connect(cluster_address) as conn:
+            await conn.execute("DROP TABLE IF EXISTS test_datetime")
             await conn.execute(
-                "CREATE TABLE IF NOT EXISTS test_datetime (id INTEGER PRIMARY KEY, created_at TEXT)"
+                "CREATE TABLE test_datetime "
+                "(id INTEGER PRIMARY KEY, created_at TEXT)"
             )
 
             # Store datetime as ISO8601 string
             now = datetime.datetime.now()
             iso_string = now.isoformat()
 
-            await conn.execute("INSERT INTO test_datetime (created_at) VALUES (?)", [iso_string])
+            await conn.execute(
+                "INSERT INTO test_datetime (created_at) VALUES (?)", [iso_string]
+            )
 
-            rows = await conn.fetch("SELECT created_at FROM test_datetime ORDER BY id DESC LIMIT 1")
+            rows = await conn.fetch(
+                "SELECT created_at FROM test_datetime ORDER BY id DESC LIMIT 1"
+            )
             assert len(rows) == 1
             assert rows[0]["created_at"] == iso_string
 
@@ -210,14 +212,12 @@ class TestSingleNodeOperations:
             parsed = datetime.datetime.fromisoformat(rows[0]["created_at"])
             assert parsed == now
 
-            # Cleanup
-            await conn.execute("DELETE FROM test_datetime")
-
     async def test_null_values(self, cluster_address: str) -> None:
         """Test NULL handling in various column types."""
         async with await connect(cluster_address) as conn:
+            await conn.execute("DROP TABLE IF EXISTS test_nulls")
             await conn.execute(
-                "CREATE TABLE IF NOT EXISTS test_nulls "
+                "CREATE TABLE test_nulls "
                 "(id INTEGER PRIMARY KEY, int_col INTEGER, text_col TEXT, "
                 "real_col REAL, blob_col BLOB)"
             )
@@ -238,9 +238,6 @@ class TestSingleNodeOperations:
             assert rows[0]["text_col"] is None
             assert rows[0]["real_col"] is None
             assert rows[0]["blob_col"] is None
-
-            # Cleanup
-            await conn.execute("DELETE FROM test_nulls")
 
     async def test_null_boolean_and_datetime(self, cluster_address: str) -> None:
         """Test NULL handling specifically for BOOLEAN and DATETIME column types.
@@ -281,6 +278,3 @@ class TestSingleNodeOperations:
             # Row 2: actual zero values
             assert rows[1]["bool_col"] is False or rows[1]["bool_col"] == 0
             assert rows[1]["dt_col"] == "" or rows[1]["dt_col"] is None
-
-            # Cleanup
-            await conn.execute("DROP TABLE test_null_special")
