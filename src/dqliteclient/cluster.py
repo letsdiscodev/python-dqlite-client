@@ -24,6 +24,8 @@ class ClusterClient:
             node_store: Store for cluster node information
             timeout: Connection timeout in seconds
         """
+        if timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {timeout}")
         self._node_store = node_store
         self._timeout = timeout
 

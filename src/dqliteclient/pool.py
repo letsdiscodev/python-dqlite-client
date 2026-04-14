@@ -40,6 +40,8 @@ class ConnectionPool:
             raise ValueError(
                 f"min_size ({min_size}) must not exceed max_size ({max_size})"
             )
+        if timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {timeout}")
 
         self._addresses = addresses
         self._database = database

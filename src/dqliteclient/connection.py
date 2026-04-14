@@ -60,6 +60,8 @@ class DqliteConnection:
             database: Database name to open
             timeout: Connection timeout in seconds
         """
+        if timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {timeout}")
         self._address = address
         self._database = database
         self._timeout = timeout
