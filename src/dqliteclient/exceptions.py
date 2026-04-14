@@ -5,20 +5,16 @@ class DqliteError(Exception):
     """Base exception for dqlite client errors."""
 
 
-
 class DqliteConnectionError(DqliteError):
     """Error establishing or maintaining connection."""
-
 
 
 class ProtocolError(DqliteError):
     """Protocol-level error."""
 
 
-
 class ClusterError(DqliteError):
     """Cluster-related error (leader not found, etc)."""
-
 
 
 class OperationalError(DqliteError):
