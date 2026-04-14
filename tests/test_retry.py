@@ -1,5 +1,7 @@
 """Tests for retry utilities."""
 
+import asyncio
+
 import pytest
 
 from dqliteclient.retry import retry_with_backoff
@@ -71,20 +73,33 @@ class TestRetryWithBackoff:
         assert call_count == 1  # Should not retry
 
     async def test_respects_max_delay(self) -> None:
-        import time
+        """Verify that the backoff delay is capped at max_delay."""
+        from unittest.mock import AsyncMock, patch
 
         call_count = 0
-        timestamps: list[float] = []
+        sleep_args: list[float] = []
 
-        async def track_time() -> str:
+        async def fail_twice() -> str:
             nonlocal call_count
-            timestamps.append(time.monotonic())
             call_count += 1
             if call_count < 3:
                 raise ValueError("not yet")
             return "ok"
 
-        await retry_with_backoff(track_time, max_attempts=3, base_delay=0.01, max_delay=0.02)
+        original_sleep = asyncio.sleep
 
-        # Second retry delay should be capped at max_delay
-        assert len(timestamps) == 3
+        async def mock_sleep(delay: float) -> None:
+            sleep_args.append(delay)
+            await original_sleep(0)  # Yield control without actual delay
+
+        with patch("dqliteclient.retry.asyncio.sleep", side_effect=mock_sleep):
+            await retry_with_backoff(
+                fail_twice, max_attempts=3, base_delay=0.1, max_delay=0.05, jitter=0
+            )
+
+        assert call_count == 3
+        assert len(sleep_args) == 2  # Two retries = two sleeps
+        # First delay: 0.1 * 2^0 = 0.1, capped to 0.05
+        assert sleep_args[0] == pytest.approx(0.05)
+        # Second delay: 0.1 * 2^1 = 0.2, capped to 0.05
+        assert sleep_args[1] == pytest.approx(0.05)
