@@ -1,6 +1,7 @@
 """Low-level protocol handler for dqlite."""
 
 import asyncio
+from collections.abc import Sequence
 from typing import Any
 
 from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
@@ -136,7 +137,7 @@ class DqliteProtocol:
             raise OperationalError(response.code, response.message)
 
     async def exec_sql(
-        self, db_id: int, sql: str, params: list[Any] | None = None
+        self, db_id: int, sql: str, params: Sequence[Any] | None = None
     ) -> tuple[int, int]:
         """Execute SQL directly.
 
@@ -157,7 +158,7 @@ class DqliteProtocol:
         return response.last_insert_id, response.rows_affected
 
     async def query_sql(
-        self, db_id: int, sql: str, params: list[Any] | None = None
+        self, db_id: int, sql: str, params: Sequence[Any] | None = None
     ) -> tuple[list[str], list[list[Any]]]:
         """Execute a query directly.
 

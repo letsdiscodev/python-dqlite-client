@@ -1,7 +1,7 @@
 """High-level connection interface for dqlite."""
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -97,7 +97,7 @@ class DqliteConnection:
         self._protocol = None
         self._db_id = None
 
-    async def execute(self, sql: str, params: list[Any] | None = None) -> tuple[int, int]:
+    async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
         """Execute a SQL statement.
 
         Returns (last_insert_id, rows_affected).
@@ -109,7 +109,7 @@ class DqliteConnection:
             self._invalidate()
             raise
 
-    async def fetch(self, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
         """Execute a query and return results as list of dicts."""
         protocol, db_id = self._ensure_connected()
         try:
@@ -119,7 +119,7 @@ class DqliteConnection:
             raise
         return [dict(zip(columns, row, strict=True)) for row in rows]
 
-    async def fetchall(self, sql: str, params: list[Any] | None = None) -> list[list[Any]]:
+    async def fetchall(self, sql: str, params: Sequence[Any] | None = None) -> list[list[Any]]:
         """Execute a query and return results as list of lists."""
         protocol, db_id = self._ensure_connected()
         try:
@@ -129,12 +129,12 @@ class DqliteConnection:
             raise
         return rows
 
-    async def fetchone(self, sql: str, params: list[Any] | None = None) -> dict[str, Any] | None:
+    async def fetchone(self, sql: str, params: Sequence[Any] | None = None) -> dict[str, Any] | None:
         """Execute a query and return the first result."""
         results = await self.fetch(sql, params)
         return results[0] if results else None
 
-    async def fetchval(self, sql: str, params: list[Any] | None = None) -> Any:
+    async def fetchval(self, sql: str, params: Sequence[Any] | None = None) -> Any:
         """Execute a query and return the first column of the first row."""
         protocol, db_id = self._ensure_connected()
         try:

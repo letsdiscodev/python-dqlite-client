@@ -1,7 +1,7 @@
 """Connection pooling for dqlite."""
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -99,12 +99,12 @@ class ConnectionPool:
                 await conn.close()
                 self._size -= 1
 
-    async def execute(self, sql: str, params: list[Any] | None = None) -> tuple[int, int]:
+    async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
         """Execute a SQL statement using a pooled connection."""
         async with self.acquire() as conn:
             return await conn.execute(sql, params)
 
-    async def fetch(self, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
         """Execute a query using a pooled connection."""
         async with self.acquire() as conn:
             return await conn.fetch(sql, params)
