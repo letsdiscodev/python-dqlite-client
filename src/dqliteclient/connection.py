@@ -1,6 +1,7 @@
 """High-level connection interface for dqlite."""
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
@@ -211,10 +212,9 @@ class DqliteConnection:
             yield
             await self.execute("COMMIT")
         except Exception:
-            try:
+            # Swallow rollback failure; original exception is more important
+            with contextlib.suppress(Exception):
                 await self.execute("ROLLBACK")
-            except Exception:
-                pass  # Swallow rollback failure; original exception is more important
             raise
         finally:
             self._in_transaction = False
