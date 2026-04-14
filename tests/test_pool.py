@@ -32,6 +32,30 @@ class TestConnectionPool:
             async with pool.acquire():
                 pass
 
+    async def test_double_initialize_is_idempotent(self) -> None:
+        """Calling initialize() twice should not create double connections."""
+        pool = ConnectionPool(["localhost:9001"], min_size=2, max_size=5)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        create_count = 0
+
+        async def mock_connect(**kwargs):
+            nonlocal create_count
+            create_count += 1
+            return mock_conn
+
+        with patch.object(pool._cluster, "connect", side_effect=mock_connect):
+            await pool.initialize()
+            await pool.initialize()  # Second call should be no-op
+
+        assert create_count == 2  # Only 2 (min_size), not 4
+
+        await pool.close()
+
     async def test_cancellation_does_not_leak_connection(self) -> None:
         """Cancelling a task that holds a connection should clean it up."""
         import asyncio

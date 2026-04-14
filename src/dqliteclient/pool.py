@@ -44,9 +44,13 @@ class ConnectionPool:
         self._size = 0
         self._lock = asyncio.Lock()
         self._closed = False
+        self._initialized = False
 
     async def initialize(self) -> None:
         """Initialize the pool with minimum connections."""
+        if self._initialized:
+            return
+        self._initialized = True
         for _ in range(self._min_size):
             conn = await self._create_connection()
             await self._pool.put(conn)
