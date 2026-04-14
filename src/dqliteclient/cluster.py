@@ -77,11 +77,15 @@ class ClusterClient:
             await protocol.handshake()
             node_id, leader_addr = await protocol.get_leader()
 
-            # If address is empty, this node is the leader
-            if not leader_addr:
+            if not leader_addr and node_id != 0:
+                # Non-zero node_id with empty address: this node is the leader
                 return address
-
-            return leader_addr
+            elif leader_addr:
+                # Non-empty address: redirect to the reported leader
+                return leader_addr
+            else:
+                # node_id=0 and empty address: no leader known
+                return None
         finally:
             protocol.close()
             await protocol.wait_closed()

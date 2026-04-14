@@ -81,6 +81,31 @@ class TestClusterClient:
 
         assert leader == "localhost:9002"
 
+    async def test_find_leader_no_leader_known(self) -> None:
+        """node_id=0 with empty address means no leader known, not 'this is the leader'."""
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            LeaderResponse(node_id=0, address="").encode(),  # No leader known
+        ]
+        mock_reader.read.side_effect = responses
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            pytest.raises(ClusterError, match="Could not find leader"),
+        ):
+            await client.find_leader()
+
     async def test_update_nodes(self) -> None:
         store = MemoryNodeStore()
         client = ClusterClient(store)
