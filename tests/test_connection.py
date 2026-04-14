@@ -8,6 +8,28 @@ from dqliteclient.connection import DqliteConnection
 from dqliteclient.exceptions import DqliteConnectionError
 
 
+class TestParseAddress:
+    def test_ipv4(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        assert _parse_address("localhost:9001") == ("localhost", 9001)
+
+    def test_ipv4_ip(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        assert _parse_address("192.168.1.1:9001") == ("192.168.1.1", 9001)
+
+    def test_ipv6_bracketed(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        assert _parse_address("[::1]:9001") == ("::1", 9001)
+
+    def test_ipv6_full_bracketed(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        assert _parse_address("[2001:db8::1]:9001") == ("2001:db8::1", 9001)
+
+
 class TestDqliteConnection:
     def test_init(self) -> None:
         conn = DqliteConnection("localhost:9001", database="test", timeout=5.0)

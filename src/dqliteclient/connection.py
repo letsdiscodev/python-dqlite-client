@@ -9,6 +9,18 @@ from dqliteclient.exceptions import DqliteConnectionError, OperationalError, Pro
 from dqliteclient.protocol import DqliteProtocol
 
 
+def _parse_address(address: str) -> tuple[str, int]:
+    """Parse a host:port address string, handling IPv6 brackets."""
+    if address.startswith("["):
+        # Bracketed IPv6: [host]:port
+        bracket_end = address.index("]")
+        host = address[1:bracket_end]
+        port_str = address[bracket_end + 2:]  # Skip ']:
+    else:
+        host, port_str = address.rsplit(":", 1)
+    return host, int(port_str)
+
+
 class DqliteConnection:
     """High-level async connection to a dqlite database."""
 
@@ -48,8 +60,7 @@ class DqliteConnection:
         if self._protocol is not None:
             return
 
-        host, port_str = self._address.rsplit(":", 1)
-        port = int(port_str)
+        host, port = _parse_address(self._address)
 
         try:
             reader, writer = await asyncio.wait_for(

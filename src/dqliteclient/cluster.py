@@ -2,7 +2,7 @@
 
 import asyncio
 
-from dqliteclient.connection import DqliteConnection
+from dqliteclient.connection import DqliteConnection, _parse_address
 from dqliteclient.exceptions import ClusterError, DqliteConnectionError, OperationalError
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
 from dqliteclient.protocol import DqliteProtocol
@@ -65,8 +65,7 @@ class ClusterClient:
 
     async def _query_leader(self, address: str) -> str | None:
         """Query a node for the current leader."""
-        host, port_str = address.rsplit(":", 1)
-        port = int(port_str)
+        host, port = _parse_address(address)
 
         try:
             reader, writer = await asyncio.wait_for(
