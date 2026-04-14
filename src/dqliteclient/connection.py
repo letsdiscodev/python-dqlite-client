@@ -156,7 +156,9 @@ class DqliteConnection:
             raise
         return rows
 
-    async def fetchone(self, sql: str, params: Sequence[Any] | None = None) -> dict[str, Any] | None:
+    async def fetchone(
+        self, sql: str, params: Sequence[Any] | None = None
+    ) -> dict[str, Any] | None:
         """Execute a query and return the first result."""
         results = await self.fetch(sql, params)
         return results[0] if results else None
