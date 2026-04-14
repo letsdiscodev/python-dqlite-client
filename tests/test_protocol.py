@@ -153,6 +153,39 @@ class TestDqliteProtocol:
         # The decoder buffer should be clean -- no leftover messages
         assert not protocol._decoder.has_message()
 
+    async def test_query_sql_multi_statement_drains_extra(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """Multi-statement queries should drain extra result sets, not corrupt buffer."""
+        from dqlitewire.constants import ValueType
+        from dqlitewire.messages import RowsResponse
+
+        # Two result sets from "SELECT 1; SELECT 2"
+        rows1 = RowsResponse(
+            column_names=["a"],
+            column_types=[ValueType.INTEGER],
+            rows=[[1]],
+            has_more=False,
+        )
+        rows2 = RowsResponse(
+            column_names=["b"],
+            column_types=[ValueType.INTEGER],
+            rows=[[2]],
+            has_more=False,
+        )
+        mock_reader.read.return_value = rows1.encode() + rows2.encode()
+
+        columns, rows = await protocol.query_sql(1, "SELECT 1; SELECT 2")
+
+        # Returns first result set
+        assert columns == ["a"]
+        assert rows == [[1]]
+
+        # Decoder buffer should be clean -- extra result set was drained
+        assert not protocol._decoder.has_message()
+
     async def test_query_sql(
         self,
         protocol: DqliteProtocol,

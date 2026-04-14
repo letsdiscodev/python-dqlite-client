@@ -209,6 +209,12 @@ class DqliteProtocol:
             all_rows.extend(next_response.rows)
             response = next_response
 
+        # Drain any extra result sets from multi-statement SQL
+        while self._decoder.has_message():
+            extra = await self._read_response()
+            if isinstance(extra, FailureResponse):
+                raise OperationalError(extra.code, extra.message)
+
         return column_names, all_rows
 
     async def _read_data(self) -> bytes:
