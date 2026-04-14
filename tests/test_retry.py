@@ -74,7 +74,7 @@ class TestRetryWithBackoff:
 
     async def test_respects_max_delay(self) -> None:
         """Verify that the backoff delay is capped at max_delay."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import patch
 
         call_count = 0
         sleep_args: list[float] = []

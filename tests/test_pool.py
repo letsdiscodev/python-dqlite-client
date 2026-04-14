@@ -1,5 +1,6 @@
 """Tests for connection pooling."""
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -104,7 +105,7 @@ class TestConnectionPool:
         acquired = asyncio.Event()
 
         async def hold_connection():
-            async with pool.acquire() as conn:
+            async with pool.acquire() as _:
                 acquired.set()
                 await asyncio.sleep(10)  # Hold forever
 
@@ -112,10 +113,8 @@ class TestConnectionPool:
         await acquired.wait()  # Deterministic: wait until connection is acquired
 
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
         # Connection should have been closed, size decremented
         mock_conn.close.assert_called()
@@ -188,7 +187,7 @@ class TestConnectionPool:
 
         # Acquire a connection (checks it out)
         ctx = pool.acquire()
-        conn = await ctx.__aenter__()
+        await ctx.__aenter__()
 
         # Close the pool while connection is checked out
         await pool.close()
