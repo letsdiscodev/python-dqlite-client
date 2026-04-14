@@ -39,6 +39,7 @@ class ConnectionPool:
 
         self._cluster = ClusterClient.from_addresses(addresses, timeout=timeout)
         self._pool: asyncio.Queue[DqliteConnection] = asyncio.Queue(maxsize=max_size)
+        self._in_use: set[DqliteConnection] = set()
         self._size = 0
         self._lock = asyncio.Lock()
         self._closed = False
@@ -84,6 +85,7 @@ class ConnectionPool:
                     f"(max_size={self._max_size}, timeout={self._timeout}s)"
                 ) from None
 
+        self._in_use.add(conn)
         try:
             # Verify connection is still good
             if not conn.is_connected:
@@ -96,16 +98,22 @@ class ConnectionPool:
 
             with contextlib.suppress(BaseException):
                 await conn.close()
+            self._in_use.discard(conn)
             self._size -= 1
             raise
         else:
+            self._in_use.discard(conn)
             # Return to pool
-            try:
-                self._pool.put_nowait(conn)
-            except asyncio.QueueFull:
-                # Pool full, close connection
+            if self._closed:
                 await conn.close()
                 self._size -= 1
+            else:
+                try:
+                    self._pool.put_nowait(conn)
+                except asyncio.QueueFull:
+                    # Pool full, close connection
+                    await conn.close()
+                    self._size -= 1
 
     async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
         """Execute a SQL statement using a pooled connection."""
@@ -118,15 +126,24 @@ class ConnectionPool:
             return await conn.fetch(sql, params)
 
     async def close(self) -> None:
-        """Close all connections in the pool."""
+        """Close all connections (both idle and in-use)."""
         self._closed = True
 
+        # Close idle connections
         while not self._pool.empty():
             try:
                 conn = self._pool.get_nowait()
                 await conn.close()
             except asyncio.QueueEmpty:
                 break
+
+        # Close in-use connections
+        for conn in list(self._in_use):
+            import contextlib
+
+            with contextlib.suppress(Exception):
+                await conn.close()
+        self._in_use.clear()
 
         self._size = 0
 

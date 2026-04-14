@@ -85,6 +85,35 @@ class TestConnectionPool:
                     pass
 
 
+    async def test_close_handles_checked_out_connections(self) -> None:
+        """close() should close in-flight connections, not just idle ones."""
+        pool = ConnectionPool(["localhost:9001"], max_size=2)
+
+        mock_conn1 = MagicMock()
+        mock_conn1.is_connected = True
+        mock_conn1.connect = AsyncMock()
+        mock_conn1.close = AsyncMock()
+
+        mock_conn2 = MagicMock()
+        mock_conn2.is_connected = True
+        mock_conn2.connect = AsyncMock()
+        mock_conn2.close = AsyncMock()
+
+        conns = iter([mock_conn1, mock_conn2])
+        with patch.object(pool._cluster, "connect", side_effect=lambda **kw: next(conns)):
+            await pool.initialize()  # Creates mock_conn1
+
+        # Acquire a connection (checks it out)
+        ctx = pool.acquire()
+        conn = await ctx.__aenter__()
+
+        # Close the pool while connection is checked out
+        await pool.close()
+
+        # The checked-out connection should have been closed
+        mock_conn1.close.assert_called()
+
+
 class TestConnectionPoolIntegration:
     """Integration tests requiring mocked connections."""
 
