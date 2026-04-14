@@ -14,6 +14,11 @@ class TestClusterClient:
         client = ClusterClient.from_addresses(["localhost:9001", "localhost:9002"])
         assert client._timeout == 10.0
 
+    def test_zero_timeout_raises(self) -> None:
+        store = MemoryNodeStore(["localhost:9001"])
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            ClusterClient(store, timeout=0)
+
     async def test_find_leader_no_nodes(self) -> None:
         store = MemoryNodeStore()
         client = ClusterClient(store)

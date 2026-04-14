@@ -22,6 +22,10 @@ class TestConnectionPool:
         with pytest.raises(ValueError, match="max_size.*at least 1"):
             ConnectionPool(["localhost:9001"], max_size=0)
 
+    def test_zero_timeout_raises(self) -> None:
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            ConnectionPool(["localhost:9001"], timeout=0)
+
     def test_init(self) -> None:
         pool = ConnectionPool(
             ["localhost:9001", "localhost:9002"],
