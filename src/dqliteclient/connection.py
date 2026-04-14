@@ -61,7 +61,7 @@ class DqliteConnection:
         except OSError as e:
             raise DqliteConnectionError(f"Failed to connect to {self._address}: {e}") from e
 
-        self._protocol = DqliteProtocol(reader, writer)
+        self._protocol = DqliteProtocol(reader, writer, timeout=self._timeout)
 
         try:
             await self._protocol.handshake()

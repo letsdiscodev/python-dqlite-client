@@ -138,6 +138,28 @@ class TestDqliteProtocol:
         assert rows[0] == [1, "alice"]
         assert rows[1] == [2, "bob"]
 
+    async def test_read_timeout(
+        self,
+        mock_reader: AsyncMock,
+        mock_writer: MagicMock,
+    ) -> None:
+        """Protocol reads should time out instead of blocking forever."""
+        import asyncio
+
+        protocol = DqliteProtocol(mock_reader, mock_writer, timeout=0.1)
+
+        # Simulate a server that hangs (never returns data)
+        async def hang_forever(*args, **kwargs):
+            await asyncio.sleep(100)
+            return b""
+
+        mock_reader.read.side_effect = hang_forever
+
+        from dqliteclient.exceptions import DqliteConnectionError
+
+        with pytest.raises(DqliteConnectionError, match="timed out"):
+            await protocol.exec_sql(1, "SELECT 1")
+
     async def test_close(
         self,
         protocol: DqliteProtocol,

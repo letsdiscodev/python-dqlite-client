@@ -71,7 +71,7 @@ class ClusterClient:
         except (TimeoutError, OSError):
             return None
 
-        protocol = DqliteProtocol(reader, writer)
+        protocol = DqliteProtocol(reader, writer, timeout=self._timeout)
 
         try:
             await protocol.handshake()

@@ -32,6 +32,7 @@ class DqliteProtocol:
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
+        timeout: float = 15.0,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -40,6 +41,7 @@ class DqliteProtocol:
         self._buffer = ReadBuffer()
         self._client_id = 0
         self._heartbeat_timeout = 0
+        self._timeout = timeout
 
     async def handshake(self, client_id: int = 0) -> int:
         """Perform protocol handshake.
@@ -66,6 +68,10 @@ class DqliteProtocol:
 
         self._client_id = client_id
         self._heartbeat_timeout = response.heartbeat_timeout
+        # Use heartbeat timeout for subsequent reads if larger than default
+        if response.heartbeat_timeout > 0:
+            heartbeat_seconds = response.heartbeat_timeout / 1000.0
+            self._timeout = max(self._timeout, heartbeat_seconds)
         return response.heartbeat_timeout
 
     async def get_leader(self) -> tuple[int, str]:
@@ -191,23 +197,33 @@ class DqliteProtocol:
 
         return column_names, all_rows
 
+    async def _read_data(self) -> bytes:
+        """Read data from the stream with timeout."""
+        try:
+            data = await asyncio.wait_for(
+                self._reader.read(4096), timeout=self._timeout
+            )
+        except TimeoutError:
+            raise DqliteConnectionError(
+                f"Server read timed out after {self._timeout}s"
+            ) from None
+        if not data:
+            raise DqliteConnectionError("Connection closed by server")
+        return data
+
     async def _read_continuation(self) -> RowsResponse:
         """Read and decode a ROWS continuation frame."""
         while True:
             result = self._decoder.decode_continuation()
             if result is not None:
                 return result
-            data = await self._reader.read(4096)
-            if not data:
-                raise DqliteConnectionError("Connection closed by server")
+            data = await self._read_data()
             self._decoder.feed(data)
 
     async def _read_response(self) -> Message:
         """Read and decode the next response message."""
         while not self._decoder.has_message():
-            data = await self._reader.read(4096)
-            if not data:
-                raise DqliteConnectionError("Connection closed by server")
+            data = await self._read_data()
             self._decoder.feed(data)
 
         message = self._decoder.decode()
