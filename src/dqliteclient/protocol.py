@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
-from dqlitewire import MessageDecoder, MessageEncoder, ReadBuffer
+from dqlitewire import MessageDecoder, MessageEncoder
 from dqlitewire.messages import (
     ClientRequest,
     DbResponse,
@@ -38,7 +38,6 @@ class DqliteProtocol:
         self._writer = writer
         self._encoder = MessageEncoder()
         self._decoder = MessageDecoder(is_request=False)
-        self._buffer = ReadBuffer()
         self._client_id = 0
         self._heartbeat_timeout = 0
         self._timeout = timeout
