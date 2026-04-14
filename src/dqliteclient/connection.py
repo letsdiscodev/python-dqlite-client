@@ -101,7 +101,7 @@ class DqliteConnection:
         try:
             await self._protocol.handshake()
             self._db_id = await self._protocol.open_database(self._database)
-        except Exception:
+        except BaseException:
             self._protocol.close()
             self._protocol = None
             raise

@@ -493,6 +493,45 @@ class TestDqliteConnection:
         # _in_transaction must be cleaned up
         assert not conn._in_transaction
 
+    async def test_connect_cancellation_cleans_up_protocol(self) -> None:
+        """Cancelling connect() during handshake must close the transport."""
+        import asyncio
+
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        handshake_entered = asyncio.Event()
+
+        async def slow_handshake(*args, **kwargs):
+            handshake_entered.set()
+            await asyncio.sleep(10)  # Will be cancelled
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            patch("dqliteclient.connection.DqliteProtocol") as MockProto,
+        ):
+            proto_instance = MagicMock()
+            proto_instance.handshake = AsyncMock(side_effect=slow_handshake)
+            proto_instance.close = MagicMock()
+            MockProto.return_value = proto_instance
+
+            task = asyncio.create_task(conn.connect())
+            await handshake_entered.wait()
+            task.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        # The protocol must have been closed to avoid socket leak
+        proto_instance.close.assert_called()
+        # The connection must not appear as connected
+        assert not conn.is_connected
+
     async def test_not_leader_error_invalidates_connection(self) -> None:
         """OperationalError with 'not leader' code should invalidate the connection."""
         conn = DqliteConnection("localhost:9001")
