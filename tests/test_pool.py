@@ -101,13 +101,15 @@ class TestConnectionPool:
             await pool.initialize()
 
         initial_size = pool._size
+        acquired = asyncio.Event()
 
         async def hold_connection():
             async with pool.acquire() as conn:
+                acquired.set()
                 await asyncio.sleep(10)  # Hold forever
 
         task = asyncio.create_task(hold_connection())
-        await asyncio.sleep(0.01)  # Let task acquire
+        await acquired.wait()  # Deterministic: wait until connection is acquired
 
         task.cancel()
         try:
