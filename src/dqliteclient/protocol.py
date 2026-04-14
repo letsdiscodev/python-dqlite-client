@@ -37,7 +37,6 @@ class DqliteProtocol:
     ) -> None:
         self._reader = reader
         self._writer = writer
-        self._encoder = MessageEncoder()
         self._decoder = MessageDecoder(is_request=False)
         self._client_id = 0
         self._heartbeat_timeout = 0
@@ -50,7 +49,7 @@ class DqliteProtocol:
         """
         # Send protocol version + client registration together
         request = ClientRequest(client_id=client_id)
-        self._writer.write(self._encoder.encode_handshake() + request.encode())
+        self._writer.write(MessageEncoder().encode_handshake() + request.encode())
         await self._writer.drain()
 
         # Read welcome response
