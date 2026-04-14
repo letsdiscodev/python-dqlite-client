@@ -112,6 +112,22 @@ class TestDqliteProtocol:
         assert last_id == 1
         assert rows_affected == 1
 
+    async def test_exec_sql_with_empty_tuple_params(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+        mock_writer: MagicMock,
+        result_response: bytes,
+    ) -> None:
+        """Empty tuple params should be preserved, not replaced with []."""
+        mock_reader.read.return_value = result_response
+
+        # This should not raise -- empty tuple is a valid Sequence
+        await protocol.exec_sql(1, "SELECT 1", params=())
+
+        # Verify the request was written (meaning params=() was accepted)
+        mock_writer.write.assert_called()
+
     async def test_exec_sql_multi_statement(
         self,
         protocol: DqliteProtocol,

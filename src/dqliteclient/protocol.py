@@ -151,7 +151,7 @@ class DqliteProtocol:
         (semicolon-separated), returns the last statement's last_insert_id
         and the sum of all rows_affected, matching the Go client behavior.
         """
-        request = ExecSqlRequest(db_id=db_id, sql=sql, params=params or [])
+        request = ExecSqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
         self._writer.write(request.encode())
         await self._writer.drain()
 
@@ -185,7 +185,7 @@ class DqliteProtocol:
 
         Returns (column_names, rows).
         """
-        request = QuerySqlRequest(db_id=db_id, sql=sql, params=params or [])
+        request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
         self._writer.write(request.encode())
         await self._writer.drain()
 
