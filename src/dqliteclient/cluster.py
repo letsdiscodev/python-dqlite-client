@@ -26,7 +26,6 @@ class ClusterClient:
         """
         self._node_store = node_store
         self._timeout = timeout
-        self._leader_address: str | None = None
 
     @classmethod
     def from_addresses(cls, addresses: list[str], timeout: float = 10.0) -> "ClusterClient":
@@ -52,7 +51,6 @@ class ClusterClient:
                     self._query_leader(node.address), timeout=self._timeout
                 )
                 if leader_address:
-                    self._leader_address = leader_address
                     return leader_address
             except TimeoutError:
                 errors.append(f"{node.address}: timed out")
