@@ -27,6 +27,9 @@ async def retry_with_backoff[T](
     Raises:
         The last exception if all attempts fail
     """
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+
     last_error: Exception | None = None
 
     for attempt in range(max_attempts):
@@ -47,5 +50,4 @@ async def retry_with_backoff[T](
 
             await asyncio.sleep(delay)
 
-    assert last_error is not None
-    raise last_error
+    raise last_error  # type: ignore[misc]

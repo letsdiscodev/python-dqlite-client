@@ -45,6 +45,13 @@ class TestRetryWithBackoff:
 
         assert call_count == 3
 
+    async def test_max_attempts_zero_raises_value_error(self) -> None:
+        async def should_not_be_called() -> str:
+            raise AssertionError("Should not be called with max_attempts=0")
+
+        with pytest.raises(ValueError, match="max_attempts must be at least 1"):
+            await retry_with_backoff(should_not_be_called, max_attempts=0)
+
     async def test_respects_max_delay(self) -> None:
         import time
 
