@@ -99,3 +99,46 @@ class TestDqliteConnection:
 
         with pytest.raises(ConnectionError, match="Not connected"):
             await conn.fetch("SELECT 1")
+
+    async def test_transaction_rollback_failure_preserves_original_exception(self) -> None:
+        """If ROLLBACK fails, the original exception should still propagate."""
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, ResultResponse, WelcomeResponse
+
+        # Handshake + open_database + BEGIN succeed
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+            ResultResponse(last_insert_id=0, rows_affected=0).encode(),  # BEGIN
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        # Mock execute: BEGIN succeeds, ROLLBACK fails
+        call_log: list[str] = []
+
+        async def mock_execute(sql: str, params=None):
+            call_log.append(sql)
+            if "ROLLBACK" in sql:
+                raise OSError("Connection lost")
+            return (0, 0)
+
+        conn.execute = mock_execute  # type: ignore[assignment]
+
+        with pytest.raises(ValueError, match="user error"):
+            async with conn.transaction():
+                raise ValueError("user error")
+
+        # ROLLBACK was attempted
+        assert "ROLLBACK" in call_log
+        # _in_transaction was cleaned up
+        assert not conn._in_transaction

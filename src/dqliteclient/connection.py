@@ -140,7 +140,10 @@ class DqliteConnection:
             yield
             await self.execute("COMMIT")
         except Exception:
-            await self.execute("ROLLBACK")
+            try:
+                await self.execute("ROLLBACK")
+            except Exception:
+                pass  # Swallow rollback failure; original exception is more important
             raise
         finally:
             self._in_transaction = False
