@@ -32,6 +32,15 @@ class ConnectionPool:
             max_size: Maximum connections allowed
             timeout: Connection timeout
         """
+        if min_size < 0:
+            raise ValueError(f"min_size must be non-negative, got {min_size}")
+        if max_size < 1:
+            raise ValueError(f"max_size must be at least 1, got {max_size}")
+        if min_size > max_size:
+            raise ValueError(
+                f"min_size ({min_size}) must not exceed max_size ({max_size})"
+            )
+
         self._addresses = addresses
         self._database = database
         self._min_size = min_size

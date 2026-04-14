@@ -10,6 +10,18 @@ from dqliteclient.pool import ConnectionPool
 
 
 class TestConnectionPool:
+    def test_min_size_greater_than_max_size_raises(self) -> None:
+        with pytest.raises(ValueError, match="min_size.*must not exceed.*max_size"):
+            ConnectionPool(["localhost:9001"], min_size=5, max_size=2)
+
+    def test_negative_min_size_raises(self) -> None:
+        with pytest.raises(ValueError, match="min_size.*non-negative"):
+            ConnectionPool(["localhost:9001"], min_size=-1)
+
+    def test_zero_max_size_raises(self) -> None:
+        with pytest.raises(ValueError, match="max_size.*at least 1"):
+            ConnectionPool(["localhost:9001"], max_size=0)
+
     def test_init(self) -> None:
         pool = ConnectionPool(
             ["localhost:9001", "localhost:9002"],
