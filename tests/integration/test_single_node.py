@@ -247,7 +247,7 @@ class TestSingleNodeOperations:
 
         This test catches a dqlite bug where NULL values in BOOLEAN and DATETIME
         columns are incorrectly returned as their zero values (False/empty string)
-        instead of NULL. See: https://github.com/canonical/dqlite/issues/XXX
+        instead of NULL.
         """
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_null_special")
