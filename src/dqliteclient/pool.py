@@ -50,10 +50,10 @@ class ConnectionPool:
         """Initialize the pool with minimum connections."""
         if self._initialized:
             return
-        self._initialized = True
         for _ in range(self._min_size):
             conn = await self._create_connection()
             await self._pool.put(conn)
+        self._initialized = True
 
     async def _create_connection(self) -> DqliteConnection:
         """Create a new connection to the leader."""

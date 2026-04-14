@@ -56,6 +56,36 @@ class TestConnectionPool:
 
         await pool.close()
 
+    async def test_initialize_retryable_after_failure(self) -> None:
+        """If initialize() fails, it should be retryable (not permanently stuck)."""
+        pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=5)
+
+        call_count = 0
+
+        async def fail_then_succeed(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise OSError("Connection refused")
+            mock_conn = MagicMock()
+            mock_conn.is_connected = True
+            mock_conn.connect = AsyncMock()
+            mock_conn.close = AsyncMock()
+            return mock_conn
+
+        with patch.object(pool._cluster, "connect", side_effect=fail_then_succeed):
+            # First init fails
+            with pytest.raises(OSError):
+                await pool.initialize()
+
+            # Second init should work (not be a no-op)
+            await pool.initialize()
+
+        assert call_count == 2  # First failed, second succeeded
+        assert pool._size == 1
+
+        await pool.close()
+
     async def test_cancellation_does_not_leak_connection(self) -> None:
         """Cancelling a task that holds a connection should clean it up."""
         import asyncio
