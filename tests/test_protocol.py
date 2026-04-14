@@ -138,6 +138,59 @@ class TestDqliteProtocol:
         assert rows[0] == [1, "alice"]
         assert rows[1] == [2, "bob"]
 
+    async def test_get_leader(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+        leader_response: bytes,
+    ) -> None:
+        mock_reader.read.return_value = leader_response
+
+        node_id, address = await protocol.get_leader()
+
+        assert node_id == 1
+        assert address == "localhost:9001"
+
+    async def test_prepare(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        from dqlitewire.messages import StmtResponse
+
+        mock_reader.read.return_value = StmtResponse(
+            db_id=1, stmt_id=1, num_params=2
+        ).encode()
+
+        stmt_id, num_params = await protocol.prepare(1, "INSERT INTO t VALUES (?, ?)")
+
+        assert stmt_id == 1
+        assert num_params == 2
+
+    async def test_finalize(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        from dqlitewire.messages import EmptyResponse
+
+        mock_reader.read.return_value = EmptyResponse().encode()
+
+        # Should not raise
+        await protocol.finalize(1, 1)
+
+    async def test_connection_closed_during_read(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        mock_reader.read.return_value = b""
+
+        from dqliteclient.exceptions import DqliteConnectionError
+
+        with pytest.raises(DqliteConnectionError, match="Connection closed"):
+            await protocol.exec_sql(1, "SELECT 1")
+
     async def test_read_timeout(
         self,
         mock_reader: AsyncMock,
