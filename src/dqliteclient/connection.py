@@ -129,6 +129,10 @@ class DqliteConnection:
 
     def _invalidate(self) -> None:
         """Mark the connection as broken after an unrecoverable error."""
+        if self._protocol is not None:
+            # Connection may already be broken; suppress close errors
+            with contextlib.suppress(Exception):
+                self._protocol.close()
         self._protocol = None
         self._db_id = None
 

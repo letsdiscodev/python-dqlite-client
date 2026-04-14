@@ -258,6 +258,36 @@ class TestDqliteConnection:
         # Connection should be invalidated
         assert not conn.is_connected
 
+    async def test_invalidate_closes_transport(self) -> None:
+        """_invalidate() should close the underlying transport to avoid socket leaks."""
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        # Trigger invalidation via a connection error
+        mock_reader.read.side_effect = [b""]
+
+        with pytest.raises(DqliteConnectionError):
+            await conn.execute("SELECT 1")
+
+        # The writer should have been closed to release the socket
+        mock_writer.close.assert_called()
+
     async def test_fetchone_returns_first_row(self) -> None:
         conn = DqliteConnection("localhost:9001")
 
