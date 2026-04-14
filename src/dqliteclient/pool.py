@@ -97,7 +97,6 @@ class ConnectionPool:
 
         self._in_use.add(conn)
         try:
-
             yield conn
         except BaseException:
             # On error (including cancellation), close connection
