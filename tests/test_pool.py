@@ -109,6 +109,33 @@ class TestConnectionPool:
                     pass
 
 
+    async def test_dead_connection_triggers_leader_rediscovery(self) -> None:
+        """A dead connection should be replaced via leader discovery, not reconnected."""
+        pool = ConnectionPool(["localhost:9001"], max_size=1)
+
+        dead_conn = MagicMock()
+        dead_conn.is_connected = False  # Connection is dead
+        dead_conn.connect = AsyncMock()
+        dead_conn.close = AsyncMock()
+
+        new_conn = MagicMock()
+        new_conn.is_connected = True
+        new_conn.connect = AsyncMock()
+        new_conn.close = AsyncMock()
+        new_conn.execute = AsyncMock(return_value=(1, 1))
+
+        # Initialize with the connection that will go dead
+        with patch.object(pool._cluster, "connect", return_value=dead_conn):
+            await pool.initialize()
+
+        # When acquiring, the dead conn should be discarded and a new one created
+        with patch.object(pool._cluster, "connect", return_value=new_conn):
+            async with pool.acquire() as conn:
+                assert conn is new_conn  # Got a fresh connection, not the dead one
+
+        # Dead connection should NOT have had connect() called (no stale reconnect)
+        dead_conn.connect.assert_not_called()
+
     async def test_close_handles_checked_out_connections(self) -> None:
         """close() should close in-flight connections, not just idle ones."""
         pool = ConnectionPool(["localhost:9001"], max_size=2)
