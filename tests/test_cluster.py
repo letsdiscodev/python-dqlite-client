@@ -106,6 +106,32 @@ class TestClusterClient:
         ):
             await client.find_leader()
 
+    async def test_find_leader_node_hangs_after_connect(self) -> None:
+        """A node that accepts TCP but hangs on handshake should be timed out."""
+        import asyncio
+
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store, timeout=0.1)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        # Server accepts connection but never sends a response
+        async def hang_forever(*args, **kwargs):
+            await asyncio.sleep(100)
+            return b""
+
+        mock_reader.read.side_effect = hang_forever
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            pytest.raises(ClusterError, match="Could not find leader"),
+        ):
+            await client.find_leader()
+
     async def test_update_nodes(self) -> None:
         store = MemoryNodeStore()
         client = ClusterClient(store)

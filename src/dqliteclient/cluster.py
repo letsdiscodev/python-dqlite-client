@@ -48,10 +48,15 @@ class ClusterClient:
 
         for node in nodes:
             try:
-                leader_address = await self._query_leader(node.address)
+                leader_address = await asyncio.wait_for(
+                    self._query_leader(node.address), timeout=self._timeout
+                )
                 if leader_address:
                     self._leader_address = leader_address
                     return leader_address
+            except TimeoutError:
+                errors.append(f"{node.address}: timed out")
+                continue
             except Exception as e:
                 errors.append(f"{node.address}: {e}")
                 continue
