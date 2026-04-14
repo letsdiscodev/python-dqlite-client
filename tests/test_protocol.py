@@ -28,6 +28,26 @@ class TestDqliteProtocol:
 
         assert timeout == 15000
 
+    async def test_handshake_caps_heartbeat_timeout(
+        self,
+        mock_reader: AsyncMock,
+        mock_writer: MagicMock,
+    ) -> None:
+        """A huge heartbeat_timeout should be capped to prevent timeout bypass."""
+        from dqlitewire.messages import WelcomeResponse
+
+        # Server sends an absurdly large heartbeat timeout (e.g., corrupted value)
+        huge_timeout_ms = 10_000_000  # 10000 seconds
+        mock_reader.read.return_value = WelcomeResponse(
+            heartbeat_timeout=huge_timeout_ms
+        ).encode()
+
+        protocol = DqliteProtocol(mock_reader, mock_writer, timeout=10.0)
+        await protocol.handshake()
+
+        # The read timeout should be capped, not set to 10000 seconds
+        assert protocol._timeout <= 300.0
+
     async def test_handshake_failure(
         self,
         protocol: DqliteProtocol,

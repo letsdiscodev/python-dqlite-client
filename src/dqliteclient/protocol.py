@@ -66,7 +66,8 @@ class DqliteProtocol:
         # Use heartbeat timeout for subsequent reads if larger than default
         if response.heartbeat_timeout > 0:
             heartbeat_seconds = response.heartbeat_timeout / 1000.0
-            self._timeout = max(self._timeout, heartbeat_seconds)
+            # Cap to prevent a malicious/buggy server from disabling timeouts
+            self._timeout = max(self._timeout, min(heartbeat_seconds, 300.0))
         return response.heartbeat_timeout
 
     async def get_leader(self) -> tuple[int, str]:
