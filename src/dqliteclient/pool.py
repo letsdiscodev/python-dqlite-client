@@ -150,17 +150,16 @@ class ConnectionPool:
         while not self._pool.empty():
             try:
                 conn = self._pool.get_nowait()
-                await conn.close()
+                with contextlib.suppress(Exception):
+                    await conn.close()
+                self._size -= 1
             except asyncio.QueueEmpty:
                 break
 
-        # Close in-use connections
-        for conn in list(self._in_use):
-            with contextlib.suppress(Exception):
-                await conn.close()
-        self._in_use.clear()
-
-        self._size = 0
+        # In-use connections are closed by acquire()'s cleanup when they
+        # return — the else branch checks _closed and closes instead of
+        # returning to the pool.  Force-closing them here would race with
+        # the acquire context manager and corrupt _size (see #080).
 
     async def __aenter__(self) -> "ConnectionPool":
         await self.initialize()

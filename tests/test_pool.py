@@ -185,6 +185,45 @@ class TestConnectionPool:
                     pass
 
 
+    async def test_close_during_acquire_does_not_corrupt_size(self) -> None:
+        """Closing the pool while connections are in-use must not make _size negative."""
+        import asyncio
+
+        pool = ConnectionPool(["localhost:9001"], max_size=2)
+
+        conns = []
+        for _ in range(2):
+            mock_conn = MagicMock()
+            mock_conn.is_connected = True
+            mock_conn.connect = AsyncMock()
+            mock_conn.close = AsyncMock()
+            conns.append(mock_conn)
+
+        conn_iter = iter(conns)
+        with patch.object(pool._cluster, "connect", side_effect=lambda **kw: next(conn_iter)):
+            await pool.initialize()
+
+        acquired = asyncio.Event()
+
+        async def hold_connection():
+            async with pool.acquire() as _conn:
+                acquired.set()
+                await asyncio.sleep(10)
+
+        task = asyncio.create_task(hold_connection())
+        await acquired.wait()
+
+        # Close pool while task holds a connection
+        await pool.close()
+
+        # Cancel the task — its cleanup path will try to decrement _size
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        # _size must never go negative
+        assert pool._size >= 0, f"_size went negative: {pool._size}"
+
     async def test_dead_conn_replacement_respects_max_size(self) -> None:
         """Dead-connection replacement must not allow _size to exceed max_size."""
         pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=2)
@@ -255,33 +294,24 @@ class TestConnectionPool:
         # Dead connection should NOT have had connect() called (no stale reconnect)
         dead_conn.connect.assert_not_called()
 
-    async def test_close_handles_checked_out_connections(self) -> None:
-        """close() should close in-flight connections, not just idle ones."""
+    async def test_close_then_return_closes_connection(self) -> None:
+        """Returning a connection to a closed pool should close it, not put it back."""
         pool = ConnectionPool(["localhost:9001"], max_size=2)
 
-        mock_conn1 = MagicMock()
-        mock_conn1.is_connected = True
-        mock_conn1.connect = AsyncMock()
-        mock_conn1.close = AsyncMock()
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
 
-        mock_conn2 = MagicMock()
-        mock_conn2.is_connected = True
-        mock_conn2.connect = AsyncMock()
-        mock_conn2.close = AsyncMock()
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
 
-        conns = iter([mock_conn1, mock_conn2])
-        with patch.object(pool._cluster, "connect", side_effect=lambda **kw: next(conns)):
-            await pool.initialize()  # Creates mock_conn1
+        # Acquire, then close pool, then release — connection should be closed
+        async with pool.acquire():
+            await pool.close()
 
-        # Acquire a connection (checks it out)
-        ctx = pool.acquire()
-        await ctx.__aenter__()
-
-        # Close the pool while connection is checked out
-        await pool.close()
-
-        # The checked-out connection should have been closed
-        mock_conn1.close.assert_called()
+        # The connection should have been closed on return (not put back in queue)
+        mock_conn.close.assert_called()
 
 
 class TestConnectionPoolIntegration:
