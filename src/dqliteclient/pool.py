@@ -1,6 +1,7 @@
 """Connection pooling for dqlite."""
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
@@ -94,8 +95,6 @@ class ConnectionPool:
             yield conn
         except BaseException:
             # On error (including cancellation), close connection
-            import contextlib
-
             with contextlib.suppress(BaseException):
                 await conn.close()
             self._in_use.discard(conn)
@@ -139,8 +138,6 @@ class ConnectionPool:
 
         # Close in-use connections
         for conn in list(self._in_use):
-            import contextlib
-
             with contextlib.suppress(Exception):
                 await conn.close()
         self._in_use.clear()
