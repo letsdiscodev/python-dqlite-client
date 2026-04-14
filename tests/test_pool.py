@@ -32,7 +32,6 @@ class TestConnectionPool:
             async with pool.acquire():
                 pass
 
-
     async def test_cancellation_does_not_leak_connection(self) -> None:
         """Cancelling a task that holds a connection should clean it up."""
         import asyncio
@@ -65,6 +64,25 @@ class TestConnectionPool:
         # Connection should have been closed, size decremented
         mock_conn.close.assert_called()
         assert pool._size < initial_size
+
+    async def test_acquire_timeout_when_pool_exhausted(self) -> None:
+        """acquire() should timeout, not block forever, when pool is exhausted."""
+        pool = ConnectionPool(["localhost:9001"], max_size=1, timeout=0.1)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+        # Check out the only connection
+        async with pool.acquire():
+            # Try to acquire another - should timeout
+            with pytest.raises(DqliteConnectionError, match="[Tt]imed out"):
+                async with pool.acquire():
+                    pass
 
 
 class TestConnectionPoolIntegration:

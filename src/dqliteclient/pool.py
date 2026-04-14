@@ -74,7 +74,15 @@ class ConnectionPool:
 
         # Wait for one if at max
         if conn is None:
-            conn = await self._pool.get()
+            try:
+                conn = await asyncio.wait_for(
+                    self._pool.get(), timeout=self._timeout
+                )
+            except TimeoutError:
+                raise DqliteConnectionError(
+                    f"Timed out waiting for a connection from the pool "
+                    f"(max_size={self._max_size}, timeout={self._timeout}s)"
+                ) from None
 
         try:
             # Verify connection is still good
