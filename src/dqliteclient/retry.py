@@ -11,6 +11,7 @@ async def retry_with_backoff[T](
     base_delay: float = 0.1,
     max_delay: float = 10.0,
     jitter: float = 0.1,
+    retryable_exceptions: tuple[type[Exception], ...] = (Exception,),
 ) -> T:
     """Retry an async function with exponential backoff.
 
@@ -20,12 +21,14 @@ async def retry_with_backoff[T](
         base_delay: Initial delay between retries in seconds
         max_delay: Maximum delay between retries
         jitter: Random jitter factor (0-1)
+        retryable_exceptions: Exception types to retry on
 
     Returns:
         Result of the function
 
     Raises:
-        The last exception if all attempts fail
+        The last exception if all attempts fail, or immediately
+        for non-retryable exceptions
     """
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
@@ -35,7 +38,7 @@ async def retry_with_backoff[T](
     for attempt in range(max_attempts):
         try:
             return await func()
-        except Exception as e:
+        except retryable_exceptions as e:
             last_error = e
 
             if attempt == max_attempts - 1:

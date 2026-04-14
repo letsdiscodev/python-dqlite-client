@@ -52,6 +52,24 @@ class TestRetryWithBackoff:
         with pytest.raises(ValueError, match="max_attempts must be at least 1"):
             await retry_with_backoff(should_not_be_called, max_attempts=0)
 
+    async def test_non_retryable_exception_fails_immediately(self) -> None:
+        call_count = 0
+
+        async def raise_type_error() -> str:
+            nonlocal call_count
+            call_count += 1
+            raise TypeError("bug")
+
+        with pytest.raises(TypeError, match="bug"):
+            await retry_with_backoff(
+                raise_type_error,
+                max_attempts=5,
+                base_delay=0.01,
+                retryable_exceptions=(ValueError,),
+            )
+
+        assert call_count == 1  # Should not retry
+
     async def test_respects_max_delay(self) -> None:
         import time
 

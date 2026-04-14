@@ -3,7 +3,7 @@
 import asyncio
 
 from dqliteclient.connection import DqliteConnection
-from dqliteclient.exceptions import ClusterError
+from dqliteclient.exceptions import ClusterError, DqliteConnectionError, OperationalError
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
 from dqliteclient.protocol import DqliteProtocol
 from dqliteclient.retry import retry_with_backoff
@@ -102,7 +102,17 @@ class ClusterClient:
             await conn.connect()
             return conn
 
-        return await retry_with_backoff(try_connect, max_attempts=5)
+        return await retry_with_backoff(
+            try_connect,
+            max_attempts=5,
+            retryable_exceptions=(
+                DqliteConnectionError,
+                ClusterError,
+                OperationalError,
+                OSError,
+                TimeoutError,
+            ),
+        )
 
     async def update_nodes(self, nodes: list[NodeInfo]) -> None:
         """Update the node store with new node information."""
