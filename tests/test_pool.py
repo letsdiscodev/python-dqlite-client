@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dqliteclient.exceptions import ConnectionError
+from dqliteclient.exceptions import DqliteConnectionError
 from dqliteclient.pool import ConnectionPool
 
 
@@ -28,7 +28,7 @@ class TestConnectionPool:
         pool = ConnectionPool(["localhost:9001"])
         pool._closed = True
 
-        with pytest.raises(ConnectionError, match="Pool is closed"):
+        with pytest.raises(DqliteConnectionError, match="Pool is closed"):
             async with pool.acquire():
                 pass
 

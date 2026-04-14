@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from dqliteclient.exceptions import ConnectionError, OperationalError, ProtocolError
+from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
 from dqliteclient.protocol import DqliteProtocol
 
 
@@ -57,9 +57,9 @@ class DqliteConnection:
                 timeout=self._timeout,
             )
         except TimeoutError as e:
-            raise ConnectionError(f"Connection to {self._address} timed out") from e
+            raise DqliteConnectionError(f"Connection to {self._address} timed out") from e
         except OSError as e:
-            raise ConnectionError(f"Failed to connect to {self._address}: {e}") from e
+            raise DqliteConnectionError(f"Failed to connect to {self._address}: {e}") from e
 
         self._protocol = DqliteProtocol(reader, writer)
 
@@ -89,7 +89,7 @@ class DqliteConnection:
     def _ensure_connected(self) -> tuple[DqliteProtocol, int]:
         """Ensure we're connected and return protocol and db_id."""
         if self._protocol is None or self._db_id is None:
-            raise ConnectionError("Not connected")
+            raise DqliteConnectionError("Not connected")
         return self._protocol, self._db_id
 
     def _invalidate(self) -> None:
@@ -105,7 +105,7 @@ class DqliteConnection:
         protocol, db_id = self._ensure_connected()
         try:
             return await protocol.exec_sql(db_id, sql, params)
-        except (ConnectionError, ProtocolError):
+        except (DqliteConnectionError, ProtocolError):
             self._invalidate()
             raise
 
@@ -114,7 +114,7 @@ class DqliteConnection:
         protocol, db_id = self._ensure_connected()
         try:
             columns, rows = await protocol.query_sql(db_id, sql, params)
-        except (ConnectionError, ProtocolError):
+        except (DqliteConnectionError, ProtocolError):
             self._invalidate()
             raise
         return [dict(zip(columns, row, strict=True)) for row in rows]
@@ -124,7 +124,7 @@ class DqliteConnection:
         protocol, db_id = self._ensure_connected()
         try:
             _, rows = await protocol.query_sql(db_id, sql, params)
-        except (ConnectionError, ProtocolError):
+        except (DqliteConnectionError, ProtocolError):
             self._invalidate()
             raise
         return rows
@@ -139,7 +139,7 @@ class DqliteConnection:
         protocol, db_id = self._ensure_connected()
         try:
             _, rows = await protocol.query_sql(db_id, sql, params)
-        except (ConnectionError, ProtocolError):
+        except (DqliteConnectionError, ProtocolError):
             self._invalidate()
             raise
         if rows and rows[0]:

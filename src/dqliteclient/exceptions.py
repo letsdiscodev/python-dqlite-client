@@ -7,7 +7,7 @@ class DqliteError(Exception):
     pass
 
 
-class ConnectionError(DqliteError):
+class DqliteConnectionError(DqliteError):
     """Error establishing or maintaining connection."""
 
     pass

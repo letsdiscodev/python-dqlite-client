@@ -4,7 +4,7 @@ from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import DqliteConnection
 from dqliteclient.exceptions import (
     ClusterError,
-    ConnectionError,
+    DqliteConnectionError,
     DqliteError,
     OperationalError,
     ProtocolError,
@@ -21,7 +21,7 @@ __all__ = [
     "NodeStore",
     "MemoryNodeStore",
     "DqliteError",
-    "ConnectionError",
+    "DqliteConnectionError",
     "ProtocolError",
     "ClusterError",
     "OperationalError",

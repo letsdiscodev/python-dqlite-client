@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from dqliteclient.connection import DqliteConnection
-from dqliteclient.exceptions import ConnectionError
+from dqliteclient.exceptions import DqliteConnectionError
 
 
 class TestDqliteConnection:
@@ -51,7 +51,7 @@ class TestDqliteConnection:
 
         with (
             patch("asyncio.open_connection", side_effect=slow_connect),
-            pytest.raises(ConnectionError, match="timed out"),
+            pytest.raises(DqliteConnectionError, match="timed out"),
         ):
             await conn.connect()
 
@@ -63,7 +63,7 @@ class TestDqliteConnection:
                 "asyncio.open_connection",
                 side_effect=OSError("Connection refused"),
             ),
-            pytest.raises(ConnectionError, match="Failed to connect"),
+            pytest.raises(DqliteConnectionError, match="Failed to connect"),
         ):
             await conn.connect()
 
@@ -91,7 +91,7 @@ class TestDqliteConnection:
     async def test_execute_not_connected(self) -> None:
         conn = DqliteConnection("localhost:9001")
 
-        with pytest.raises(ConnectionError, match="Not connected"):
+        with pytest.raises(DqliteConnectionError, match="Not connected"):
             await conn.execute("SELECT 1")
 
     async def test_nested_transaction_raises(self) -> None:
@@ -132,7 +132,7 @@ class TestDqliteConnection:
     async def test_fetch_not_connected(self) -> None:
         conn = DqliteConnection("localhost:9001")
 
-        with pytest.raises(ConnectionError, match="Not connected"):
+        with pytest.raises(DqliteConnectionError, match="Not connected"):
             await conn.fetch("SELECT 1")
 
     async def test_transaction_rollback_failure_preserves_original_exception(self) -> None:
@@ -203,8 +203,6 @@ class TestDqliteConnection:
 
         # Now make the reader return empty (connection closed)
         mock_reader.read.side_effect = [b""]
-
-        from dqliteclient.exceptions import ConnectionError as DqliteConnectionError
 
         with pytest.raises(DqliteConnectionError):
             await conn.execute("SELECT 1")

@@ -3,7 +3,7 @@
 import asyncio
 from typing import Any
 
-from dqliteclient.exceptions import ConnectionError, OperationalError, ProtocolError
+from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
 from dqlitewire import MessageDecoder, MessageEncoder, ReadBuffer
 from dqlitewire.messages import (
     ClientRequest,
@@ -198,7 +198,7 @@ class DqliteProtocol:
                 return result
             data = await self._reader.read(4096)
             if not data:
-                raise ConnectionError("Connection closed by server")
+                raise DqliteConnectionError("Connection closed by server")
             self._decoder.feed(data)
 
     async def _read_response(self) -> Message:
@@ -206,7 +206,7 @@ class DqliteProtocol:
         while not self._decoder.has_message():
             data = await self._reader.read(4096)
             if not data:
-                raise ConnectionError("Connection closed by server")
+                raise DqliteConnectionError("Connection closed by server")
             self._decoder.feed(data)
 
         message = self._decoder.decode()

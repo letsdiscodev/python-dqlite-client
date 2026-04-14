@@ -7,7 +7,7 @@ from typing import Any
 
 from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import DqliteConnection
-from dqliteclient.exceptions import ConnectionError
+from dqliteclient.exceptions import DqliteConnectionError
 
 
 class ConnectionPool:
@@ -59,7 +59,7 @@ class ConnectionPool:
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
         """Acquire a connection from the pool."""
         if self._closed:
-            raise ConnectionError("Pool is closed")
+            raise DqliteConnectionError("Pool is closed")
 
         conn: DqliteConnection | None = None
 
