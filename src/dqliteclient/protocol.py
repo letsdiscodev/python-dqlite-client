@@ -9,6 +9,7 @@ from dqlitewire import MessageDecoder, MessageEncoder
 from dqlitewire.messages import (
     ClientRequest,
     DbResponse,
+    EmptyResponse,
     ExecSqlRequest,
     FailureResponse,
     FinalizeRequest,
@@ -137,6 +138,9 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(response.code, response.message)
+
+        if not isinstance(response, EmptyResponse):
+            raise ProtocolError(f"Expected EmptyResponse, got {type(response).__name__}")
 
     async def exec_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None

@@ -85,6 +85,20 @@ class TestDqliteProtocol:
         assert exc_info.value.code == 1
         assert "cannot open" in exc_info.value.message
 
+    async def test_finalize_wrong_response_type(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """finalize() should reject non-EmptyResponse (catches protocol desync)."""
+        from dqlitewire.messages import DbResponse
+
+        # Server sends wrong response type
+        mock_reader.read.return_value = DbResponse(db_id=99).encode()
+
+        with pytest.raises(ProtocolError, match="Expected EmptyResponse"):
+            await protocol.finalize(1, 1)
+
     async def test_exec_sql(
         self,
         protocol: DqliteProtocol,
