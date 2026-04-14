@@ -94,6 +94,41 @@ class TestDqliteConnection:
         with pytest.raises(ConnectionError, match="Not connected"):
             await conn.execute("SELECT 1")
 
+    async def test_nested_transaction_raises(self) -> None:
+        """Nested transaction() should raise, not silently no-op."""
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, ResultResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+            ResultResponse(last_insert_id=0, rows_affected=0).encode(),  # BEGIN
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        # Mock execute for BEGIN
+        async def mock_execute(sql: str, params=None):
+            return (0, 0)
+
+        conn.execute = mock_execute  # type: ignore[assignment]
+
+        from dqliteclient.exceptions import OperationalError
+
+        async with conn.transaction():
+            with pytest.raises(OperationalError, match="[Nn]ested"):
+                async with conn.transaction():
+                    pass
+
     async def test_fetch_not_connected(self) -> None:
         conn = DqliteConnection("localhost:9001")
 

@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from dqliteclient.exceptions import ConnectionError, ProtocolError
+from dqliteclient.exceptions import ConnectionError, OperationalError, ProtocolError
 from dqliteclient.protocol import DqliteProtocol
 
 
@@ -150,9 +150,9 @@ class DqliteConnection:
     async def transaction(self) -> AsyncIterator[None]:
         """Context manager for transactions."""
         if self._in_transaction:
-            # Nested transaction - just yield
-            yield
-            return
+            raise OperationalError(
+                0, "Nested transactions are not supported; use SAVEPOINT directly"
+            )
 
         await self.execute("BEGIN")
         self._in_transaction = True
