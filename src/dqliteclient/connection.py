@@ -13,12 +13,28 @@ def _parse_address(address: str) -> tuple[str, int]:
     """Parse a host:port address string, handling IPv6 brackets."""
     if address.startswith("["):
         # Bracketed IPv6: [host]:port
+        if "]:" not in address:
+            raise ValueError(
+                f"Invalid IPv6 address format: expected '[host]:port', got {address!r}"
+            )
         bracket_end = address.index("]")
         host = address[1:bracket_end]
         port_str = address[bracket_end + 2:]  # Skip ']:
     else:
+        if ":" not in address:
+            raise ValueError(
+                f"Invalid address format: expected 'host:port', got {address!r}"
+            )
         host, port_str = address.rsplit(":", 1)
-    return host, int(port_str)
+
+    try:
+        port = int(port_str)
+    except ValueError:
+        raise ValueError(
+            f"Invalid port in address {address!r}: {port_str!r} is not a number"
+        ) from None
+
+    return host, port
 
 
 class DqliteConnection:

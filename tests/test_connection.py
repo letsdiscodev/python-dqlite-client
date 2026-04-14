@@ -29,6 +29,24 @@ class TestParseAddress:
 
         assert _parse_address("[2001:db8::1]:9001") == ("2001:db8::1", 9001)
 
+    def test_bare_hostname_raises(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="expected.*host:port"):
+            _parse_address("localhost")
+
+    def test_invalid_port_raises(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="not a number"):
+            _parse_address("localhost:abc")
+
+    def test_ipv6_no_port_raises(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="expected.*host.*port"):
+            _parse_address("[::1]")
+
 
 class TestDqliteConnection:
     def test_init(self) -> None:
