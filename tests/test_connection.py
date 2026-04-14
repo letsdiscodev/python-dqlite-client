@@ -443,6 +443,56 @@ class TestDqliteConnection:
         result = await conn.fetchval("SELECT id FROM t WHERE 1=0")
         assert result is None
 
+    async def test_transaction_rollback_on_cancellation(self) -> None:
+        """CancelledError inside a transaction must trigger ROLLBACK."""
+        import asyncio
+
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        # Track which SQL statements are executed
+        call_log: list[str] = []
+
+        async def mock_execute(sql: str, params=None):
+            call_log.append(sql)
+            return (0, 0)
+
+        conn.execute = mock_execute  # type: ignore[assignment]
+
+        async def cancelled_transaction():
+            async with conn.transaction():
+                await asyncio.sleep(10)  # Will be cancelled here
+
+        task = asyncio.create_task(cancelled_transaction())
+        await asyncio.sleep(0)  # Let the task enter the transaction
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # ROLLBACK must have been issued
+        assert "ROLLBACK" in call_log, (
+            f"ROLLBACK was not issued on CancelledError. Calls: {call_log}"
+        )
+        # _in_transaction must be cleaned up
+        assert not conn._in_transaction
+
     async def test_not_leader_error_invalidates_connection(self) -> None:
         """OperationalError with 'not leader' code should invalidate the connection."""
         conn = DqliteConnection("localhost:9001")

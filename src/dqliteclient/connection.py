@@ -217,9 +217,9 @@ class DqliteConnection:
         try:
             yield
             await self.execute("COMMIT")
-        except Exception:
+        except BaseException:
             # Swallow rollback failure; original exception is more important
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(BaseException):
                 await self.execute("ROLLBACK")
             raise
         finally:
