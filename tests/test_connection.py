@@ -404,3 +404,38 @@ class TestDqliteConnection:
         mock_reader.read.side_effect = [empty_response]
         result = await conn.fetchval("SELECT id FROM t WHERE 1=0")
         assert result is None
+
+    async def test_not_leader_error_invalidates_connection(self) -> None:
+        """OperationalError with 'not leader' code should invalidate the connection."""
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, FailureResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        assert conn.is_connected
+
+        # Server responds with "not leader" error (code 0)
+        not_leader = FailureResponse(code=0, message="not leader").encode()
+        mock_reader.read.side_effect = [not_leader]
+
+        from dqliteclient.exceptions import OperationalError
+
+        with pytest.raises(OperationalError, match="not leader"):
+            await conn.execute("INSERT INTO t VALUES (1)")
+
+        # Connection should be invalidated after a leader error
+        assert not conn.is_connected

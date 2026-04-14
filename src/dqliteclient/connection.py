@@ -8,6 +8,9 @@ from typing import Any
 from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
 from dqliteclient.protocol import DqliteProtocol
 
+# dqlite error codes that indicate a leader change
+_LEADER_ERROR_CODES = {0, 4097}  # ErrNotLeader, ErrLeadershipLost
+
 
 def _parse_address(address: str) -> tuple[str, int]:
     """Parse a host:port address string, handling IPv6 brackets."""
@@ -135,6 +138,10 @@ class DqliteConnection:
         except (DqliteConnectionError, ProtocolError):
             self._invalidate()
             raise
+        except OperationalError as e:
+            if e.code in _LEADER_ERROR_CODES:
+                self._invalidate()
+            raise
 
     async def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
         """Execute a query and return results as list of dicts."""
@@ -143,6 +150,10 @@ class DqliteConnection:
             columns, rows = await protocol.query_sql(db_id, sql, params)
         except (DqliteConnectionError, ProtocolError):
             self._invalidate()
+            raise
+        except OperationalError as e:
+            if e.code in _LEADER_ERROR_CODES:
+                self._invalidate()
             raise
         return [dict(zip(columns, row, strict=True)) for row in rows]
 
@@ -153,6 +164,10 @@ class DqliteConnection:
             _, rows = await protocol.query_sql(db_id, sql, params)
         except (DqliteConnectionError, ProtocolError):
             self._invalidate()
+            raise
+        except OperationalError as e:
+            if e.code in _LEADER_ERROR_CODES:
+                self._invalidate()
             raise
         return rows
 
@@ -170,6 +185,10 @@ class DqliteConnection:
             _, rows = await protocol.query_sql(db_id, sql, params)
         except (DqliteConnectionError, ProtocolError):
             self._invalidate()
+            raise
+        except OperationalError as e:
+            if e.code in _LEADER_ERROR_CODES:
+                self._invalidate()
             raise
         if rows and rows[0]:
             return rows[0][0]
