@@ -1,5 +1,6 @@
 """Tests for node store."""
 
+import dqliteclient
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo
 
 
@@ -42,6 +43,11 @@ class TestMemoryNodeStore:
         assert len(result) == 2
         assert result[0].node_id == 1
         assert result[1].address == "node2:9002"
+
+    def test_nodeinfo_exported_from_package(self) -> None:
+        """NodeInfo should be importable from the top-level package."""
+        assert hasattr(dqliteclient, "NodeInfo")
+        assert dqliteclient.NodeInfo is NodeInfo
 
     async def test_get_nodes_returns_copy(self) -> None:
         store = MemoryNodeStore(["localhost:9001"])

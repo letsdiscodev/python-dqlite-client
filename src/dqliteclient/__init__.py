@@ -9,7 +9,7 @@ from dqliteclient.exceptions import (
     OperationalError,
     ProtocolError,
 )
-from dqliteclient.node_store import MemoryNodeStore, NodeStore
+from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
 from dqliteclient.pool import ConnectionPool
 
 __all__ = [
@@ -19,6 +19,7 @@ __all__ = [
     "ConnectionPool",
     "ClusterClient",
     "NodeStore",
+    "NodeInfo",
     "MemoryNodeStore",
     "DqliteError",
     "DqliteConnectionError",
