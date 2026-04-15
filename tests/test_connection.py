@@ -210,10 +210,10 @@ class TestDqliteConnection:
 
         conn.execute = mock_execute  # type: ignore[assignment]
 
-        from dqliteclient.exceptions import OperationalError
+        from dqliteclient.exceptions import InterfaceError
 
         async with conn.transaction():
-            with pytest.raises(OperationalError, match="[Nn]ested"):
+            with pytest.raises(InterfaceError, match="[Nn]ested"):
                 async with conn.transaction():
                     pass
 
@@ -816,11 +816,11 @@ class TestDqliteConnection:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    async def test_concurrent_transaction_raises_operational_error(self) -> None:
-        """Second concurrent transaction() must raise OperationalError, not InterfaceError."""
+    async def test_concurrent_transaction_raises_interface_error(self) -> None:
+        """Second concurrent transaction() must raise InterfaceError about nesting."""
         import asyncio
 
-        from dqliteclient.exceptions import InterfaceError, OperationalError
+        from dqliteclient.exceptions import InterfaceError
 
         conn = DqliteConnection("localhost:9001")
 
@@ -863,22 +863,21 @@ class TestDqliteConnection:
             try:
                 async with conn.transaction():
                     pass
-            except (OperationalError, InterfaceError) as e:
+            except InterfaceError as e:
                 errors.append(e)
 
         task_a = asyncio.create_task(tx_a())
         task_b = asyncio.create_task(tx_b())
 
-        await task_b  # should raise OperationalError about nested transactions
+        await task_b  # should raise InterfaceError about nested transactions
 
         task_a.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task_a
 
         assert len(errors) == 1
-        # Must get OperationalError about nested transactions, NOT InterfaceError
-        assert isinstance(errors[0], OperationalError), (
-            f"Expected OperationalError about nested transactions, "
+        assert isinstance(errors[0], InterfaceError), (
+            f"Expected InterfaceError about nested transactions, "
             f"got {type(errors[0]).__name__}: {errors[0]}"
         )
         assert "Nested" in str(errors[0]) or "nested" in str(errors[0])

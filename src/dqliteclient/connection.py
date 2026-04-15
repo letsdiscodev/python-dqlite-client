@@ -305,9 +305,7 @@ class DqliteConnection:
     async def transaction(self) -> AsyncIterator[None]:
         """Context manager for transactions."""
         if self._in_transaction:
-            raise OperationalError(
-                0, "Nested transactions are not supported; use SAVEPOINT directly"
-            )
+            raise InterfaceError("Nested transactions are not supported; use SAVEPOINT directly")
 
         self._in_transaction = True
         self._tx_owner = asyncio.current_task()
