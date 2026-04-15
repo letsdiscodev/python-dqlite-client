@@ -184,6 +184,45 @@ class TestClusterClient:
         # Even though DqliteProtocol() failed, the writer must be closed
         mock_writer.close.assert_called()
 
+    async def test_query_leader_does_not_hang_on_slow_wait_closed(self) -> None:
+        """_query_leader must not hang if wait_closed() blocks (e.g., unresponsive peer)."""
+        import asyncio
+
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store, timeout=0.5)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+
+        # wait_closed blocks forever (simulates unresponsive peer)
+        async def hang_forever():
+            await asyncio.sleep(999)
+
+        mock_writer.wait_closed = hang_forever
+
+        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            LeaderResponse(node_id=1, address="").encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            # This should complete within the timeout, not hang on wait_closed
+            try:
+                leader = await asyncio.wait_for(client.find_leader(), timeout=2.0)
+                assert leader == "localhost:9001"
+            except TimeoutError:
+                pytest.fail(
+                    "find_leader() hung because _query_leader's finally block "
+                    "awaited a blocking wait_closed()"
+                )
+
+        mock_writer.close.assert_called()
+
     async def test_update_nodes(self) -> None:
         store = MemoryNodeStore()
         client = ClusterClient(store)

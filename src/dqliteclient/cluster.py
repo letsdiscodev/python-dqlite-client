@@ -91,7 +91,6 @@ class ClusterClient:
                 return None
         finally:
             writer.close()
-            await writer.wait_closed()
 
     async def connect(self, database: str = "default") -> DqliteConnection:
         """Connect to the cluster leader.
