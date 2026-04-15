@@ -182,6 +182,7 @@ class ConnectionPool:
             except Exception:
                 return False
             conn._in_transaction = False
+            conn._tx_owner = None
         return True
 
     async def _release(self, conn: DqliteConnection) -> None:
