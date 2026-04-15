@@ -87,30 +87,39 @@ class DqliteConnection:
 
     async def connect(self) -> None:
         """Establish connection to the database."""
+        self._check_in_use()
         if self._protocol is not None:
             return
 
-        host, port = _parse_address(self._address)
-
+        self._in_use = True
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port),
-                timeout=self._timeout,
-            )
-        except TimeoutError as e:
-            raise DqliteConnectionError(f"Connection to {self._address} timed out") from e
-        except OSError as e:
-            raise DqliteConnectionError(f"Failed to connect to {self._address}: {e}") from e
+            host, port = _parse_address(self._address)
 
-        self._protocol = DqliteProtocol(reader, writer, timeout=self._timeout)
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port),
+                    timeout=self._timeout,
+                )
+            except TimeoutError as e:
+                raise DqliteConnectionError(
+                    f"Connection to {self._address} timed out"
+                ) from e
+            except OSError as e:
+                raise DqliteConnectionError(
+                    f"Failed to connect to {self._address}: {e}"
+                ) from e
 
-        try:
-            await self._protocol.handshake()
-            self._db_id = await self._protocol.open_database(self._database)
-        except BaseException:
-            self._protocol.close()
-            self._protocol = None
-            raise
+            self._protocol = DqliteProtocol(reader, writer, timeout=self._timeout)
+
+            try:
+                await self._protocol.handshake()
+                self._db_id = await self._protocol.open_database(self._database)
+            except BaseException:
+                self._protocol.close()
+                self._protocol = None
+                raise
+        finally:
+            self._in_use = False
 
     async def close(self) -> None:
         """Close the connection."""

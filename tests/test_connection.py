@@ -675,3 +675,54 @@ class TestDqliteConnection:
 
         assert len(errors) == 1
         assert "another operation is in progress" in str(errors[0])
+
+    async def test_concurrent_connect_raises_interface_error(self) -> None:
+        """Two coroutines connecting the same object must raise InterfaceError."""
+        import asyncio
+
+        from dqliteclient.exceptions import InterfaceError
+
+        conn = DqliteConnection("localhost:9001")
+
+        gate = asyncio.Event()
+
+        async def slow_open(*args, **kwargs):
+            await gate.wait()
+            reader = AsyncMock()
+            writer = MagicMock()
+            writer.drain = AsyncMock()
+            writer.close = MagicMock()
+            writer.wait_closed = AsyncMock()
+            return reader, writer
+
+        errors: list[Exception] = []
+
+        async def first_connect():
+            with (
+                patch("asyncio.open_connection", side_effect=slow_open),
+                patch("dqliteclient.connection.DqliteProtocol") as MockProto,
+            ):
+                proto = MagicMock()
+                proto.handshake = AsyncMock()
+                proto.open_database = AsyncMock(return_value=1)
+                proto.close = MagicMock()
+                MockProto.return_value = proto
+                await conn.connect()
+
+        async def second_connect():
+            await asyncio.sleep(0)  # Let first_connect start
+            try:
+                await conn.connect()
+            except InterfaceError as e:
+                errors.append(e)
+
+        task1 = asyncio.create_task(first_connect())
+        task2 = asyncio.create_task(second_connect())
+
+        await asyncio.sleep(0)  # Let both start
+        gate.set()
+
+        await asyncio.gather(task1, task2, return_exceptions=True)
+
+        assert len(errors) == 1
+        assert "another operation is in progress" in str(errors[0])
