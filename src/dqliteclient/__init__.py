@@ -6,6 +6,7 @@ from dqliteclient.exceptions import (
     ClusterError,
     DqliteConnectionError,
     DqliteError,
+    InterfaceError,
     OperationalError,
     ProtocolError,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "MemoryNodeStore",
     "DqliteError",
     "DqliteConnectionError",
+    "InterfaceError",
     "ProtocolError",
     "ClusterError",
     "OperationalError",

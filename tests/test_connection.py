@@ -617,3 +617,61 @@ class TestDqliteConnection:
 
         # Connection should be invalidated after a leader error
         assert not conn.is_connected
+
+    async def test_concurrent_coroutines_raises_interface_error(self) -> None:
+        """Two coroutines using the same connection must raise InterfaceError."""
+        import asyncio
+
+        from dqliteclient.exceptions import InterfaceError
+
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        # Make execute hang so two coroutines overlap
+        first_entered = asyncio.Event()
+
+        async def slow_exec_sql(db_id, sql, params=None):
+            first_entered.set()
+            await asyncio.sleep(10)
+            return (0, 1)
+
+        conn._protocol.exec_sql = AsyncMock(side_effect=slow_exec_sql)  # type: ignore[union-attr]
+
+        errors: list[Exception] = []
+
+        async def first_execute():
+            await conn.execute("INSERT INTO t VALUES (1)")
+
+        async def second_execute():
+            await first_entered.wait()
+            try:
+                await conn.execute("INSERT INTO t VALUES (2)")
+            except InterfaceError as e:
+                errors.append(e)
+
+        task1 = asyncio.create_task(first_execute())
+        task2 = asyncio.create_task(second_execute())
+
+        await task2  # second should raise InterfaceError
+        task1.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task1
+
+        assert len(errors) == 1
+        assert "another operation is in progress" in str(errors[0])

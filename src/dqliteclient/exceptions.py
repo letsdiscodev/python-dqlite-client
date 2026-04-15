@@ -13,6 +13,10 @@ class ProtocolError(DqliteError):
     """Protocol-level error."""
 
 
+class InterfaceError(DqliteError):
+    """Misuse of the client interface (e.g. concurrent access on a connection)."""
+
+
 class ClusterError(DqliteError):
     """Cluster-related error (leader not found, etc)."""
 

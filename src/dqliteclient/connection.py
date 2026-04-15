@@ -6,7 +6,12 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
-from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
+from dqliteclient.exceptions import (
+    DqliteConnectionError,
+    InterfaceError,
+    OperationalError,
+    ProtocolError,
+)
 from dqliteclient.protocol import DqliteProtocol
 
 # dqlite error codes that indicate a leader change (SQLite extended error codes)
@@ -68,6 +73,7 @@ class DqliteConnection:
         self._protocol: DqliteProtocol | None = None
         self._db_id: int | None = None
         self._in_transaction = False
+        self._in_use = False
 
     @property
     def address(self) -> str:
@@ -127,6 +133,15 @@ class DqliteConnection:
             raise DqliteConnectionError("Not connected")
         return self._protocol, self._db_id
 
+    def _check_in_use(self) -> None:
+        """Raise if another coroutine is using this connection."""
+        if self._in_use:
+            raise InterfaceError(
+                "Cannot perform operation: another operation is in progress on this "
+                "connection. DqliteConnection does not support concurrent coroutine "
+                "access. Use a ConnectionPool to manage multiple concurrent operations."
+            )
+
     def _invalidate(self) -> None:
         """Mark the connection as broken after an unrecoverable error."""
         if self._protocol is not None:
@@ -141,7 +156,9 @@ class DqliteConnection:
 
         Returns (last_insert_id, rows_affected).
         """
+        self._check_in_use()
         protocol, db_id = self._ensure_connected()
+        self._in_use = True
         try:
             return await protocol.exec_sql(db_id, sql, params)
         except (DqliteConnectionError, ProtocolError):
@@ -154,10 +171,14 @@ class DqliteConnection:
         except BaseException:
             self._invalidate()
             raise
+        finally:
+            self._in_use = False
 
     async def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
         """Execute a query and return results as list of dicts."""
+        self._check_in_use()
         protocol, db_id = self._ensure_connected()
+        self._in_use = True
         try:
             columns, rows = await protocol.query_sql(db_id, sql, params)
         except (DqliteConnectionError, ProtocolError):
@@ -170,11 +191,15 @@ class DqliteConnection:
         except BaseException:
             self._invalidate()
             raise
+        finally:
+            self._in_use = False
         return [dict(zip(columns, row, strict=True)) for row in rows]
 
     async def fetchall(self, sql: str, params: Sequence[Any] | None = None) -> list[list[Any]]:
         """Execute a query and return results as list of lists."""
+        self._check_in_use()
         protocol, db_id = self._ensure_connected()
+        self._in_use = True
         try:
             _, rows = await protocol.query_sql(db_id, sql, params)
         except (DqliteConnectionError, ProtocolError):
@@ -187,6 +212,8 @@ class DqliteConnection:
         except BaseException:
             self._invalidate()
             raise
+        finally:
+            self._in_use = False
         return rows
 
     async def fetchone(
@@ -198,7 +225,9 @@ class DqliteConnection:
 
     async def fetchval(self, sql: str, params: Sequence[Any] | None = None) -> Any:
         """Execute a query and return the first column of the first row."""
+        self._check_in_use()
         protocol, db_id = self._ensure_connected()
+        self._in_use = True
         try:
             _, rows = await protocol.query_sql(db_id, sql, params)
         except (DqliteConnectionError, ProtocolError):
@@ -211,6 +240,8 @@ class DqliteConnection:
         except BaseException:
             self._invalidate()
             raise
+        finally:
+            self._in_use = False
         if rows and rows[0]:
             return rows[0][0]
         return None
