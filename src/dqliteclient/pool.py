@@ -148,7 +148,12 @@ class ConnectionPool:
         except BaseException:
             if conn.is_connected and not self._closed:
                 # Connection is healthy — user code raised a non-connection error.
-                # Return it to the pool instead of destroying it.
+                # Roll back any open transaction, then return to pool.
+                if not await self._reset_connection(conn):
+                    with contextlib.suppress(Exception):
+                        await conn.close()
+                    self._size -= 1
+                    raise
                 try:
                     self._pool.put_nowait(conn)
                 except asyncio.QueueFull:
@@ -165,17 +170,38 @@ class ConnectionPool:
         else:
             await self._release(conn)
 
+    async def _reset_connection(self, conn: DqliteConnection) -> bool:
+        """Roll back any open transaction before returning to pool.
+
+        Returns True if the connection is clean and can be reused,
+        False if it should be destroyed.
+        """
+        if conn._in_transaction is True:
+            try:
+                await conn.execute("ROLLBACK")
+            except Exception:
+                return False
+            conn._in_transaction = False
+        return True
+
     async def _release(self, conn: DqliteConnection) -> None:
         """Return a connection to the pool or close it."""
         if self._closed:
             await conn.close()
             self._size -= 1
-        else:
-            try:
-                self._pool.put_nowait(conn)
-            except asyncio.QueueFull:
+            return
+
+        if not await self._reset_connection(conn):
+            with contextlib.suppress(Exception):
                 await conn.close()
-                self._size -= 1
+            self._size -= 1
+            return
+
+        try:
+            self._pool.put_nowait(conn)
+        except asyncio.QueueFull:
+            await conn.close()
+            self._size -= 1
 
     async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
         """Execute a SQL statement using a pooled connection."""

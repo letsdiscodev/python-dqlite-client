@@ -568,6 +568,78 @@ class TestConnectionPool:
             "Pool._in_use set should have been removed — it was dead code (written but never read)"
         )
 
+    async def test_release_rolls_back_open_transaction(self) -> None:
+        """Returning a connection with _in_transaction=True must issue ROLLBACK."""
+        pool = ConnectionPool(["localhost:9001"], max_size=1)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
+        mock_conn._in_transaction = False
+        mock_conn._in_use = False
+        mock_conn._bound_loop = None
+        mock_conn._check_in_use = MagicMock()
+
+        call_log: list[str] = []
+
+        async def mock_execute(sql, params=None):
+            call_log.append(sql)
+            return (0, 0)
+
+        mock_conn.execute = mock_execute
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+        # Simulate: user enters transaction but the context manager exit
+        # somehow leaves _in_transaction=True (e.g., a bug or raw BEGIN)
+        async with pool.acquire() as conn:
+            conn._in_transaction = True
+
+        # The pool should have issued ROLLBACK before returning to queue
+        assert "ROLLBACK" in call_log, (
+            f"Pool should issue ROLLBACK for dirty connections, calls: {call_log}"
+        )
+        # And the flag should be reset
+        assert not mock_conn._in_transaction
+
+        await pool.close()
+
+    async def test_release_destroys_connection_if_rollback_fails(self) -> None:
+        """If ROLLBACK fails on dirty release, connection must be destroyed."""
+        pool = ConnectionPool(["localhost:9001"], max_size=1)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
+        mock_conn._in_transaction = False
+        mock_conn._in_use = False
+        mock_conn._bound_loop = None
+        mock_conn._check_in_use = MagicMock()
+
+        async def failing_execute(sql, params=None):
+            if "ROLLBACK" in sql:
+                raise Exception("connection lost")
+            return (0, 0)
+
+        mock_conn.execute = failing_execute
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+        initial_size = pool._size
+
+        async with pool.acquire() as conn:
+            conn._in_transaction = True
+
+        # ROLLBACK failed, so connection should be destroyed
+        mock_conn.close.assert_called()
+        assert pool._size == initial_size - 1
+
+        await pool.close()
+
 
 class TestConnectionPoolIntegration:
     """Integration tests requiring mocked connections."""

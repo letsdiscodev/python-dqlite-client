@@ -92,6 +92,11 @@ class DqliteConnection:
         """Check if connected."""
         return self._protocol is not None
 
+    @property
+    def in_transaction(self) -> bool:
+        """Check if a transaction is active."""
+        return self._in_transaction
+
     async def connect(self) -> None:
         """Establish connection to the database."""
         self._check_in_use()
