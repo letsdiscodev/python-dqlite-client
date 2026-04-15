@@ -899,3 +899,66 @@ class TestDqliteConnection:
             f"Expected InterfaceError, got {type(error_from_thread).__name__}: {error_from_thread}"
         )
         assert "event loop" in str(error_from_thread).lower()
+
+    async def test_other_task_rejected_during_transaction(self) -> None:
+        """Another task calling execute() during an active transaction must be rejected."""
+        import asyncio
+
+        from dqliteclient.exceptions import InterfaceError
+
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        # Mock execute for the transaction owner (task A) — needs to work
+        a_inside_tx = asyncio.Event()
+
+        async def mock_execute_a(sql: str, params=None):
+            if sql not in ("BEGIN", "COMMIT", "ROLLBACK"):
+                a_inside_tx.set()
+                await asyncio.sleep(0)  # yield to let task B run
+            return (0, 0)
+
+        conn.execute = mock_execute_a  # type: ignore[assignment]
+
+        errors: list[Exception] = []
+
+        async def task_a():
+            async with conn.transaction():
+                await conn.execute("INSERT INTO t VALUES (1)")
+                await asyncio.sleep(0.1)
+
+        async def task_b():
+            await a_inside_tx.wait()
+            try:
+                # Use _check_in_use directly — this is what real execute() calls
+                conn._check_in_use()
+            except InterfaceError as e:
+                errors.append(e)
+
+        t_a = asyncio.create_task(task_a())
+        t_b = asyncio.create_task(task_b())
+
+        await asyncio.gather(t_a, t_b, return_exceptions=True)
+
+        assert len(errors) == 1, (
+            "Task B should have been rejected when trying to use a connection "
+            "that is in a transaction owned by task A"
+        )
+        assert isinstance(errors[0], InterfaceError)
+        assert "transaction" in str(errors[0]).lower()

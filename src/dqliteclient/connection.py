@@ -81,6 +81,7 @@ class DqliteConnection:
         self._in_transaction = False
         self._in_use = False
         self._bound_loop: asyncio.AbstractEventLoop | None = None
+        self._tx_owner: asyncio.Task[Any] | None = None
 
     @property
     def address(self) -> str:
@@ -172,6 +173,14 @@ class DqliteConnection:
                 "connection. DqliteConnection does not support concurrent coroutine "
                 "access. Use a ConnectionPool to manage multiple concurrent operations."
             )
+        if self._in_transaction and self._tx_owner is not None:
+            current = asyncio.current_task()
+            if current is not self._tx_owner:
+                raise InterfaceError(
+                    "Cannot perform operation: connection is in a transaction owned "
+                    "by another task. Each task should use its own connection from "
+                    "the pool."
+                )
 
     def _invalidate(self) -> None:
         """Mark the connection as broken after an unrecoverable error."""
@@ -286,9 +295,11 @@ class DqliteConnection:
             )
 
         self._in_transaction = True
+        self._tx_owner = asyncio.current_task()
         try:
             await self.execute("BEGIN")
         except BaseException:
+            self._tx_owner = None
             self._in_transaction = False
             raise
 
@@ -301,4 +312,5 @@ class DqliteConnection:
                 await self.execute("ROLLBACK")
             raise
         finally:
+            self._tx_owner = None
             self._in_transaction = False
