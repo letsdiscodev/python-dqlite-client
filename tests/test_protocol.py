@@ -38,9 +38,7 @@ class TestDqliteProtocol:
 
         # Server sends an absurdly large heartbeat timeout (e.g., corrupted value)
         huge_timeout_ms = 10_000_000  # 10000 seconds
-        mock_reader.read.return_value = WelcomeResponse(
-            heartbeat_timeout=huge_timeout_ms
-        ).encode()
+        mock_reader.read.return_value = WelcomeResponse(heartbeat_timeout=huge_timeout_ms).encode()
 
         protocol = DqliteProtocol(mock_reader, mock_writer, timeout=10.0)
         await protocol.handshake()
@@ -265,9 +263,7 @@ class TestDqliteProtocol:
     ) -> None:
         from dqlitewire.messages import StmtResponse
 
-        mock_reader.read.return_value = StmtResponse(
-            db_id=1, stmt_id=1, num_params=2
-        ).encode()
+        mock_reader.read.return_value = StmtResponse(db_id=1, stmt_id=1, num_params=2).encode()
 
         stmt_id, num_params = await protocol.prepare(1, "INSERT INTO t VALUES (?, ?)")
 

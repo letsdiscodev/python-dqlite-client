@@ -187,7 +187,6 @@ class TestConnectionPool:
                 async with pool.acquire():
                     pass
 
-
     async def test_close_during_acquire_does_not_corrupt_size(self) -> None:
         """Closing the pool while connections are in-use must not make _size negative."""
         import asyncio
@@ -429,7 +428,6 @@ class TestConnectionPool:
 
         # The connection should have been closed on return (not put back in queue)
         mock_conn.close.assert_called()
-
 
     async def test_user_exception_preserves_healthy_connection(self) -> None:
         """A user-code exception should not destroy a healthy connection."""

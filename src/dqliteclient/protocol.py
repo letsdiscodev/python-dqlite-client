@@ -164,9 +164,7 @@ class DqliteProtocol:
                 raise OperationalError(response.code, response.message)
 
             if not isinstance(response, ResultResponse):
-                raise ProtocolError(
-                    f"Expected ResultResponse, got {type(response).__name__}"
-                )
+                raise ProtocolError(f"Expected ResultResponse, got {type(response).__name__}")
 
             last_insert_id = response.last_insert_id
             rows_affected += response.rows_affected
@@ -220,13 +218,9 @@ class DqliteProtocol:
     async def _read_data(self) -> bytes:
         """Read data from the stream with timeout."""
         try:
-            data = await asyncio.wait_for(
-                self._reader.read(4096), timeout=self._timeout
-            )
+            data = await asyncio.wait_for(self._reader.read(4096), timeout=self._timeout)
         except TimeoutError:
-            raise DqliteConnectionError(
-                f"Server read timed out after {self._timeout}s"
-            ) from None
+            raise DqliteConnectionError(f"Server read timed out after {self._timeout}s") from None
         if not data:
             raise DqliteConnectionError("Connection closed by server")
         return data

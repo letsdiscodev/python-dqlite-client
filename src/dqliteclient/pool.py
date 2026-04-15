@@ -37,9 +37,7 @@ class ConnectionPool:
         if max_size < 1:
             raise ValueError(f"max_size must be at least 1, got {max_size}")
         if min_size > max_size:
-            raise ValueError(
-                f"min_size ({min_size}) must not exceed max_size ({max_size})"
-            )
+            raise ValueError(f"min_size ({min_size}) must not exceed max_size ({max_size})")
         if timeout <= 0:
             raise ValueError(f"timeout must be positive, got {timeout}")
 
@@ -122,9 +120,7 @@ class ConnectionPool:
                     f"(max_size={self._max_size}, timeout={self._timeout}s)"
                 )
             try:
-                conn = await asyncio.wait_for(
-                    self._pool.get(), timeout=min(remaining, 0.5)
-                )
+                conn = await asyncio.wait_for(self._pool.get(), timeout=min(remaining, 0.5))
             except TimeoutError:
                 # Don't fail yet — loop back to re-check _size
                 continue

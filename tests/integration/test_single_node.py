@@ -23,9 +23,7 @@ class TestSingleNodeOperations:
     async def test_create_table_and_insert(self, cluster_address: str) -> None:
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_single")
-            await conn.execute(
-                "CREATE TABLE test_single (id INTEGER PRIMARY KEY, name TEXT)"
-            )
+            await conn.execute("CREATE TABLE test_single (id INTEGER PRIMARY KEY, name TEXT)")
             await conn.execute("INSERT INTO test_single (name) VALUES (?)", ["test"])
 
             rows = await conn.fetch("SELECT * FROM test_single WHERE name = ?", ["test"])
@@ -35,9 +33,7 @@ class TestSingleNodeOperations:
     async def test_transaction_commit(self, cluster_address: str) -> None:
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_tx")
-            await conn.execute(
-                "CREATE TABLE test_tx (id INTEGER PRIMARY KEY, val TEXT)"
-            )
+            await conn.execute("CREATE TABLE test_tx (id INTEGER PRIMARY KEY, val TEXT)")
 
             async with conn.transaction():
                 await conn.execute("INSERT INTO test_tx (val) VALUES (?)", ["committed"])
@@ -48,9 +44,7 @@ class TestSingleNodeOperations:
     async def test_transaction_rollback(self, cluster_address: str) -> None:
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_rollback")
-            await conn.execute(
-                "CREATE TABLE test_rollback (id INTEGER PRIMARY KEY, val TEXT)"
-            )
+            await conn.execute("CREATE TABLE test_rollback (id INTEGER PRIMARY KEY, val TEXT)")
 
             try:
                 async with conn.transaction():
@@ -61,18 +55,14 @@ class TestSingleNodeOperations:
             except ValueError:
                 pass
 
-            rows = await conn.fetch(
-                "SELECT * FROM test_rollback WHERE val = ?", ["rollback_test"]
-            )
+            rows = await conn.fetch("SELECT * FROM test_rollback WHERE val = ?", ["rollback_test"])
             assert len(rows) == 0
 
     async def test_unicode_text(self, cluster_address: str) -> None:
         """Test Unicode text handling including emojis, CJK, RTL."""
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_unicode")
-            await conn.execute(
-                "CREATE TABLE test_unicode (id INTEGER PRIMARY KEY, val TEXT)"
-            )
+            await conn.execute("CREATE TABLE test_unicode (id INTEGER PRIMARY KEY, val TEXT)")
 
             unicode_values = [
                 # Emojis (4-byte UTF-8)
@@ -109,9 +99,7 @@ class TestSingleNodeOperations:
         """Test binary blob handling including null bytes."""
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_blob")
-            await conn.execute(
-                "CREATE TABLE test_blob (id INTEGER PRIMARY KEY, data BLOB)"
-            )
+            await conn.execute("CREATE TABLE test_blob (id INTEGER PRIMARY KEY, data BLOB)")
 
             blob_values = [
                 b"simple",
@@ -126,9 +114,7 @@ class TestSingleNodeOperations:
                 await conn.execute("INSERT INTO test_blob (data) VALUES (?)", [val])
 
                 # Retrieve and verify
-                rows = await conn.fetch(
-                    "SELECT data FROM test_blob ORDER BY id DESC LIMIT 1"
-                )
+                rows = await conn.fetch("SELECT data FROM test_blob ORDER BY id DESC LIMIT 1")
                 assert len(rows) == 1
                 assert rows[0]["data"] == val, f"Mismatch for blob: {repr(val)}"
 
@@ -172,9 +158,7 @@ class TestSingleNodeOperations:
         """Test boolean handling (SQLite uses INTEGER 0/1)."""
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_bool")
-            await conn.execute(
-                "CREATE TABLE test_bool (id INTEGER PRIMARY KEY, flag INTEGER)"
-            )
+            await conn.execute("CREATE TABLE test_bool (id INTEGER PRIMARY KEY, flag INTEGER)")
 
             # Insert True and False as integers (SQLite doesn't have native BOOLEAN)
             await conn.execute("INSERT INTO test_bool (flag) VALUES (?)", [1])
@@ -190,21 +174,16 @@ class TestSingleNodeOperations:
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_datetime")
             await conn.execute(
-                "CREATE TABLE test_datetime "
-                "(id INTEGER PRIMARY KEY, created_at TEXT)"
+                "CREATE TABLE test_datetime (id INTEGER PRIMARY KEY, created_at TEXT)"
             )
 
             # Store datetime as ISO8601 string
             now = datetime.datetime.now()
             iso_string = now.isoformat()
 
-            await conn.execute(
-                "INSERT INTO test_datetime (created_at) VALUES (?)", [iso_string]
-            )
+            await conn.execute("INSERT INTO test_datetime (created_at) VALUES (?)", [iso_string])
 
-            rows = await conn.fetch(
-                "SELECT created_at FROM test_datetime ORDER BY id DESC LIMIT 1"
-            )
+            rows = await conn.fetch("SELECT created_at FROM test_datetime ORDER BY id DESC LIMIT 1")
             assert len(rows) == 1
             assert rows[0]["created_at"] == iso_string
 

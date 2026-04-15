@@ -30,12 +30,10 @@ def _parse_address(address: str) -> tuple[str, int]:
             )
         bracket_end = address.index("]")
         host = address[1:bracket_end]
-        port_str = address[bracket_end + 2:]  # Skip ']:
+        port_str = address[bracket_end + 2 :]  # Skip ']:
     else:
         if ":" not in address:
-            raise ValueError(
-                f"Invalid address format: expected 'host:port', got {address!r}"
-            )
+            raise ValueError(f"Invalid address format: expected 'host:port', got {address!r}")
         host, port_str = address.rsplit(":", 1)
 
     try:
@@ -101,13 +99,9 @@ class DqliteConnection:
                     timeout=self._timeout,
                 )
             except TimeoutError as e:
-                raise DqliteConnectionError(
-                    f"Connection to {self._address} timed out"
-                ) from e
+                raise DqliteConnectionError(f"Connection to {self._address} timed out") from e
             except OSError as e:
-                raise DqliteConnectionError(
-                    f"Failed to connect to {self._address}: {e}"
-                ) from e
+                raise DqliteConnectionError(f"Failed to connect to {self._address}: {e}") from e
 
             self._protocol = DqliteProtocol(reader, writer, timeout=self._timeout)
 
