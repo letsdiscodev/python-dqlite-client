@@ -43,6 +43,15 @@ def _parse_address(address: str) -> tuple[str, int]:
             f"Invalid port in address {address!r}: {port_str!r} is not a number"
         ) from None
 
+    if not (1 <= port <= 65535):
+        raise ValueError(f"Invalid port in address {address!r}: {port} is not in range 1-65535")
+    if not host:
+        raise ValueError(f"Invalid address format: empty hostname in {address!r}")
+    if host.count(":") > 1 and not address.startswith("["):
+        raise ValueError(
+            f"IPv6 addresses must be bracketed: use '[{host}]:{port}' instead of {address!r}"
+        )
+
     return host, port
 
 

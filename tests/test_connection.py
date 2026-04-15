@@ -47,6 +47,46 @@ class TestParseAddress:
         with pytest.raises(ValueError, match="expected.*host.*port"):
             _parse_address("[::1]")
 
+    def test_port_zero_raises(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="not in range"):
+            _parse_address("host:0")
+
+    def test_port_negative_raises(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="not in range"):
+            _parse_address("host:-1")
+
+    def test_port_too_large_raises(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="not in range"):
+            _parse_address("host:65536")
+
+    def test_empty_host_raises(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="empty hostname"):
+            _parse_address(":9001")
+
+    def test_unbracketed_ipv6_raises(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="must be bracketed"):
+            _parse_address("fe80::1:9001")
+
+    def test_max_valid_port(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        assert _parse_address("host:65535") == ("host", 65535)
+
+    def test_min_valid_port(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        assert _parse_address("host:1") == ("host", 1)
+
 
 class TestDqliteConnection:
     def test_zero_timeout_raises(self) -> None:
