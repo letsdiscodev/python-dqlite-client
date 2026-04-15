@@ -726,3 +726,52 @@ class TestDqliteConnection:
 
         assert len(errors) == 1
         assert "another operation is in progress" in str(errors[0])
+
+    async def test_close_while_in_use_raises_interface_error(self) -> None:
+        """close() must raise InterfaceError if an operation is in progress."""
+        import asyncio
+
+        from dqliteclient.exceptions import InterfaceError
+
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        # Make execute hang so close() runs while execute is in progress
+        execute_entered = asyncio.Event()
+
+        async def slow_exec_sql(db_id, sql, params=None):
+            execute_entered.set()
+            await asyncio.sleep(10)
+            return (0, 1)
+
+        conn._protocol.exec_sql = AsyncMock(side_effect=slow_exec_sql)  # type: ignore[union-attr]
+
+        async def do_execute():
+            await conn.execute("INSERT INTO t VALUES (1)")
+
+        task = asyncio.create_task(do_execute())
+        await execute_entered.wait()
+
+        # close() should raise because execute is in progress
+        with pytest.raises(InterfaceError, match="another operation is in progress"):
+            await conn.close()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

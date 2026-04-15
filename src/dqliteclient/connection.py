@@ -117,6 +117,7 @@ class DqliteConnection:
 
     async def close(self) -> None:
         """Close the connection."""
+        self._check_in_use()
         if self._protocol is not None:
             self._protocol.close()
             await self._protocol.wait_closed()
