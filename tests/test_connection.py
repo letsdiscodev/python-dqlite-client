@@ -775,3 +775,70 @@ class TestDqliteConnection:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+    async def test_concurrent_transaction_raises_operational_error(self) -> None:
+        """Second concurrent transaction() must raise OperationalError, not InterfaceError."""
+        import asyncio
+
+        from dqliteclient.exceptions import InterfaceError, OperationalError
+
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        # Mock execute to track calls and allow concurrent entry
+        begin_entered = asyncio.Event()
+
+        async def mock_execute(sql: str, params=None):
+            if sql == "BEGIN":
+                begin_entered.set()
+                await asyncio.sleep(0)  # yield to let second coroutine enter
+            return (0, 0)
+
+        conn.execute = mock_execute  # type: ignore[assignment]
+
+        errors: list[Exception] = []
+
+        async def tx_a():
+            async with conn.transaction():
+                await asyncio.sleep(1)
+
+        async def tx_b():
+            await begin_entered.wait()
+            try:
+                async with conn.transaction():
+                    pass
+            except (OperationalError, InterfaceError) as e:
+                errors.append(e)
+
+        task_a = asyncio.create_task(tx_a())
+        task_b = asyncio.create_task(tx_b())
+
+        await task_b  # should raise OperationalError about nested transactions
+
+        task_a.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task_a
+
+        assert len(errors) == 1
+        # Must get OperationalError about nested transactions, NOT InterfaceError
+        assert isinstance(errors[0], OperationalError), (
+            f"Expected OperationalError about nested transactions, "
+            f"got {type(errors[0]).__name__}: {errors[0]}"
+        )
+        assert "Nested" in str(errors[0]) or "nested" in str(errors[0])

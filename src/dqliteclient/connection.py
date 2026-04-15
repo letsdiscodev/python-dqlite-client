@@ -258,8 +258,12 @@ class DqliteConnection:
                 0, "Nested transactions are not supported; use SAVEPOINT directly"
             )
 
-        await self.execute("BEGIN")
         self._in_transaction = True
+        try:
+            await self.execute("BEGIN")
+        except BaseException:
+            self._in_transaction = False
+            raise
 
         try:
             yield
