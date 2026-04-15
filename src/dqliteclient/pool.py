@@ -180,7 +180,7 @@ class ConnectionPool:
         Returns True if the connection is clean and can be reused,
         False if it should be destroyed.
         """
-        if conn._in_transaction is True:
+        if conn._in_transaction:
             try:
                 await conn.execute("ROLLBACK")
             except Exception:
@@ -248,19 +248,7 @@ class ConnectionPool:
         in-flight tasks before calling close().
         """
         self._closed = True
-
-        # Close idle connections
-        while not self._pool.empty():
-            try:
-                conn = self._pool.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            try:
-                await conn.close()
-            except BaseException:
-                pass
-            finally:
-                self._size -= 1
+        await self._drain_idle()
 
         # In-use connections are closed by acquire()'s cleanup when they
         # return — the else branch checks _closed and closes instead of

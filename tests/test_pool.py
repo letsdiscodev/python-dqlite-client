@@ -142,6 +142,7 @@ class TestConnectionPool:
         mock_conn.is_connected = True
         mock_conn.connect = AsyncMock()
         mock_conn.close = AsyncMock()
+        mock_conn._in_transaction = False
 
         with patch.object(pool._cluster, "connect", return_value=mock_conn):
             await pool.initialize()
@@ -437,6 +438,7 @@ class TestConnectionPool:
         mock_conn.is_connected = True
         mock_conn.connect = AsyncMock()
         mock_conn.close = AsyncMock()
+        mock_conn._in_transaction = False
 
         with patch.object(pool._cluster, "connect", return_value=mock_conn):
             await pool.initialize()
