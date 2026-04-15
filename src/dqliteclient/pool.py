@@ -123,25 +123,36 @@ class ConnectionPool:
         try:
             yield conn
         except BaseException:
-            # On error (including cancellation), close connection
-            with contextlib.suppress(BaseException):
-                await conn.close()
             self._in_use.discard(conn)
-            self._size -= 1
-            raise
-        else:
-            self._in_use.discard(conn)
-            # Return to pool
-            if self._closed:
-                await conn.close()
-                self._size -= 1
-            else:
+            if conn.is_connected and not self._closed:
+                # Connection is healthy — user code raised a non-connection error.
+                # Return it to the pool instead of destroying it.
                 try:
                     self._pool.put_nowait(conn)
                 except asyncio.QueueFull:
-                    # Pool full, close connection
                     await conn.close()
                     self._size -= 1
+            else:
+                # Connection is broken (invalidated by execute/fetch error handlers).
+                with contextlib.suppress(BaseException):
+                    await conn.close()
+                self._size -= 1
+            raise
+        else:
+            self._in_use.discard(conn)
+            await self._release(conn)
+
+    async def _release(self, conn: DqliteConnection) -> None:
+        """Return a connection to the pool or close it."""
+        if self._closed:
+            await conn.close()
+            self._size -= 1
+        else:
+            try:
+                self._pool.put_nowait(conn)
+            except asyncio.QueueFull:
+                await conn.close()
+                self._size -= 1
 
     async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
         """Execute a SQL statement using a pooled connection."""

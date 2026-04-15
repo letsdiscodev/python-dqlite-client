@@ -132,8 +132,8 @@ class TestConnectionPool:
 
         await pool.close()
 
-    async def test_cancellation_does_not_leak_connection(self) -> None:
-        """Cancelling a task that holds a connection should clean it up."""
+    async def test_cancellation_returns_healthy_connection_to_pool(self) -> None:
+        """Cancelling a task holding a healthy connection should return it to the pool."""
         import asyncio
 
         pool = ConnectionPool(["localhost:9001"], max_size=1)
@@ -152,18 +152,21 @@ class TestConnectionPool:
         async def hold_connection():
             async with pool.acquire() as _:
                 acquired.set()
-                await asyncio.sleep(10)  # Hold forever
+                await asyncio.sleep(10)  # Hold forever — will be cancelled
 
         task = asyncio.create_task(hold_connection())
-        await acquired.wait()  # Deterministic: wait until connection is acquired
+        await acquired.wait()
 
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        # Connection should have been closed, size decremented
-        mock_conn.close.assert_called()
-        assert pool._size < initial_size
+        # Connection is still healthy (CancelledError was in user code, not in
+        # a protocol operation), so it should be returned to the pool
+        assert pool._size == initial_size
+        assert pool._pool.qsize() == 1
+
+        await pool.close()
 
     async def test_acquire_timeout_when_pool_exhausted(self) -> None:
         """acquire() should timeout, not block forever, when pool is exhausted."""
@@ -252,7 +255,9 @@ class TestConnectionPool:
                     assert conn1 is mock_conn1
                     holder_acquired.set()
                     await holder_release.wait()
-                    raise RuntimeError("simulated failure")
+                    # Simulate a real connection failure (broken connection)
+                    conn1.is_connected = False
+                    raise DqliteConnectionError("connection lost")
 
             holder_task = asyncio.create_task(holder())
             await holder_acquired.wait()
@@ -273,9 +278,9 @@ class TestConnectionPool:
             # check (_size == max_size) and enter the queue.get() wait
             await asyncio.sleep(0.1)
 
-            # Now release the holder — it fails, closing conn and decrementing _size
+            # Now release the holder — connection breaks, _size decrements
             holder_release.set()
-            with contextlib.suppress(RuntimeError):
+            with contextlib.suppress(DqliteConnectionError):
                 await holder_task
             # At this point _size == 0. The waiter is blocked on queue.get().
             # With the fix, the waiter should wake up and create a new connection.
@@ -382,6 +387,59 @@ class TestConnectionPool:
 
         # The connection should have been closed on return (not put back in queue)
         mock_conn.close.assert_called()
+
+
+    async def test_user_exception_preserves_healthy_connection(self) -> None:
+        """A user-code exception should not destroy a healthy connection."""
+        pool = ConnectionPool(["localhost:9001"], max_size=2)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+        assert pool._size == 1
+
+        # User code raises a non-connection error
+        with pytest.raises(ValueError, match="application error"):
+            async with pool.acquire():
+                raise ValueError("application error")
+
+        # Connection should NOT have been closed — it's healthy
+        mock_conn.close.assert_not_called()
+        # Pool size should be unchanged
+        assert pool._size == 1
+        # Connection should be back in the pool queue
+        assert pool._pool.qsize() == 1
+
+        await pool.close()
+
+    async def test_broken_connection_discarded_on_exception(self) -> None:
+        """A broken connection should be discarded even if user code raised."""
+        pool = ConnectionPool(["localhost:9001"], max_size=2)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+        # Simulate a connection that becomes broken during use
+        with pytest.raises(ValueError, match="user error"):
+            async with pool.acquire() as conn:
+                conn.is_connected = False  # Mark as broken (simulates invalidation)
+                raise ValueError("user error")
+
+        # Broken connection SHOULD have been closed and discarded
+        mock_conn.close.assert_called()
+        assert pool._size == 0
+
+        await pool.close()
 
 
 class TestConnectionPoolIntegration:
