@@ -640,6 +640,148 @@ class TestConnectionPool:
 
         await pool.close()
 
+    async def test_escaped_reference_rejected_after_release(self) -> None:
+        """Using a connection after it's returned to the pool must raise InterfaceError."""
+        import asyncio
+
+        from dqliteclient.connection import DqliteConnection
+        from dqliteclient.exceptions import InterfaceError
+
+        pool = ConnectionPool(["localhost:9001"], max_size=1)
+
+        real_conn = DqliteConnection("127.0.0.1:9001")
+        real_conn._protocol = MagicMock()
+        real_conn._db_id = 1
+        real_conn._bound_loop = asyncio.get_running_loop()
+        real_conn._protocol.exec_sql = AsyncMock(return_value=(0, 1))
+        real_conn._protocol.query_sql = AsyncMock(return_value=(["id"], [[1]]))
+        real_conn._protocol.close = MagicMock()
+        real_conn._protocol.wait_closed = AsyncMock()
+
+        with patch.object(pool._cluster, "connect", return_value=real_conn):
+            await pool.initialize()
+
+        # Stash a reference to the connection
+        escaped = None
+        async with pool.acquire() as conn:
+            escaped = conn
+            await conn.execute("SELECT 1")
+
+        # Connection is now back in the pool — escaped reference must be rejected
+        assert escaped is not None
+        with pytest.raises(InterfaceError, match="returned to the pool"):
+            await escaped.execute("SELECT 1")
+
+        await pool.close()
+
+    async def test_escaped_reference_rejected_after_exception(self) -> None:
+        """Escaped reference must be rejected even when user code raises."""
+        import asyncio
+
+        from dqliteclient.connection import DqliteConnection
+        from dqliteclient.exceptions import InterfaceError
+
+        pool = ConnectionPool(["localhost:9001"], max_size=1)
+
+        real_conn = DqliteConnection("127.0.0.1:9001")
+        real_conn._protocol = MagicMock()
+        real_conn._db_id = 1
+        real_conn._bound_loop = asyncio.get_running_loop()
+        real_conn._protocol.exec_sql = AsyncMock(return_value=(0, 1))
+        real_conn._protocol.close = MagicMock()
+        real_conn._protocol.wait_closed = AsyncMock()
+
+        with patch.object(pool._cluster, "connect", return_value=real_conn):
+            await pool.initialize()
+
+        escaped = None
+        with pytest.raises(ValueError, match="app error"):
+            async with pool.acquire() as conn:
+                escaped = conn
+                raise ValueError("app error")
+
+        assert escaped is not None
+        with pytest.raises(InterfaceError, match="returned to the pool"):
+            await escaped.execute("SELECT 1")
+
+        await pool.close()
+
+    async def test_pool_release_rolls_back_transaction_with_real_connection(self) -> None:
+        """_reset_connection must be able to ROLLBACK before _pool_released is set."""
+        import asyncio
+
+        from dqliteclient.connection import DqliteConnection
+
+        pool = ConnectionPool(["localhost:9001"], max_size=1)
+
+        real_conn = DqliteConnection("127.0.0.1:9001")
+        real_conn._protocol = MagicMock()
+        real_conn._db_id = 1
+        real_conn._bound_loop = asyncio.get_running_loop()
+        real_conn._protocol.exec_sql = AsyncMock(return_value=(0, 0))
+        real_conn._protocol.close = MagicMock()
+        real_conn._protocol.wait_closed = AsyncMock()
+
+        with patch.object(pool._cluster, "connect", return_value=real_conn):
+            await pool.initialize()
+
+        # Simulate a connection with an open transaction returned to pool
+        async with pool.acquire() as conn:
+            conn._in_transaction = True
+
+        # The pool should have issued ROLLBACK successfully (not destroyed the conn)
+        assert not real_conn._in_transaction
+        # Connection should be back in the pool (not destroyed)
+        assert pool._pool.qsize() == 1
+        assert pool._size == 1
+
+        await pool.close()
+
+    async def test_escaped_reference_works_when_reacquired(self) -> None:
+        """A connection re-acquired from the pool must work normally."""
+        import asyncio
+
+        from dqliteclient.connection import DqliteConnection
+
+        pool = ConnectionPool(["localhost:9001"], max_size=1)
+
+        real_conn = DqliteConnection("127.0.0.1:9001")
+        real_conn._protocol = MagicMock()
+        real_conn._db_id = 1
+        real_conn._bound_loop = asyncio.get_running_loop()
+        real_conn._protocol.exec_sql = AsyncMock(return_value=(0, 1))
+        real_conn._protocol.close = MagicMock()
+        real_conn._protocol.wait_closed = AsyncMock()
+
+        with patch.object(pool._cluster, "connect", return_value=real_conn):
+            await pool.initialize()
+
+        # First acquire and release
+        async with pool.acquire() as conn:
+            await conn.execute("SELECT 1")
+
+        # Second acquire — same connection from pool must work
+        async with pool.acquire() as conn:
+            await conn.execute("SELECT 2")
+
+        await pool.close()
+
+    async def test_standalone_connection_not_affected_by_pool_guard(self) -> None:
+        """A DqliteConnection used standalone (not from a pool) must not be affected."""
+        import asyncio
+
+        from dqliteclient.connection import DqliteConnection
+
+        conn = DqliteConnection("127.0.0.1:9001")
+        conn._protocol = MagicMock()
+        conn._db_id = 1
+        conn._bound_loop = asyncio.get_running_loop()
+        conn._protocol.exec_sql = AsyncMock(return_value=(0, 1))
+
+        # Standalone connection — no pool involved, should work fine
+        await conn.execute("SELECT 1")
+        await conn.execute("SELECT 2")  # No error — _pool_released is always False
+
 
 class TestConnectionPoolIntegration:
     """Integration tests requiring mocked connections."""

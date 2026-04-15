@@ -143,6 +143,7 @@ class ConnectionPool:
                 self._size -= 1
                 conn = await self._create_connection()
 
+        conn._pool_released = False
         try:
             yield conn
         except BaseException:
@@ -150,10 +151,12 @@ class ConnectionPool:
                 # Connection is healthy — user code raised a non-connection error.
                 # Roll back any open transaction, then return to pool.
                 if not await self._reset_connection(conn):
+                    conn._pool_released = True
                     with contextlib.suppress(Exception):
                         await conn.close()
                     self._size -= 1
                     raise
+                conn._pool_released = True
                 try:
                     self._pool.put_nowait(conn)
                 except asyncio.QueueFull:
@@ -162,6 +165,7 @@ class ConnectionPool:
             else:
                 # Connection is broken (invalidated by execute/fetch error handlers).
                 # Drain other idle connections — they likely point to the same dead server.
+                conn._pool_released = True
                 await self._drain_idle()
                 with contextlib.suppress(BaseException):
                     await conn.close()
@@ -188,16 +192,19 @@ class ConnectionPool:
     async def _release(self, conn: DqliteConnection) -> None:
         """Return a connection to the pool or close it."""
         if self._closed:
+            conn._pool_released = True
             await conn.close()
             self._size -= 1
             return
 
         if not await self._reset_connection(conn):
+            conn._pool_released = True
             with contextlib.suppress(Exception):
                 await conn.close()
             self._size -= 1
             return
 
+        conn._pool_released = True
         try:
             self._pool.put_nowait(conn)
         except asyncio.QueueFull:

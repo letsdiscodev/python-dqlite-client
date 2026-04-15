@@ -82,6 +82,7 @@ class DqliteConnection:
         self._in_use = False
         self._bound_loop: asyncio.AbstractEventLoop | None = None
         self._tx_owner: asyncio.Task[Any] | None = None
+        self._pool_released = False
 
     @property
     def address(self) -> str:
@@ -154,7 +155,12 @@ class DqliteConnection:
         return self._protocol, self._db_id
 
     def _check_in_use(self) -> None:
-        """Raise on misuse: wrong event loop or concurrent coroutine access."""
+        """Raise on misuse: wrong event loop, concurrent access, or use after pool release."""
+        if self._pool_released:
+            raise InterfaceError(
+                "This connection has been returned to the pool and can no longer "
+                "be used directly. Acquire a new connection from the pool."
+            )
         if self._bound_loop is not None:
             try:
                 current_loop = asyncio.get_running_loop()
