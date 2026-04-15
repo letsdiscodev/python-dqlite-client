@@ -185,7 +185,14 @@ class ConnectionPool:
             return await conn.fetch(sql, params)
 
     async def close(self) -> None:
-        """Close all connections (both idle and in-use)."""
+        """Close the pool and all idle connections.
+
+        Sets the pool as closed so no new connections can be acquired.
+        Idle connections are closed immediately. In-use connections are
+        closed when they are returned (when the acquire() context manager
+        exits). To ensure all connections are closed, cancel or await
+        in-flight tasks before calling close().
+        """
         self._closed = True
 
         # Close idle connections
