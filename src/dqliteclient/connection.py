@@ -2,7 +2,7 @@
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -206,16 +206,17 @@ class DqliteConnection:
         self._protocol = None
         self._db_id = None
 
-    async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
-        """Execute a SQL statement.
+    async def _run_protocol[T](self, fn: Callable[[DqliteProtocol, int], Awaitable[T]]) -> T:
+        """Run a protocol operation with standard error handling.
 
-        Returns (last_insert_id, rows_affected).
+        Handles connection guards (_check_in_use, _ensure_connected, _in_use),
+        invalidates the connection on fatal errors, and resets _in_use in all cases.
         """
         self._check_in_use()
         protocol, db_id = self._ensure_connected()
         self._in_use = True
         try:
-            return await protocol.exec_sql(db_id, sql, params)
+            return await fn(protocol, db_id)
         except (DqliteConnectionError, ProtocolError):
             self._invalidate()
             raise
@@ -229,46 +230,21 @@ class DqliteConnection:
         finally:
             self._in_use = False
 
+    async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
+        """Execute a SQL statement.
+
+        Returns (last_insert_id, rows_affected).
+        """
+        return await self._run_protocol(lambda p, db: p.exec_sql(db, sql, params))
+
     async def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
         """Execute a query and return results as list of dicts."""
-        self._check_in_use()
-        protocol, db_id = self._ensure_connected()
-        self._in_use = True
-        try:
-            columns, rows = await protocol.query_sql(db_id, sql, params)
-        except (DqliteConnectionError, ProtocolError):
-            self._invalidate()
-            raise
-        except OperationalError as e:
-            if e.code in _LEADER_ERROR_CODES:
-                self._invalidate()
-            raise
-        except BaseException:
-            self._invalidate()
-            raise
-        finally:
-            self._in_use = False
+        columns, rows = await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
         return [dict(zip(columns, row, strict=True)) for row in rows]
 
     async def fetchall(self, sql: str, params: Sequence[Any] | None = None) -> list[list[Any]]:
         """Execute a query and return results as list of lists."""
-        self._check_in_use()
-        protocol, db_id = self._ensure_connected()
-        self._in_use = True
-        try:
-            _, rows = await protocol.query_sql(db_id, sql, params)
-        except (DqliteConnectionError, ProtocolError):
-            self._invalidate()
-            raise
-        except OperationalError as e:
-            if e.code in _LEADER_ERROR_CODES:
-                self._invalidate()
-            raise
-        except BaseException:
-            self._invalidate()
-            raise
-        finally:
-            self._in_use = False
+        _, rows = await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
         return rows
 
     async def fetchone(
@@ -285,23 +261,7 @@ class DqliteConnection:
 
     async def fetchval(self, sql: str, params: Sequence[Any] | None = None) -> Any:
         """Execute a query and return the first column of the first row."""
-        self._check_in_use()
-        protocol, db_id = self._ensure_connected()
-        self._in_use = True
-        try:
-            _, rows = await protocol.query_sql(db_id, sql, params)
-        except (DqliteConnectionError, ProtocolError):
-            self._invalidate()
-            raise
-        except OperationalError as e:
-            if e.code in _LEADER_ERROR_CODES:
-                self._invalidate()
-            raise
-        except BaseException:
-            self._invalidate()
-            raise
-        finally:
-            self._in_use = False
+        _, rows = await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
         if rows and rows[0]:
             return rows[0][0]
         return None
