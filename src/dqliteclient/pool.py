@@ -89,11 +89,14 @@ class ConnectionPool:
         while not self._pool.empty():
             try:
                 conn = self._pool.get_nowait()
-                with contextlib.suppress(Exception):
-                    await conn.close()
-                self._size -= 1
             except asyncio.QueueEmpty:
                 break
+            try:
+                await conn.close()
+            except BaseException:
+                pass
+            finally:
+                self._size -= 1
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
@@ -203,11 +206,14 @@ class ConnectionPool:
         while not self._pool.empty():
             try:
                 conn = self._pool.get_nowait()
-                with contextlib.suppress(Exception):
-                    await conn.close()
-                self._size -= 1
             except asyncio.QueueEmpty:
                 break
+            try:
+                await conn.close()
+            except BaseException:
+                pass
+            finally:
+                self._size -= 1
 
         # In-use connections are closed by acquire()'s cleanup when they
         # return — the else branch checks _closed and closes instead of

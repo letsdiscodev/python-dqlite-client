@@ -481,6 +481,86 @@ class TestConnectionPool:
 
         await pool.close()
 
+    async def test_drain_idle_cancellation_does_not_inflate_size(self) -> None:
+        """If _drain_idle() is cancelled during conn.close(), _size must still decrement."""
+        import asyncio
+
+        pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=5)
+        pool._initialized = True
+
+        # Create mock connections with a slow close that can be cancelled
+        for _ in range(3):
+            mock_conn = MagicMock()
+            mock_conn.is_connected = True
+            mock_conn._in_use = False
+            mock_conn._in_transaction = False
+            mock_conn._bound_loop = asyncio.get_running_loop()
+            mock_conn._check_in_use = MagicMock()
+
+            async def slow_close():
+                await asyncio.sleep(10)
+
+            mock_conn.close = slow_close
+            await pool._pool.put(mock_conn)
+            pool._size += 1
+
+        assert pool._size == 3
+        assert pool._pool.qsize() == 3
+
+        # Start draining and cancel mid-way
+        task = asyncio.create_task(pool._drain_idle())
+        await asyncio.sleep(0.01)  # Let drain start (first conn.close() begins)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        # Connections that were dequeued but not decremented due to CancelledError
+        # during close() cause _size inflation. The invariant is:
+        # _size == number of connections still in the queue
+        remaining = pool._pool.qsize()
+        assert pool._size == remaining, (
+            f"_size ({pool._size}) != queue size ({remaining}). "
+            f"CancelledError during conn.close() skipped _size decrement."
+        )
+
+    async def test_pool_close_cancellation_does_not_inflate_size(self) -> None:
+        """If pool.close() is cancelled during conn.close(), _size must still decrement."""
+        import asyncio
+
+        pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=5)
+        pool._initialized = True
+
+        for _ in range(2):
+            mock_conn = MagicMock()
+            mock_conn.is_connected = True
+            mock_conn._in_use = False
+            mock_conn._in_transaction = False
+            mock_conn._bound_loop = asyncio.get_running_loop()
+            mock_conn._check_in_use = MagicMock()
+
+            async def slow_close():
+                await asyncio.sleep(10)
+
+            mock_conn.close = slow_close
+            await pool._pool.put(mock_conn)
+            pool._size += 1
+
+        assert pool._size == 2
+
+        task = asyncio.create_task(pool.close())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        # _size must reflect that connections were removed from queue
+        assert pool._size >= 0
+        # At least the first connection should have been decremented
+        assert pool._size < 2, (
+            f"_size should have decremented, got {pool._size}. "
+            f"CancelledError during close() skipped _size decrement."
+        )
+
 
 class TestConnectionPoolIntegration:
     """Integration tests requiring mocked connections."""
