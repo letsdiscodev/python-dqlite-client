@@ -274,7 +274,12 @@ class DqliteConnection:
     async def fetchone(
         self, sql: str, params: Sequence[Any] | None = None
     ) -> dict[str, Any] | None:
-        """Execute a query and return the first result."""
+        """Execute a query and return the first result.
+
+        Note: dqlite returns all matching rows over the wire. For large
+        result sets, add ``LIMIT 1`` to your query to avoid excessive
+        memory usage.
+        """
         results = await self.fetch(sql, params)
         return results[0] if results else None
 
