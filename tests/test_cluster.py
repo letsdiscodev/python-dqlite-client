@@ -137,6 +137,53 @@ class TestClusterClient:
         ):
             await client.find_leader()
 
+    async def test_query_leader_closes_writer_on_handshake_error(self) -> None:
+        """Writer must be closed even if handshake raises an unexpected error."""
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store, timeout=1.0)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        # Handshake data that triggers a protocol error
+        mock_reader.read.side_effect = [b"\x00" * 64]
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            pytest.raises(ClusterError),
+        ):
+            await client.find_leader()
+
+        # The writer must have been closed to avoid socket leak
+        mock_writer.close.assert_called()
+
+    async def test_query_leader_closes_writer_on_protocol_init_error(self) -> None:
+        """Writer must be closed even if DqliteProtocol construction fails."""
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store, timeout=1.0)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            patch(
+                "dqliteclient.cluster.DqliteProtocol",
+                side_effect=RuntimeError("init failed"),
+            ),
+            pytest.raises(ClusterError),
+        ):
+            await client.find_leader()
+
+        # Even though DqliteProtocol() failed, the writer must be closed
+        mock_writer.close.assert_called()
+
     async def test_update_nodes(self) -> None:
         store = MemoryNodeStore()
         client = ClusterClient(store)

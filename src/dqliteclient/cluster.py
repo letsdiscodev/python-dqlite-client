@@ -75,9 +75,8 @@ class ClusterClient:
         except (TimeoutError, OSError):
             return None
 
-        protocol = DqliteProtocol(reader, writer, timeout=self._timeout)
-
         try:
+            protocol = DqliteProtocol(reader, writer, timeout=self._timeout)
             await protocol.handshake()
             node_id, leader_addr = await protocol.get_leader()
 
@@ -91,8 +90,8 @@ class ClusterClient:
                 # node_id=0 and empty address: no leader known
                 return None
         finally:
-            protocol.close()
-            await protocol.wait_closed()
+            writer.close()
+            await writer.wait_closed()
 
     async def connect(self, database: str = "default") -> DqliteConnection:
         """Connect to the cluster leader.
