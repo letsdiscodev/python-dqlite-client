@@ -73,6 +73,22 @@ class ConnectionPool:
         self._size += 1
         return conn
 
+    async def _drain_idle(self) -> None:
+        """Close all idle connections in the pool.
+
+        Called when a connection is found to be broken (e.g., after a
+        leader change or server restart), since other idle connections
+        are likely stale too.
+        """
+        while not self._pool.empty():
+            try:
+                conn = self._pool.get_nowait()
+                with contextlib.suppress(Exception):
+                    await conn.close()
+                self._size -= 1
+            except asyncio.QueueEmpty:
+                break
+
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
         """Acquire a connection from the pool."""
@@ -113,8 +129,10 @@ class ConnectionPool:
                 # Don't fail yet — loop back to re-check _size
                 continue
 
-        # If connection is dead, discard and create a fresh one with leader discovery
+        # If connection is dead, discard and create a fresh one with leader discovery.
+        # Also drain other idle connections — they likely point to the same dead server.
         if not conn.is_connected:
+            await self._drain_idle()
             async with self._lock:
                 self._size -= 1
                 conn = await self._create_connection()
@@ -134,6 +152,8 @@ class ConnectionPool:
                     self._size -= 1
             else:
                 # Connection is broken (invalidated by execute/fetch error handlers).
+                # Drain other idle connections — they likely point to the same dead server.
+                await self._drain_idle()
                 with contextlib.suppress(BaseException):
                     await conn.close()
                 self._size -= 1

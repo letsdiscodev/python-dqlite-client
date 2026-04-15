@@ -342,6 +342,48 @@ class TestConnectionPool:
 
         await pool.close()
 
+    async def test_broken_connection_drains_idle_pool(self) -> None:
+        """When a connection breaks, all idle connections should be drained."""
+        pool = ConnectionPool(["localhost:9001"], min_size=3, max_size=5)
+
+        conns = []
+        for _ in range(3):
+            mock_conn = MagicMock()
+            mock_conn.is_connected = True
+            mock_conn.connect = AsyncMock()
+            mock_conn.close = AsyncMock()
+            conns.append(mock_conn)
+
+        new_conn = MagicMock()
+        new_conn.is_connected = True
+        new_conn.connect = AsyncMock()
+        new_conn.close = AsyncMock()
+
+        all_conns = [*conns, new_conn]
+        conn_iter = iter(all_conns)
+        with patch.object(pool._cluster, "connect", side_effect=lambda **kw: next(conn_iter)):
+            await pool.initialize()
+
+            assert pool._size == 3
+            assert pool._pool.qsize() == 3
+
+            # Acquire a connection — the first one from the queue
+            with pytest.raises(DqliteConnectionError):
+                async with pool.acquire() as acquired:
+                    # Mark as broken (simulates leader change / server error)
+                    acquired.is_connected = False
+                    raise DqliteConnectionError("connection lost")
+
+        # The broken connection was discarded. The 2 idle connections should
+        # also have been drained (they likely point to the same dead server).
+        idle_closed = sum(1 for c in conns[1:] if c.close.called)
+        assert idle_closed == 2, (
+            f"Expected 2 idle connections to be drained, but only {idle_closed} were closed"
+        )
+        assert pool._pool.qsize() == 0
+
+        await pool.close()
+
     async def test_dead_connection_triggers_leader_rediscovery(self) -> None:
         """A dead connection should be replaced via leader discovery, not reconnected."""
         pool = ConnectionPool(["localhost:9001"], max_size=1)
