@@ -79,28 +79,39 @@ class ConnectionPool:
         if self._closed:
             raise DqliteConnectionError("Pool is closed")
 
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._timeout
         conn: DqliteConnection | None = None
 
-        # Try to get from pool
-        try:
-            conn = self._pool.get_nowait()
-        except asyncio.QueueEmpty:
-            # Create new if under max
+        while conn is None:
+            # Try to get an idle connection from the queue
+            try:
+                conn = self._pool.get_nowait()
+                break
+            except asyncio.QueueEmpty:
+                pass
+
+            # Try to create a new connection if under max
             async with self._lock:
                 if self._size < self._max_size:
                     conn = await self._create_connection()
+                    break
 
-        # Wait for one if at max
-        if conn is None:
-            try:
-                conn = await asyncio.wait_for(
-                    self._pool.get(), timeout=self._timeout
-                )
-            except TimeoutError:
+            # At capacity — wait briefly on the queue, then loop back to
+            # re-check capacity (another coroutine may have freed a slot)
+            remaining = deadline - loop.time()
+            if remaining <= 0:
                 raise DqliteConnectionError(
                     f"Timed out waiting for a connection from the pool "
                     f"(max_size={self._max_size}, timeout={self._timeout}s)"
-                ) from None
+                )
+            try:
+                conn = await asyncio.wait_for(
+                    self._pool.get(), timeout=min(remaining, 0.5)
+                )
+            except TimeoutError:
+                # Don't fail yet — loop back to re-check _size
+                continue
 
         # If connection is dead, discard and create a fresh one with leader discovery
         if not conn.is_connected:

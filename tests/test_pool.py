@@ -224,6 +224,76 @@ class TestConnectionPool:
         # _size must never go negative
         assert pool._size >= 0, f"_size went negative: {pool._size}"
 
+    async def test_acquire_recovers_after_connection_failure(self) -> None:
+        """A waiter blocked on the queue should recover when capacity frees up."""
+        import asyncio
+
+        pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1, timeout=2.0)
+
+        mock_conn1 = MagicMock()
+        mock_conn1.is_connected = True
+        mock_conn1.connect = AsyncMock()
+        mock_conn1.close = AsyncMock()
+
+        mock_conn2 = MagicMock()
+        mock_conn2.is_connected = True
+        mock_conn2.connect = AsyncMock()
+        mock_conn2.close = AsyncMock()
+
+        conns = iter([mock_conn1, mock_conn2])
+
+        with patch.object(pool._cluster, "connect", side_effect=lambda **kw: next(conns)):
+            # Fill the pool to max_size and keep the connection checked out
+            holder_acquired = asyncio.Event()
+            holder_release = asyncio.Event()
+
+            async def holder():
+                async with pool.acquire() as conn1:
+                    assert conn1 is mock_conn1
+                    holder_acquired.set()
+                    await holder_release.wait()
+                    raise RuntimeError("simulated failure")
+
+            holder_task = asyncio.create_task(holder())
+            await holder_acquired.wait()
+
+            # Now start the waiter — it MUST enter the queue.get() wait
+            # because _size == max_size and the queue is empty
+            waiter_done = asyncio.Event()
+            waiter_result: MagicMock | None = None
+
+            async def waiter():
+                nonlocal waiter_result
+                async with pool.acquire() as c:
+                    waiter_result = c
+                    waiter_done.set()
+
+            waiter_task = asyncio.create_task(waiter())
+            # Give the waiter time to pass get_nowait (empty) and the lock
+            # check (_size == max_size) and enter the queue.get() wait
+            await asyncio.sleep(0.1)
+
+            # Now release the holder — it fails, closing conn and decrementing _size
+            holder_release.set()
+            with contextlib.suppress(RuntimeError):
+                await holder_task
+            # At this point _size == 0. The waiter is blocked on queue.get().
+            # With the fix, the waiter should wake up and create a new connection.
+
+            try:
+                await asyncio.wait_for(waiter_done.wait(), timeout=1.5)
+            except TimeoutError:
+                waiter_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await waiter_task
+                pytest.fail(
+                    "Waiter timed out — pool starvation: waiter stuck on queue "
+                    "even though _size dropped below max_size"
+                )
+
+        assert waiter_result is mock_conn2
+        await pool.close()
+
     async def test_dead_conn_replacement_respects_max_size(self) -> None:
         """Dead-connection replacement must not allow _size to exceed max_size."""
         pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=2)
