@@ -561,6 +561,13 @@ class TestConnectionPool:
             f"CancelledError during close() skipped _size decrement."
         )
 
+    async def test_pool_has_no_in_use_set(self) -> None:
+        """Pool should not maintain a dead _in_use set (removed as dead code)."""
+        pool = ConnectionPool(["localhost:9001"])
+        assert not hasattr(pool, "_in_use"), (
+            "Pool._in_use set should have been removed — it was dead code (written but never read)"
+        )
+
 
 class TestConnectionPoolIntegration:
     """Integration tests requiring mocked connections."""

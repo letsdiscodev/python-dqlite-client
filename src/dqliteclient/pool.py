@@ -57,7 +57,6 @@ class ConnectionPool:
 
         self._cluster = ClusterClient.from_addresses(addresses, timeout=timeout)
         self._pool: asyncio.Queue[DqliteConnection] = asyncio.Queue(maxsize=max_size)
-        self._in_use: set[DqliteConnection] = set()
         self._size = 0
         self._lock = asyncio.Lock()
         self._closed = False
@@ -144,11 +143,9 @@ class ConnectionPool:
                 self._size -= 1
                 conn = await self._create_connection()
 
-        self._in_use.add(conn)
         try:
             yield conn
         except BaseException:
-            self._in_use.discard(conn)
             if conn.is_connected and not self._closed:
                 # Connection is healthy — user code raised a non-connection error.
                 # Return it to the pool instead of destroying it.
@@ -166,7 +163,6 @@ class ConnectionPool:
                 self._size -= 1
             raise
         else:
-            self._in_use.discard(conn)
             await self._release(conn)
 
     async def _release(self, conn: DqliteConnection) -> None:
