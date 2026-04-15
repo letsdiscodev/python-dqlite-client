@@ -1,4 +1,10 @@
-"""Async Python client for dqlite."""
+"""Async Python client for dqlite.
+
+Thread safety: connections and pools are NOT thread-safe. All operations
+must be performed within a single asyncio event loop. To submit work from
+other threads, use ``asyncio.run_coroutine_threadsafe()``. Free-threaded
+Python (no-GIL) is not supported.
+"""
 
 from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import DqliteConnection

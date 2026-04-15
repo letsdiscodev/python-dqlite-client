@@ -12,7 +12,15 @@ from dqliteclient.exceptions import DqliteConnectionError
 
 
 class ConnectionPool:
-    """Connection pool with automatic leader detection."""
+    """Connection pool with automatic leader detection.
+
+    Thread safety: this class is NOT thread-safe. All operations must be
+    performed within a single asyncio event loop. Do not share pool
+    instances across OS threads or event loops. To submit work from other
+    threads, use ``asyncio.run_coroutine_threadsafe()`` — the coroutines
+    execute safely in the event loop thread. Free-threaded Python (no-GIL)
+    is not supported.
+    """
 
     def __init__(
         self,

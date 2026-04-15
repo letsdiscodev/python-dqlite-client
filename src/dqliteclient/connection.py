@@ -47,7 +47,15 @@ def _parse_address(address: str) -> tuple[str, int]:
 
 
 class DqliteConnection:
-    """High-level async connection to a dqlite database."""
+    """High-level async connection to a dqlite database.
+
+    Thread safety: this class is NOT thread-safe. All operations must be
+    performed within a single asyncio event loop. Do not share instances
+    across OS threads or event loops. To submit work from other threads,
+    use ``asyncio.run_coroutine_threadsafe()`` — the coroutines execute
+    safely in the event loop thread. Free-threaded Python (no-GIL) is
+    not supported.
+    """
 
     def __init__(
         self,
@@ -72,6 +80,7 @@ class DqliteConnection:
         self._db_id: int | None = None
         self._in_transaction = False
         self._in_use = False
+        self._bound_loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def address(self) -> str:
@@ -89,6 +98,7 @@ class DqliteConnection:
         if self._protocol is not None:
             return
 
+        self._bound_loop = asyncio.get_running_loop()
         self._in_use = True
         try:
             host, port = _parse_address(self._address)
@@ -138,7 +148,19 @@ class DqliteConnection:
         return self._protocol, self._db_id
 
     def _check_in_use(self) -> None:
-        """Raise if another coroutine is using this connection."""
+        """Raise on misuse: wrong event loop or concurrent coroutine access."""
+        if self._bound_loop is not None:
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                raise InterfaceError(
+                    "DqliteConnection must be used from within an async context."
+                ) from None
+            if current_loop is not self._bound_loop:
+                raise InterfaceError(
+                    "DqliteConnection is bound to a different event loop. "
+                    "Do not share connections across event loops or OS threads."
+                )
         if self._in_use:
             raise InterfaceError(
                 "Cannot perform operation: another operation is in progress on this "

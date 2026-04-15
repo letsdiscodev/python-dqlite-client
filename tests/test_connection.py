@@ -842,3 +842,60 @@ class TestDqliteConnection:
             f"got {type(errors[0]).__name__}: {errors[0]}"
         )
         assert "Nested" in str(errors[0]) or "nested" in str(errors[0])
+
+    async def test_cross_event_loop_raises_interface_error(self) -> None:
+        """Using a connection from a different event loop must raise InterfaceError."""
+        import asyncio
+        import threading
+
+        from dqliteclient.exceptions import InterfaceError
+
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import DbResponse, ResultResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            DbResponse(db_id=1).encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        # Now try to use the connection from a different event loop in another thread
+        error_from_thread: Exception | None = None
+
+        def run_in_other_loop():
+            nonlocal error_from_thread
+
+            async def use_conn():
+                # Provide a fresh response so the operation could succeed
+                # if the guard doesn't catch it
+                mock_reader.read.side_effect = [
+                    ResultResponse(last_insert_id=0, rows_affected=0).encode(),
+                ]
+                await conn.execute("SELECT 1")
+
+            try:
+                asyncio.run(use_conn())
+            except InterfaceError as e:
+                error_from_thread = e
+            except Exception as e:
+                error_from_thread = e
+
+        thread = threading.Thread(target=run_in_other_loop)
+        thread.start()
+        thread.join(timeout=5)
+
+        assert error_from_thread is not None, "Expected InterfaceError from cross-loop access"
+        assert isinstance(error_from_thread, InterfaceError), (
+            f"Expected InterfaceError, got {type(error_from_thread).__name__}: {error_from_thread}"
+        )
+        assert "event loop" in str(error_from_thread).lower()
