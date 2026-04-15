@@ -221,6 +221,23 @@ class ConnectionPool:
         async with self.acquire() as conn:
             return await conn.fetch(sql, params)
 
+    async def fetchone(
+        self, sql: str, params: Sequence[Any] | None = None
+    ) -> dict[str, Any] | None:
+        """Execute a query and return the first result using a pooled connection."""
+        async with self.acquire() as conn:
+            return await conn.fetchone(sql, params)
+
+    async def fetchall(self, sql: str, params: Sequence[Any] | None = None) -> list[list[Any]]:
+        """Execute a query and return results as lists using a pooled connection."""
+        async with self.acquire() as conn:
+            return await conn.fetchall(sql, params)
+
+    async def fetchval(self, sql: str, params: Sequence[Any] | None = None) -> Any:
+        """Execute a query and return a single value using a pooled connection."""
+        async with self.acquire() as conn:
+            return await conn.fetchval(sql, params)
+
     async def close(self) -> None:
         """Close the pool and all idle connections.
 

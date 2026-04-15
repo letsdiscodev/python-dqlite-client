@@ -817,3 +817,36 @@ class TestConnectionPoolIntegration:
             assert result == [{"id": 1}]
 
         await pool.close()
+
+    async def test_fetchone_through_pool(self, mock_connection: MagicMock) -> None:
+        mock_connection.fetchone = AsyncMock(return_value={"id": 1})
+        pool = ConnectionPool(["localhost:9001"])
+
+        with patch.object(pool._cluster, "connect", return_value=mock_connection):
+            await pool.initialize()
+            result = await pool.fetchone("SELECT * FROM t LIMIT 1")
+            assert result == {"id": 1}
+
+        await pool.close()
+
+    async def test_fetchall_through_pool(self, mock_connection: MagicMock) -> None:
+        mock_connection.fetchall = AsyncMock(return_value=[[1, "a"], [2, "b"]])
+        pool = ConnectionPool(["localhost:9001"])
+
+        with patch.object(pool._cluster, "connect", return_value=mock_connection):
+            await pool.initialize()
+            result = await pool.fetchall("SELECT * FROM t")
+            assert result == [[1, "a"], [2, "b"]]
+
+        await pool.close()
+
+    async def test_fetchval_through_pool(self, mock_connection: MagicMock) -> None:
+        mock_connection.fetchval = AsyncMock(return_value=42)
+        pool = ConnectionPool(["localhost:9001"])
+
+        with patch.object(pool._cluster, "connect", return_value=mock_connection):
+            await pool.initialize()
+            result = await pool.fetchval("SELECT count(*) FROM t")
+            assert result == 42
+
+        await pool.close()
