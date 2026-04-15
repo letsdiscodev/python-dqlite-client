@@ -102,29 +102,9 @@ class TestDqliteConnection:
         assert conn.address == "localhost:9001"
         assert not conn.is_connected
 
-    async def test_connect_success(self) -> None:
-        conn = DqliteConnection("localhost:9001")
-
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
-
-        # Mock the welcome and db responses
-        from dqlitewire.messages import DbResponse, WelcomeResponse
-
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
-
+    async def test_connect_success(self, connected_connection) -> None:
+        conn, _, _ = connected_connection
         assert conn.is_connected
-
         await conn.close()
         assert not conn.is_connected
 
@@ -266,32 +246,13 @@ class TestDqliteConnection:
         # _in_transaction was cleaned up
         assert not conn._in_transaction
 
-    async def test_cancellation_invalidates_connection(self) -> None:
+    async def test_cancellation_invalidates_connection(self, connected_connection) -> None:
         """CancelledError during a query must invalidate the connection."""
         import asyncio
 
-        conn = DqliteConnection("localhost:9001")
-
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
-
-        from dqlitewire.messages import DbResponse, WelcomeResponse
-
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
-
+        conn, mock_reader, _ = connected_connection
         assert conn.is_connected
 
-        # Make the reader hang forever (will be cancelled)
         read_entered = asyncio.Event()
 
         async def hanging_read(*args, **kwargs):
@@ -310,125 +271,53 @@ class TestDqliteConnection:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        # Connection must be invalidated — the decoder may have partial data
         assert not conn.is_connected, (
             "Connection should be invalidated after CancelledError to prevent "
             "decoder corruption from partial reads"
         )
 
-    async def test_connection_invalidated_after_protocol_error(self) -> None:
+    async def test_connection_invalidated_after_protocol_error(self, connected_connection) -> None:
         """After a connection error, is_connected should return False."""
-        conn = DqliteConnection("localhost:9001")
-
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
-
-        from dqlitewire.messages import DbResponse, WelcomeResponse
-
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
-
+        conn, mock_reader, _ = connected_connection
         assert conn.is_connected
 
-        # Now make the reader return empty (connection closed)
         mock_reader.read.side_effect = [b""]
-
         with pytest.raises(DqliteConnectionError):
             await conn.execute("SELECT 1")
 
-        # Connection should be invalidated
         assert not conn.is_connected
 
-    async def test_invalidate_closes_transport(self) -> None:
+    async def test_invalidate_closes_transport(self, connected_connection) -> None:
         """_invalidate() should close the underlying transport to avoid socket leaks."""
-        conn = DqliteConnection("localhost:9001")
+        conn, mock_reader, mock_writer = connected_connection
 
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
-
-        from dqlitewire.messages import DbResponse, WelcomeResponse
-
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
-
-        # Trigger invalidation via a connection error
         mock_reader.read.side_effect = [b""]
-
         with pytest.raises(DqliteConnectionError):
             await conn.execute("SELECT 1")
 
-        # The writer should have been closed to release the socket
         mock_writer.close.assert_called()
 
-    async def test_fetchone_returns_first_row(self) -> None:
-        conn = DqliteConnection("localhost:9001")
-
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
+    async def test_fetchone_returns_first_row(self, connected_connection) -> None:
+        conn, mock_reader, _ = connected_connection
 
         from dqlitewire.constants import ValueType
-        from dqlitewire.messages import DbResponse, RowsResponse, WelcomeResponse
+        from dqlitewire.messages import RowsResponse
 
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-            RowsResponse(
-                column_names=["id", "name"],
-                column_types=[ValueType.INTEGER, ValueType.TEXT],
-                rows=[[1, "first"], [2, "second"]],
-                has_more=False,
-            ).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
-
-        mock_reader.read.side_effect = [responses[2]]
+        rows_resp = RowsResponse(
+            column_names=["id", "name"],
+            column_types=[ValueType.INTEGER, ValueType.TEXT],
+            rows=[[1, "first"], [2, "second"]],
+            has_more=False,
+        ).encode()
+        mock_reader.read.side_effect = [rows_resp]
         result = await conn.fetchone("SELECT * FROM t")
         assert result == {"id": 1, "name": "first"}
 
-    async def test_fetchone_returns_none_for_empty(self) -> None:
-        conn = DqliteConnection("localhost:9001")
-
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
+    async def test_fetchone_returns_none_for_empty(self, connected_connection) -> None:
+        conn, mock_reader, _ = connected_connection
 
         from dqlitewire.constants import ValueType
-        from dqlitewire.messages import DbResponse, RowsResponse, WelcomeResponse
-
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
+        from dqlitewire.messages import RowsResponse
 
         empty_response = RowsResponse(
             column_names=["id"],
@@ -440,88 +329,43 @@ class TestDqliteConnection:
         result = await conn.fetchone("SELECT * FROM t WHERE 1=0")
         assert result is None
 
-    async def test_fetchall_returns_lists(self) -> None:
-        conn = DqliteConnection("localhost:9001")
-
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
+    async def test_fetchall_returns_lists(self, connected_connection) -> None:
+        conn, mock_reader, _ = connected_connection
 
         from dqlitewire.constants import ValueType
-        from dqlitewire.messages import DbResponse, RowsResponse, WelcomeResponse
+        from dqlitewire.messages import RowsResponse
 
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
-
-        rows_response = RowsResponse(
+        rows_resp = RowsResponse(
             column_names=["id", "name"],
             column_types=[ValueType.INTEGER, ValueType.TEXT],
             rows=[[1, "a"], [2, "b"]],
             has_more=False,
         ).encode()
-        mock_reader.read.side_effect = [rows_response]
+        mock_reader.read.side_effect = [rows_resp]
         result = await conn.fetchall("SELECT * FROM t")
         assert result == [[1, "a"], [2, "b"]]
 
-    async def test_fetchval_returns_first_column(self) -> None:
-        conn = DqliteConnection("localhost:9001")
-
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
+    async def test_fetchval_returns_first_column(self, connected_connection) -> None:
+        conn, mock_reader, _ = connected_connection
 
         from dqlitewire.constants import ValueType
-        from dqlitewire.messages import DbResponse, RowsResponse, WelcomeResponse
+        from dqlitewire.messages import RowsResponse
 
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
-
-        rows_response = RowsResponse(
+        rows_resp = RowsResponse(
             column_names=["count"],
             column_types=[ValueType.INTEGER],
             rows=[[42]],
             has_more=False,
         ).encode()
-        mock_reader.read.side_effect = [rows_response]
+        mock_reader.read.side_effect = [rows_resp]
         result = await conn.fetchval("SELECT count(*) FROM t")
         assert result == 42
 
-    async def test_fetchval_returns_none_for_empty(self) -> None:
-        conn = DqliteConnection("localhost:9001")
-
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
+    async def test_fetchval_returns_none_for_empty(self, connected_connection) -> None:
+        conn, mock_reader, _ = connected_connection
 
         from dqlitewire.constants import ValueType
-        from dqlitewire.messages import DbResponse, RowsResponse, WelcomeResponse
-
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
+        from dqlitewire.messages import RowsResponse
 
         empty_response = RowsResponse(
             column_names=["id"],
@@ -622,28 +466,12 @@ class TestDqliteConnection:
         # The connection must not appear as connected
         assert not conn.is_connected
 
-    async def test_not_leader_error_invalidates_connection(self) -> None:
+    async def test_not_leader_error_invalidates_connection(self, connected_connection) -> None:
         """OperationalError with 'not leader' code should invalidate the connection."""
-        conn = DqliteConnection("localhost:9001")
-
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
-
-        from dqlitewire.messages import DbResponse, FailureResponse, WelcomeResponse
-
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
-
+        conn, mock_reader, _ = connected_connection
         assert conn.is_connected
+
+        from dqlitewire.messages import FailureResponse
 
         # Server responds with "not leader" error
         # SQLITE_IOERR_NOT_LEADER = SQLITE_IOERR | (40 << 8) = 10250
@@ -658,30 +486,13 @@ class TestDqliteConnection:
         # Connection should be invalidated after a leader error
         assert not conn.is_connected
 
-    async def test_concurrent_coroutines_raises_interface_error(self) -> None:
+    async def test_concurrent_coroutines_raises_interface_error(self, connected_connection) -> None:
         """Two coroutines using the same connection must raise InterfaceError."""
         import asyncio
 
         from dqliteclient.exceptions import InterfaceError
 
-        conn = DqliteConnection("localhost:9001")
-
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
-
-        from dqlitewire.messages import DbResponse, WelcomeResponse
-
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
+        conn, _, _ = connected_connection
 
         # Make execute hang so two coroutines overlap
         first_entered = asyncio.Event()
@@ -767,30 +578,13 @@ class TestDqliteConnection:
         assert len(errors) == 1
         assert "another operation is in progress" in str(errors[0])
 
-    async def test_close_while_in_use_raises_interface_error(self) -> None:
+    async def test_close_while_in_use_raises_interface_error(self, connected_connection) -> None:
         """close() must raise InterfaceError if an operation is in progress."""
         import asyncio
 
         from dqliteclient.exceptions import InterfaceError
 
-        conn = DqliteConnection("localhost:9001")
-
-        mock_reader = AsyncMock()
-        mock_writer = MagicMock()
-        mock_writer.drain = AsyncMock()
-        mock_writer.close = MagicMock()
-        mock_writer.wait_closed = AsyncMock()
-
-        from dqlitewire.messages import DbResponse, WelcomeResponse
-
-        responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
-        ]
-        mock_reader.read.side_effect = responses
-
-        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            await conn.connect()
+        conn, _, _ = connected_connection
 
         # Make execute hang so close() runs while execute is in progress
         execute_entered = asyncio.Event()

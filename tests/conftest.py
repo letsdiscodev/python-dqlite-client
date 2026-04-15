@@ -1,9 +1,10 @@
 """Pytest configuration for dqlite-client tests."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from dqliteclient.connection import DqliteConnection
 from dqlitewire.constants import ValueType
 from dqlitewire.messages import (
     DbResponse,
@@ -65,3 +66,22 @@ def rows_response() -> bytes:
         rows=[[1, "test"]],
         has_more=False,
     ).encode()
+
+
+@pytest.fixture
+async def connected_connection(
+    mock_reader: AsyncMock,
+    mock_writer: MagicMock,
+    welcome_response: bytes,
+    db_response: bytes,
+) -> tuple[DqliteConnection, AsyncMock, MagicMock]:
+    """A DqliteConnection that is already connected with mocked transport.
+
+    Returns (conn, mock_reader, mock_writer) so tests can configure
+    additional response data on mock_reader.
+    """
+    mock_reader.read.side_effect = [welcome_response, db_response]
+    conn = DqliteConnection("localhost:9001")
+    with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+        await conn.connect()
+    return conn, mock_reader, mock_writer
