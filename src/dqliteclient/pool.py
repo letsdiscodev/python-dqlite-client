@@ -183,7 +183,7 @@ class ConnectionPool:
         if conn._in_transaction:
             try:
                 await conn.execute("ROLLBACK")
-            except Exception:
+            except BaseException:
                 return False
             conn._in_transaction = False
             conn._tx_owner = None
