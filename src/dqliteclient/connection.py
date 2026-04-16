@@ -237,6 +237,17 @@ class DqliteConnection:
         """
         return await self._run_protocol(lambda p, db: p.exec_sql(db, sql, params))
 
+    async def query_raw(
+        self, sql: str, params: Sequence[Any] | None = None
+    ) -> tuple[list[str], list[list[Any]]]:
+        """Execute a query and return raw (column_names, rows).
+
+        Unlike fetch() which returns dicts, this returns the raw tuple
+        of (column_names, rows) from the wire protocol. Intended for
+        DBAPI cursor implementations that need column names separately.
+        """
+        return await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
+
     async def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
         """Execute a query and return results as list of dicts."""
         columns, rows = await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
