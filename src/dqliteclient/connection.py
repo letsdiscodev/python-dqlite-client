@@ -238,6 +238,16 @@ class DqliteConnection:
         if cause is not None:
             self._invalidation_cause = cause
 
+    @staticmethod
+    def _validate_params(params: Sequence[Any] | None) -> None:
+        """Reject bare str/bytes params to catch the ``execute("?", "x")`` footgun.
+
+        ``str`` and ``bytes`` are both ``Sequence[Any]``, so they type-check
+        but would silently split into N single-character parameters.
+        """
+        if isinstance(params, str | bytes):
+            raise TypeError("params must be a list or tuple, not str/bytes; did you mean [value]?")
+
     async def _run_protocol[T](self, fn: Callable[[DqliteProtocol, int], Awaitable[T]]) -> T:
         """Run a protocol operation with standard error handling.
 
@@ -270,6 +280,7 @@ class DqliteConnection:
 
         Returns (last_insert_id, rows_affected).
         """
+        self._validate_params(params)
         return await self._run_protocol(lambda p, db: p.exec_sql(db, sql, params))
 
     async def query_raw(
@@ -281,6 +292,7 @@ class DqliteConnection:
         of (column_names, rows) from the wire protocol. Intended for
         DBAPI cursor implementations that need column names separately.
         """
+        self._validate_params(params)
         return await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
 
     async def query_raw_typed(
@@ -296,11 +308,13 @@ class DqliteConnection:
 
     async def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
         """Execute a query and return results as list of dicts."""
+        self._validate_params(params)
         columns, rows = await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
         return [dict(zip(columns, row, strict=True)) for row in rows]
 
     async def fetchall(self, sql: str, params: Sequence[Any] | None = None) -> list[list[Any]]:
         """Execute a query and return results as list of lists."""
+        self._validate_params(params)
         _, rows = await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
         return rows
 
@@ -318,6 +332,7 @@ class DqliteConnection:
 
     async def fetchval(self, sql: str, params: Sequence[Any] | None = None) -> Any:
         """Execute a query and return the first column of the first row."""
+        self._validate_params(params)
         _, rows = await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
         if rows and rows[0]:
             return rows[0][0]

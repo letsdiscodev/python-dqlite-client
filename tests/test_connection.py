@@ -841,6 +841,15 @@ class TestDqliteConnection:
                 pass
         assert not conn.is_connected, "failed COMMIT must invalidate the connection"
 
+    async def test_string_params_rejected_with_clear_error(self, connected_connection) -> None:
+        """Passing a bare string as params silently splits it into N character
+        parameters. Guard at the client boundary so the user gets a clear
+        TypeError instead of a confusing server-side "wrong parameter count".
+        """
+        conn, _, _ = connected_connection
+        with pytest.raises(TypeError, match="list or tuple"):
+            await conn.execute("SELECT ?", "alice")  # type: ignore[arg-type]
+
     async def test_cross_event_loop_raises_interface_error(self) -> None:
         """Using a connection from a different event loop must raise InterfaceError."""
         import asyncio
