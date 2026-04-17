@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from dqliteclient.exceptions import OperationalError, ProtocolError
+from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
 from dqliteclient.protocol import DqliteProtocol
 from dqlitewire.messages import (
     FailureResponse,
@@ -68,6 +68,33 @@ class TestDqliteProtocol:
         with pytest.raises(DqliteConnectionError) as exc_info:
             await protocol._read_data()
         assert exc_info.value.__cause__ is err
+
+    async def test_read_response_enforces_operation_deadline(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """Even if each individual read returns just under the per-read
+        timeout, the cumulative operation deadline must fire.
+        """
+        import asyncio
+        import time
+
+        protocol._timeout = 0.2
+
+        async def drip_forever(_n: int) -> bytes:
+            await asyncio.sleep(0.1)
+            return b"\x00"  # 1 byte, never completes a message
+
+        mock_reader.read.side_effect = drip_forever
+
+        t0 = time.monotonic()
+        with pytest.raises(DqliteConnectionError, match="deadline|timed out"):
+            await protocol._read_response()
+        elapsed = time.monotonic() - t0
+        assert elapsed < 1.0, (
+            f"_read_response must bail at the operation deadline; took {elapsed:.3f}s"
+        )
 
     async def test_handshake_success(
         self,

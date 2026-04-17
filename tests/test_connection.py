@@ -90,12 +90,20 @@ class TestParseAddress:
 
 class TestDqliteConnection:
     def test_zero_timeout_raises(self) -> None:
-        with pytest.raises(ValueError, match="timeout must be positive"):
+        with pytest.raises(ValueError, match="timeout must be"):
             DqliteConnection("localhost:9001", timeout=0)
 
     def test_negative_timeout_raises(self) -> None:
-        with pytest.raises(ValueError, match="timeout must be positive"):
+        with pytest.raises(ValueError, match="timeout must be"):
             DqliteConnection("localhost:9001", timeout=-1)
+
+    def test_infinite_timeout_raises(self) -> None:
+        with pytest.raises(ValueError, match="finite"):
+            DqliteConnection("localhost:9001", timeout=float("inf"))
+
+    def test_nan_timeout_raises(self) -> None:
+        with pytest.raises(ValueError, match="finite"):
+            DqliteConnection("localhost:9001", timeout=float("nan"))
 
     def test_init(self) -> None:
         conn = DqliteConnection("localhost:9001", database="test", timeout=5.0)

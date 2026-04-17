@@ -184,7 +184,11 @@ class DqliteProtocol:
         self._writer.write(request.encode())
         await self._send()
 
-        response = await self._read_response()
+        # Single deadline spans the initial response plus every continuation
+        # frame; otherwise a server that split a reply into N frames could
+        # legitimately take N * self._timeout to complete.
+        deadline = self._operation_deadline()
+        response = await self._read_response(deadline=deadline)
 
         if isinstance(response, FailureResponse):
             raise OperationalError(response.code, response.message)
@@ -200,7 +204,7 @@ class DqliteProtocol:
         # marker), matching the C dqlite server's wire format.
         all_rows = list(response.rows)
         while response.has_more:
-            next_response = await self._read_continuation()
+            next_response = await self._read_continuation(deadline=deadline)
             if not next_response.rows and next_response.has_more:
                 # Server claimed "more coming" but delivered zero rows in a
                 # continuation frame. That would spin forever (known
@@ -221,36 +225,67 @@ class DqliteProtocol:
         except (ConnectionError, OSError, RuntimeError) as e:
             raise DqliteConnectionError(f"Write failed: {e}") from e
 
-    async def _read_data(self) -> bytes:
-        """Read data from the stream with timeout.
+    async def _read_data(self, deadline: float | None = None) -> bytes:
+        """Read a chunk from the stream, bounded by a per-operation deadline.
+
+        If ``deadline`` is set (monotonic time), the per-chunk timeout is
+        capped by the remaining budget — a slow-drip server that returned
+        just under the per-read timeout on every chunk used to be able to
+        keep a call alive indefinitely.
 
         Transport errors (ConnectionResetError, BrokenPipeError, OSError,
         RuntimeError("Transport is closed")) are wrapped in
         DqliteConnectionError to match the write-path behaviour.
         """
+        if deadline is not None:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise DqliteConnectionError(f"Operation exceeded {self._timeout}s deadline")
+            timeout = min(remaining, self._timeout)
+        else:
+            timeout = self._timeout
         try:
-            data = await asyncio.wait_for(self._reader.read(4096), timeout=self._timeout)
+            data = await asyncio.wait_for(self._reader.read(4096), timeout=timeout)
         except TimeoutError:
-            raise DqliteConnectionError(f"Server read timed out after {self._timeout}s") from None
+            raise DqliteConnectionError(f"Server read timed out after {timeout:.1f}s") from None
         except (ConnectionError, OSError, RuntimeError) as e:
             raise DqliteConnectionError(f"Read failed: {e}") from e
         if not data:
             raise DqliteConnectionError("Connection closed by server")
         return data
 
-    async def _read_continuation(self) -> RowsResponse:
-        """Read and decode a ROWS continuation frame."""
+    def _operation_deadline(self) -> float:
+        """Deadline (monotonic seconds) for a single protocol operation."""
+        return asyncio.get_running_loop().time() + self._timeout
+
+    async def _read_continuation(self, deadline: float | None = None) -> RowsResponse:
+        """Read and decode a ROWS continuation frame.
+
+        If ``deadline`` is None, a fresh per-operation deadline is set;
+        query_sql passes its own deadline so the budget spans every
+        continuation frame, not each one individually.
+        """
+        if deadline is None:
+            deadline = self._operation_deadline()
         while True:
             result = self._decoder.decode_continuation()
             if result is not None:
                 return result
-            data = await self._read_data()
+            data = await self._read_data(deadline=deadline)
             self._decoder.feed(data)
 
-    async def _read_response(self) -> Message:
-        """Read and decode the next response message."""
+    async def _read_response(self, deadline: float | None = None) -> Message:
+        """Read and decode the next response message.
+
+        If ``deadline`` is None, a fresh per-operation deadline is set for
+        this one response; callers that span multiple reads (e.g. query_sql
+        across continuation frames) pass an externally-held deadline so
+        the cumulative wall time is bounded.
+        """
+        if deadline is None:
+            deadline = self._operation_deadline()
         while not self._decoder.has_message():
-            data = await self._read_data()
+            data = await self._read_data(deadline=deadline)
             self._decoder.feed(data)
 
         message = self._decoder.decode()
