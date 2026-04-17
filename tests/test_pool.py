@@ -736,6 +736,55 @@ class TestConnectionPool:
         assert result is False
         assert not exec_called, "ROLLBACK must not be sent on a dead socket"
 
+    async def test_acquire_wakes_on_release_without_polling_delay(self) -> None:
+        """When a held connection is released, a waiter must wake up
+        promptly — not sit on the 500 ms polling cadence.
+        """
+        import asyncio
+        import time
+
+        from dqliteclient.connection import DqliteConnection
+
+        pool = ConnectionPool(["localhost:9001"], max_size=1, timeout=5.0)
+
+        mock_conn = MagicMock(spec=DqliteConnection)
+        mock_conn.is_connected = True
+        mock_conn.close = AsyncMock()
+        mock_conn._in_transaction = False
+        mock_conn._in_use = False
+        mock_conn._bound_loop = None
+        mock_conn._pool_released = False
+        mock_conn._check_in_use = MagicMock()
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+            holder_acquired = asyncio.Event()
+            release_holder = asyncio.Event()
+
+            async def hold_connection() -> None:
+                async with pool.acquire():
+                    holder_acquired.set()
+                    await release_holder.wait()
+
+            holder = asyncio.create_task(hold_connection())
+            await holder_acquired.wait()
+
+            async def grab() -> float:
+                t0 = time.monotonic()
+                async with pool.acquire():
+                    return time.monotonic() - t0
+
+            waiter = asyncio.create_task(grab())
+            await asyncio.sleep(0.05)
+            release_holder.set()
+            elapsed = await asyncio.wait_for(waiter, timeout=1.0)
+            await holder
+
+            await pool.close()
+
+        assert elapsed < 0.2, f"waiter should wake immediately on release; took {elapsed:.3f}s"
+
     async def test_close_wakes_waiter_promptly(self) -> None:
         """A task blocked in acquire() waiting for a connection must be
         woken quickly when pool.close() is called — not sit on the queue

@@ -111,6 +111,17 @@ class ConnectionPool:
                 self._closed_event.set()
         return self._closed_event
 
+    def _signal_state_change(self) -> None:
+        """Wake any acquire() waiters to re-check pool state.
+
+        Reuses the closed-event path so we don't add a second primitive.
+        acquire() clears the event right before it parks each iteration,
+        so set()s that come through this helper reliably wake the current
+        wait; waiters always re-check _closed at the loop top.
+        """
+        if self._closed_event is not None:
+            self._closed_event.set()
+
     async def _drain_idle(self) -> None:
         """Close all idle connections in the pool.
 
@@ -129,6 +140,7 @@ class ConnectionPool:
                 pass
             finally:
                 self._size -= 1
+                self._signal_state_change()
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
@@ -167,15 +179,19 @@ class ConnectionPool:
                     f"Timed out waiting for a connection from the pool "
                     f"(max_size={self._max_size}, timeout={self._timeout}s)"
                 )
-            # Race the queue against the closed event so close() wakes
-            # waiters promptly instead of leaving them on the polling loop.
+            # Race the queue against the state-change event so any pool
+            # state change (close, size decrement, drain) wakes waiters
+            # promptly. Clear right before parking so we only wake on
+            # subsequent signals; the loop top re-checks _closed.
             closed_event = self._get_closed_event()
+            if not self._closed:
+                closed_event.clear()
             get_task: asyncio.Task[DqliteConnection] = asyncio.create_task(self._pool.get())
             closed_task = asyncio.create_task(closed_event.wait())
             try:
                 done, _pending = await asyncio.wait(
                     {get_task, closed_task},
-                    timeout=min(remaining, 0.5),
+                    timeout=remaining,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
             finally:
@@ -211,6 +227,7 @@ class ConnectionPool:
                     with contextlib.suppress(Exception):
                         await conn.close()
                     self._size -= 1
+                    self._signal_state_change()
                     raise
                 conn._pool_released = True
                 try:
@@ -218,6 +235,7 @@ class ConnectionPool:
                 except asyncio.QueueFull:
                     await conn.close()
                     self._size -= 1
+                    self._signal_state_change()
             else:
                 # Connection is broken (invalidated by execute/fetch error handlers).
                 # Drain other idle connections — they likely point to the same dead server.
@@ -226,6 +244,7 @@ class ConnectionPool:
                 with contextlib.suppress(BaseException):
                     await conn.close()
                 self._size -= 1
+                self._signal_state_change()
             raise
         else:
             await self._release(conn)
@@ -256,6 +275,7 @@ class ConnectionPool:
             conn._pool_released = True
             await conn.close()
             self._size -= 1
+            self._signal_state_change()
             return
 
         if not await self._reset_connection(conn):
@@ -263,6 +283,7 @@ class ConnectionPool:
             with contextlib.suppress(Exception):
                 await conn.close()
             self._size -= 1
+            self._signal_state_change()
             return
 
         conn._pool_released = True
@@ -271,6 +292,7 @@ class ConnectionPool:
         except asyncio.QueueFull:
             await conn.close()
             self._size -= 1
+            self._signal_state_change()
 
     async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
         """Execute a SQL statement using a pooled connection."""
