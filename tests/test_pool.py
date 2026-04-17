@@ -843,6 +843,37 @@ class TestConnectionPool:
             f"acquire() should wake within ~100ms of pool.close(); took {elapsed:.3f}s"
         )
 
+    async def test_initialize_creates_min_size_in_parallel(self) -> None:
+        """initialize() should connect min_size in parallel, not sequentially.
+        With min_size=5 and per-connect latency 0.1s, serial init takes ~0.5s;
+        parallel should finish in ~0.1s.
+        """
+        import asyncio
+        import time
+
+        pool = ConnectionPool(["localhost:9001"], min_size=5, max_size=10)
+
+        async def slow_connect(**kwargs):
+            await asyncio.sleep(0.1)
+            mock_conn = MagicMock()
+            mock_conn.is_connected = True
+            mock_conn.close = AsyncMock()
+            return mock_conn
+
+        with patch.object(pool._cluster, "connect", side_effect=slow_connect):
+            t0 = time.monotonic()
+            await pool.initialize()
+            elapsed = time.monotonic() - t0
+
+        assert pool._size == 5
+        assert elapsed < 0.3, (
+            f"expected parallel init (~0.1s), got {elapsed:.3f}s "
+            f"— looks like the connections were created sequentially"
+        )
+
+        await pool.close()
+
+
     async def test_reset_connection_returns_false_on_cancelled_error(self) -> None:
         """_reset_connection must return False (not raise) when ROLLBACK is cancelled."""
         import asyncio

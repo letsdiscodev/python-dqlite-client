@@ -92,9 +92,16 @@ class ConnectionPool:
         async with self._lock:
             if self._initialized:
                 return
-            for _ in range(self._min_size):
-                conn = await self._create_connection()
-                await self._pool.put(conn)
+            # Create min_size connections concurrently so pool startup
+            # latency doesn't scale with min_size × per-connect RTT. If any
+            # one fails, cancel the rest and propagate; leave _initialized
+            # False so the caller can retry.
+            if self._min_size > 0:
+                conns = await asyncio.gather(
+                    *(self._create_connection() for _ in range(self._min_size))
+                )
+                for conn in conns:
+                    await self._pool.put(conn)
             self._initialized = True
 
     async def _create_connection(self) -> DqliteConnection:
