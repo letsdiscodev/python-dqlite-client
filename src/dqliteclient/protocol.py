@@ -171,6 +171,35 @@ class DqliteProtocol:
 
         return response.last_insert_id, response.rows_affected
 
+    async def query_sql_typed(
+        self, db_id: int, sql: str, params: Sequence[Any] | None = None
+    ) -> tuple[list[str], list[int], list[list[Any]]]:
+        """Execute a query and return (column_names, column_types, rows).
+
+        column_types are the wire-level ``ValueType`` integer tags from the
+        first response frame — what DBAPI cursor.description maps into
+        ``type_code``.
+        """
+        request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
+        self._writer.write(request.encode())
+        await self._send()
+
+        deadline = self._operation_deadline()
+        response = await self._read_response(deadline=deadline)
+        if isinstance(response, FailureResponse):
+            raise OperationalError(response.code, response.message)
+        if not isinstance(response, RowsResponse):
+            raise ProtocolError(f"Expected RowsResponse, got {type(response).__name__}")
+
+        column_names = list(response.column_names)
+        column_types = [int(t) for t in response.column_types]
+        all_rows = list(response.rows)
+        while response.has_more:
+            next_response = await self._read_continuation(deadline=deadline)
+            all_rows.extend(next_response.rows)
+            response = next_response
+        return column_names, column_types, all_rows
+
     async def query_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
     ) -> tuple[list[str], list[list[Any]]]:
@@ -179,6 +208,8 @@ class DqliteProtocol:
         Returns (column_names, rows). Multi-statement SELECT is rejected
         by the server with OperationalError(SQLITE_ERROR, "nonempty
         statement tail") — there are no additional result sets to drain.
+        Use :meth:`query_sql_typed` to also get per-column ``ValueType``
+        tags.
         """
         request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
         self._writer.write(request.encode())

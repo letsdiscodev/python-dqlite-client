@@ -250,6 +250,17 @@ class DqliteConnection:
         """
         return await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
 
+    async def query_raw_typed(
+        self, sql: str, params: Sequence[Any] | None = None
+    ) -> tuple[list[str], list[int], list[list[Any]]]:
+        """Execute a query and return (column_names, column_types, rows).
+
+        ``column_types`` are per-column wire ``ValueType`` integer tags
+        from the first response frame — suitable for populating DBAPI
+        ``cursor.description[i][1]`` (``type_code``).
+        """
+        return await self._run_protocol(lambda p, db: p.query_sql_typed(db, sql, params))
+
     async def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
         """Execute a query and return results as list of dicts."""
         columns, rows = await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
