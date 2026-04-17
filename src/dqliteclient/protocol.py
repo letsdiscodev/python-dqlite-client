@@ -1,6 +1,7 @@
 """Low-level protocol handler for dqlite."""
 
 import asyncio
+import secrets
 from collections.abc import Sequence
 from typing import Any
 
@@ -42,11 +43,16 @@ class DqliteProtocol:
         self._heartbeat_timeout = 0
         self._timeout = timeout
 
-    async def handshake(self, client_id: int = 0) -> int:
+    async def handshake(self, client_id: int | None = None) -> int:
         """Perform protocol handshake.
 
-        Returns the heartbeat timeout from server.
+        If ``client_id`` is not provided, a random non-zero 63-bit id is
+        generated so each connection is distinguishable in server logs,
+        traces, and per-client metrics. Returns the heartbeat timeout
+        from the server.
         """
+        if client_id is None:
+            client_id = secrets.randbits(63) or 1
         # Send protocol version + client registration together
         request = ClientRequest(client_id=client_id)
         self._writer.write(MessageEncoder().encode_handshake() + request.encode())

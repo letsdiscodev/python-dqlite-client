@@ -28,6 +28,29 @@ class TestDqliteProtocol:
 
         assert timeout == 15000
 
+    async def test_handshake_generates_unique_client_id_when_unspecified(
+        self,
+        mock_reader: AsyncMock,
+        mock_writer: MagicMock,
+        welcome_response: bytes,
+    ) -> None:
+        """When no client_id is passed, handshake must generate a unique non-zero id.
+
+        Every connection defaulting to client_id=0 collapses all clients in
+        the server's per-client metrics and tracing. The client must opaquely
+        generate a random id per connection.
+        """
+        mock_reader.read.return_value = welcome_response
+
+        p1 = DqliteProtocol(mock_reader, mock_writer)
+        await p1.handshake()
+        p2 = DqliteProtocol(mock_reader, mock_writer)
+        await p2.handshake()
+
+        assert p1._client_id != 0
+        assert p2._client_id != 0
+        assert p1._client_id != p2._client_id
+
     async def test_handshake_caps_heartbeat_timeout(
         self,
         mock_reader: AsyncMock,
