@@ -329,6 +329,33 @@ class TestClusterClient:
             f"voters should be probed first; order={order}"
         )
 
+    async def test_connect_does_not_retry_plain_sql_errors(self) -> None:
+        """OperationalError without a leader code is a SQL-level error, not
+        a transport issue — connect() should NOT retry it. Otherwise a
+        schema mismatch takes 5x find_leader round trips to propagate.
+        """
+        from dqliteclient.exceptions import OperationalError
+
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store, timeout=0.2)
+
+        call_count = 0
+
+        async def always_sql_error() -> str:
+            nonlocal call_count
+            call_count += 1
+            raise OperationalError(1, "some sql error")
+
+        with (
+            patch.object(client, "find_leader", side_effect=always_sql_error),
+            pytest.raises(OperationalError),
+        ):
+            await client.connect()
+
+        assert call_count == 1, (
+            f"SQL-level OperationalError must not be retried, got {call_count} attempts"
+        )
+
     async def test_update_nodes(self) -> None:
         store = MemoryNodeStore()
         client = ClusterClient(store)

@@ -124,13 +124,17 @@ class ClusterClient:
             await conn.connect()
             return conn
 
+        # Retry only transport-level errors. Leader-change OperationalError
+        # codes are now reclassified into DqliteConnectionError at connect
+        # time (see #148), so we no longer need OperationalError in the
+        # retry set — that avoids amplifying a schema/SQL error into 5 ×
+        # N_nodes RTTs before propagating.
         return await retry_with_backoff(
             try_connect,
-            max_attempts=5,
+            max_attempts=3,
             retryable_exceptions=(
                 DqliteConnectionError,
                 ClusterError,
-                OperationalError,
                 OSError,
                 TimeoutError,
             ),
