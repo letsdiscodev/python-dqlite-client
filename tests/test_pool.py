@@ -692,6 +692,50 @@ class TestConnectionPool:
 
         await pool.close()
 
+    async def test_reset_connection_skips_rollback_on_dead_socket(self) -> None:
+        """If the transport is already closing / EOF, _reset_connection must
+        return False without waiting for a read timeout. Otherwise every
+        release through a half-closed socket costs self._timeout seconds.
+        """
+        import asyncio
+
+        from dqliteclient.connection import DqliteConnection
+
+        pool = ConnectionPool(["localhost:9001"], max_size=1, timeout=10.0)
+
+        conn = DqliteConnection("127.0.0.1:9001")
+        conn._protocol = MagicMock()
+        conn._db_id = 1
+        conn._bound_loop = asyncio.get_running_loop()
+        conn._in_transaction = True
+
+        # Reader has seen EOF / transport is closing.
+        dead_reader = MagicMock()
+        dead_reader.at_eof = MagicMock(return_value=True)
+        dead_transport = MagicMock()
+        dead_transport.is_closing = MagicMock(return_value=True)
+        dead_writer = MagicMock()
+        dead_writer.transport = dead_transport
+        conn._protocol._reader = dead_reader
+        conn._protocol._writer = dead_writer
+
+        exec_called = False
+
+        async def track_exec(*args, **kwargs):
+            nonlocal exec_called
+            exec_called = True
+            # Never resolves — we'd pay self._timeout if reached.
+            await asyncio.sleep(1000)
+            return (0, 0)
+
+        conn._protocol.exec_sql = track_exec
+        conn._protocol.close = MagicMock()
+        conn._protocol.wait_closed = AsyncMock()
+
+        result = await asyncio.wait_for(pool._reset_connection(conn), timeout=1.0)
+        assert result is False
+        assert not exec_called, "ROLLBACK must not be sent on a dead socket"
+
     async def test_reset_connection_returns_false_on_cancelled_error(self) -> None:
         """_reset_connection must return False (not raise) when ROLLBACK is cancelled."""
         import asyncio

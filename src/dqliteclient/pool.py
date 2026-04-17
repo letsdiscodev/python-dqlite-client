@@ -11,6 +11,30 @@ from dqliteclient.connection import DqliteConnection
 from dqliteclient.exceptions import DqliteConnectionError
 
 
+def _socket_looks_dead(conn: DqliteConnection) -> bool:
+    """Best-effort local detection of a half-closed TCP socket.
+
+    Returns True only on an affirmative bool signal from the transport or
+    reader. Mocked / missing attributes default to False (assume alive) so
+    the check never produces a false positive against well-behaved peers.
+    """
+    protocol = conn._protocol
+    if protocol is None:
+        return True
+    writer = getattr(protocol, "_writer", None)
+    reader = getattr(protocol, "_reader", None)
+    transport = getattr(writer, "transport", None) if writer is not None else None
+    try:
+        closing = transport.is_closing() if transport is not None else False
+    except Exception:
+        closing = False
+    try:
+        eof = reader.at_eof() if reader is not None else False
+    except Exception:
+        eof = False
+    return (isinstance(closing, bool) and closing) or (isinstance(eof, bool) and eof)
+
+
 class ConnectionPool:
     """Connection pool with automatic leader detection.
 
@@ -181,6 +205,11 @@ class ConnectionPool:
         False if it should be destroyed.
         """
         if conn._in_transaction:
+            # Cheap pre-write liveness check: if the transport is already
+            # closing or the reader has seen EOF, ROLLBACK would stall on
+            # _read_data until self._timeout. Bail fast instead.
+            if _socket_looks_dead(conn):
+                return False
             try:
                 await conn.execute("ROLLBACK")
             except BaseException:
