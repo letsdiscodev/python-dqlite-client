@@ -215,6 +215,36 @@ class TestDqliteProtocol:
         # Stray response must remain in the buffer, not silently consumed.
         assert protocol._decoder.has_message()
 
+    async def test_query_sql_raises_if_continuation_has_no_progress(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """A ROWS continuation that sets has_more=True but delivers 0 rows
+        must raise rather than loop forever. Known pathological server case:
+        column header alone exceeds the page buffer, so query__batch sends a
+        frame with no rows encoded but still marks it as partial.
+        """
+        from dqlitewire.constants import ValueType
+        from dqlitewire.messages import RowsResponse
+
+        first = RowsResponse(
+            column_names=["x"],
+            column_types=[ValueType.INTEGER],
+            rows=[],
+            has_more=True,
+        )
+        stuck = RowsResponse(
+            column_names=["x"],
+            column_types=[ValueType.INTEGER],
+            rows=[],
+            has_more=True,
+        )
+        mock_reader.read.return_value = first.encode() + stuck.encode()
+
+        with pytest.raises(ProtocolError, match="no progress|no rows"):
+            await protocol.query_sql(1, "SELECT x FROM wide_table")
+
     async def test_query_sql(
         self,
         protocol: DqliteProtocol,

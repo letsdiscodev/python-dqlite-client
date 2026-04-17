@@ -201,6 +201,14 @@ class DqliteProtocol:
         all_rows = list(response.rows)
         while response.has_more:
             next_response = await self._read_continuation()
+            if not next_response.rows and next_response.has_more:
+                # Server claimed "more coming" but delivered zero rows in a
+                # continuation frame. That would spin forever (known
+                # pathological case: column header larger than the server's
+                # page buffer). Bail out instead of livelocking.
+                raise ProtocolError(
+                    "ROWS continuation made no progress: frame had 0 rows and has_more=True"
+                )
             all_rows.extend(next_response.rows)
             response = next_response
 
