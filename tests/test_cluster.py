@@ -1,11 +1,12 @@
 """Tests for cluster management."""
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from dqliteclient.cluster import ClusterClient
-from dqliteclient.exceptions import ClusterError
+from dqliteclient.exceptions import ClusterError, DqliteConnectionError
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo
 
 
@@ -263,6 +264,31 @@ class TestClusterClient:
         ):
             await client.find_leader()
         assert exc_info.value.__cause__ is boom
+
+    async def test_find_leader_randomizes_node_order(self) -> None:
+        """find_leader must not always probe the first-listed node first —
+        otherwise stampedes and stale-cache biases concentrate on it.
+        """
+        from collections import Counter
+
+        store = MemoryNodeStore(["n1:9001", "n2:9001", "n3:9001", "n4:9001"])
+        client = ClusterClient(store, timeout=0.2)
+
+        first_probed: list[str] = []
+
+        async def track(address: str) -> str | None:
+            first_probed.append(address)
+            raise DqliteConnectionError("not leader")
+
+        with patch.object(client, "_query_leader", side_effect=track):
+            for _ in range(50):
+                with contextlib.suppress(ClusterError):
+                    await client.find_leader()
+
+        # Record the first probe of each call.
+        firsts = [first_probed[i] for i in range(0, len(first_probed), 4)]
+        counts = Counter(firsts)
+        assert len(counts) >= 2, f"find_leader always probed the same node first: {counts}"
 
     async def test_update_nodes(self) -> None:
         store = MemoryNodeStore()

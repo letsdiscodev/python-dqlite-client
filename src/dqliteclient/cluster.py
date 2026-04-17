@@ -1,6 +1,7 @@
 """Cluster management and leader detection for dqlite."""
 
 import asyncio
+import random
 
 from dqliteclient.connection import DqliteConnection, _parse_address
 from dqliteclient.exceptions import (
@@ -49,6 +50,12 @@ class ClusterClient:
 
         if not nodes:
             raise ClusterError("No nodes configured")
+
+        # Shuffle so repeated callers don't all stampede the first-listed
+        # node. A stable first probe concentrates leader-discovery load on
+        # one seed and biases toward its (possibly stale) leader view.
+        nodes = list(nodes)
+        random.shuffle(nodes)
 
         errors: list[str] = []
         last_exc: BaseException | None = None
