@@ -170,7 +170,9 @@ class DqliteProtocol:
     ) -> tuple[list[str], list[list[Any]]]:
         """Execute a query directly.
 
-        Returns (column_names, rows).
+        Returns (column_names, rows). Multi-statement SELECT is rejected
+        by the server with OperationalError(SQLITE_ERROR, "nonempty
+        statement tail") — there are no additional result sets to drain.
         """
         request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
         self._writer.write(request.encode())
@@ -184,7 +186,6 @@ class DqliteProtocol:
         if not isinstance(response, RowsResponse):
             raise ProtocolError(f"Expected RowsResponse, got {type(response).__name__}")
 
-        # Store column names from first response
         column_names = response.column_names
 
         # Handle multi-part responses via decode_continuation(),
@@ -196,12 +197,6 @@ class DqliteProtocol:
             next_response = await self._read_continuation()
             all_rows.extend(next_response.rows)
             response = next_response
-
-        # Drain any extra result sets from multi-statement SQL
-        while self._decoder.has_message():
-            extra = await self._read_response()
-            if isinstance(extra, FailureResponse):
-                raise OperationalError(extra.code, extra.message)
 
         return column_names, all_rows
 
