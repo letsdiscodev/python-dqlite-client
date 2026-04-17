@@ -162,6 +162,8 @@ class TestClusterClient:
 
     async def test_query_leader_closes_writer_on_protocol_init_error(self) -> None:
         """Writer must be closed even if DqliteProtocol construction fails."""
+        from dqliteclient.exceptions import DqliteConnectionError
+
         store = MemoryNodeStore(["localhost:9001"])
         client = ClusterClient(store, timeout=1.0)
 
@@ -175,7 +177,7 @@ class TestClusterClient:
             patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
             patch(
                 "dqliteclient.cluster.DqliteProtocol",
-                side_effect=RuntimeError("init failed"),
+                side_effect=DqliteConnectionError("init failed"),
             ),
             pytest.raises(ClusterError),
         ):
@@ -222,6 +224,45 @@ class TestClusterClient:
                 )
 
         mock_writer.close.assert_called()
+
+    async def test_find_leader_propagates_programming_bugs(self) -> None:
+        """Programming bugs (TypeError etc.) must propagate, not be swallowed
+        into a generic ClusterError. ClusterError is retryable upstream, so
+        stringifying a bug here amplifies it N*retries times.
+        """
+        store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
+        client = ClusterClient(store, timeout=0.5)
+
+        async def buggy_query(_address: str) -> str | None:
+            raise TypeError("programmer mistake")
+
+        with (
+            patch.object(client, "_query_leader", side_effect=buggy_query),
+            pytest.raises(TypeError, match="programmer mistake"),
+        ):
+            await client.find_leader()
+
+    async def test_find_leader_transport_error_chains_cause(self) -> None:
+        """When every node yields a transport error, the final ClusterError
+        must have __cause__ set so logs show the underlying reason, not just
+        the generic message.
+        """
+        from dqliteclient.exceptions import DqliteConnectionError
+
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store, timeout=0.5)
+
+        boom = DqliteConnectionError("handshake failed")
+
+        async def failing_query(_address: str) -> str | None:
+            raise boom
+
+        with (
+            patch.object(client, "_query_leader", side_effect=failing_query),
+            pytest.raises(ClusterError) as exc_info,
+        ):
+            await client.find_leader()
+        assert exc_info.value.__cause__ is boom
 
     async def test_update_nodes(self) -> None:
         store = MemoryNodeStore()

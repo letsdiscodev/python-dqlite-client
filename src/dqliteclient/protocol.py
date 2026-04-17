@@ -7,6 +7,7 @@ from typing import Any
 
 from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
 from dqlitewire import MessageDecoder, MessageEncoder
+from dqlitewire.exceptions import ProtocolError as _WireProtocolError
 from dqlitewire.messages import (
     ClientRequest,
     DbResponse,
@@ -298,12 +299,15 @@ class DqliteProtocol:
         """
         if deadline is None:
             deadline = self._operation_deadline()
-        while True:
-            result = self._decoder.decode_continuation()
-            if result is not None:
-                return result
-            data = await self._read_data(deadline=deadline)
-            self._decoder.feed(data)
+        try:
+            while True:
+                result = self._decoder.decode_continuation()
+                if result is not None:
+                    return result
+                data = await self._read_data(deadline=deadline)
+                self._decoder.feed(data)
+        except _WireProtocolError as e:
+            raise ProtocolError(f"Wire decode failed: {e}") from e
 
     async def _read_response(self, deadline: float | None = None) -> Message:
         """Read and decode the next response message.
@@ -315,11 +319,15 @@ class DqliteProtocol:
         """
         if deadline is None:
             deadline = self._operation_deadline()
-        while not self._decoder.has_message():
-            data = await self._read_data(deadline=deadline)
-            self._decoder.feed(data)
+        try:
+            while not self._decoder.has_message():
+                data = await self._read_data(deadline=deadline)
+                self._decoder.feed(data)
 
-        message = self._decoder.decode()
+            message = self._decoder.decode()
+        except _WireProtocolError as e:
+            raise ProtocolError(f"Wire decode failed: {e}") from e
+
         if message is None:
             raise ProtocolError("Failed to decode message")
 

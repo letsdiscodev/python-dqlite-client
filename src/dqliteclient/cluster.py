@@ -3,7 +3,12 @@
 import asyncio
 
 from dqliteclient.connection import DqliteConnection, _parse_address
-from dqliteclient.exceptions import ClusterError, DqliteConnectionError, OperationalError
+from dqliteclient.exceptions import (
+    ClusterError,
+    DqliteConnectionError,
+    OperationalError,
+    ProtocolError,
+)
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
 from dqliteclient.protocol import DqliteProtocol
 from dqliteclient.retry import retry_with_backoff
@@ -46,6 +51,7 @@ class ClusterClient:
             raise ClusterError("No nodes configured")
 
         errors: list[str] = []
+        last_exc: BaseException | None = None
 
         for node in nodes:
             try:
@@ -54,14 +60,19 @@ class ClusterClient:
                 )
                 if leader_address:
                     return leader_address
-            except TimeoutError:
+            except TimeoutError as e:
                 errors.append(f"{node.address}: timed out")
+                last_exc = e
                 continue
-            except Exception as e:
+            except (DqliteConnectionError, ProtocolError, OperationalError, OSError) as e:
+                # Narrow the catch so programming bugs (TypeError, KeyError,
+                # etc.) propagate directly instead of being stringified into
+                # a retryable ClusterError.
                 errors.append(f"{node.address}: {e}")
+                last_exc = e
                 continue
 
-        raise ClusterError(f"Could not find leader. Errors: {'; '.join(errors)}")
+        raise ClusterError(f"Could not find leader. Errors: {'; '.join(errors)}") from last_exc
 
     async def _query_leader(self, address: str) -> str | None:
         """Query a node for the current leader."""
