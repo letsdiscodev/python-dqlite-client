@@ -103,3 +103,40 @@ class TestRetryWithBackoff:
         assert sleep_args[0] == pytest.approx(0.05)
         # Second delay: 0.1 * 2^1 = 0.2, capped to 0.05
         assert sleep_args[1] == pytest.approx(0.05)
+
+    async def test_jitter_does_not_exceed_max_delay(self) -> None:
+        """max_delay is a hard ceiling: even with jitter, realized delay must not exceed it."""
+        from unittest.mock import patch
+
+        sleep_args: list[float] = []
+
+        async def always_fail() -> str:
+            raise ValueError("fail")
+
+        original_sleep = asyncio.sleep
+
+        async def mock_sleep(delay: float) -> None:
+            sleep_args.append(delay)
+            await original_sleep(0)
+
+        # Force jitter to its positive endpoint so the multiplier is (1 + jitter)
+        def max_jitter(_low: float, high: float) -> float:
+            return high
+
+        with (
+            patch("dqliteclient.retry.asyncio.sleep", side_effect=mock_sleep),
+            patch("dqliteclient.retry.random.uniform", side_effect=max_jitter),
+            pytest.raises(ValueError, match="fail"),
+        ):
+            await retry_with_backoff(
+                always_fail,
+                max_attempts=10,
+                base_delay=1.0,
+                max_delay=2.0,
+                jitter=0.1,
+            )
+
+        # Several attempts will hit the cap; none should exceed max_delay.
+        assert sleep_args, "expected at least one sleep"
+        for d in sleep_args:
+            assert d <= 2.0, f"delay {d} exceeded max_delay=2.0"

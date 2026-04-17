@@ -47,9 +47,9 @@ async def retry_with_backoff[T](
             # Calculate delay with exponential backoff
             delay = min(base_delay * (2**attempt), max_delay)
 
-            # Add jitter
+            # Add jitter, then re-clamp so max_delay stays a hard ceiling.
             if jitter > 0:
-                delay = delay * (1 + random.uniform(-jitter, jitter))
+                delay = min(delay * (1 + random.uniform(-jitter, jitter)), max_delay)
 
             await asyncio.sleep(delay)
 
