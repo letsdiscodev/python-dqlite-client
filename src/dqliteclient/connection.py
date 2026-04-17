@@ -172,18 +172,22 @@ class DqliteConnection:
                 "This connection has been returned to the pool and can no longer "
                 "be used directly. Acquire a new connection from the pool."
             )
-        if self._bound_loop is not None:
-            try:
-                current_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                raise InterfaceError(
-                    "DqliteConnection must be used from within an async context."
-                ) from None
-            if current_loop is not self._bound_loop:
-                raise InterfaceError(
-                    "DqliteConnection is bound to a different event loop. "
-                    "Do not share connections across event loops or OS threads."
-                )
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            raise InterfaceError(
+                "DqliteConnection must be used from within an async context."
+            ) from None
+        if self._bound_loop is None:
+            # Lazily bind on first use so the guard is always active, even
+            # for bare-instantiation / mocked-protocol patterns that skip
+            # connect().
+            self._bound_loop = current_loop
+        elif current_loop is not self._bound_loop:
+            raise InterfaceError(
+                "DqliteConnection is bound to a different event loop. "
+                "Do not share connections across event loops or OS threads."
+            )
         if self._in_use:
             raise InterfaceError(
                 "Cannot perform operation: another operation is in progress on this "

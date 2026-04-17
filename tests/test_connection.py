@@ -684,6 +684,49 @@ class TestDqliteConnection:
         )
         assert "Nested" in str(errors[0]) or "nested" in str(errors[0])
 
+    async def test_loop_guard_active_even_without_connect(self) -> None:
+        """The loop-mismatch guard must bind on first _check_in_use, not only
+        inside connect(). Otherwise bare-instantiation + mocked _protocol
+        patterns (common in tests) bypass the guard.
+        """
+        import asyncio
+        import threading
+
+        from dqliteclient.exceptions import InterfaceError
+
+        conn = DqliteConnection("localhost:9001")
+        # Simulate a test that mocks the protocol without calling connect().
+        conn._protocol = MagicMock()
+        conn._db_id = 1
+
+        # First operation in this loop should bind the loop implicitly.
+        conn._check_in_use()
+        first_loop = conn._bound_loop
+        assert first_loop is asyncio.get_running_loop(), (
+            "first _check_in_use should bind the current event loop"
+        )
+
+        # Crossing into a new loop from another thread should raise.
+        error_from_thread: Exception | None = None
+
+        def run_in_other_loop() -> None:
+            nonlocal error_from_thread
+
+            async def use_conn() -> None:
+                conn._check_in_use()
+
+            try:
+                asyncio.run(use_conn())
+            except Exception as e:
+                error_from_thread = e
+
+        thread = threading.Thread(target=run_in_other_loop)
+        thread.start()
+        thread.join(timeout=5)
+
+        assert isinstance(error_from_thread, InterfaceError)
+        assert "event loop" in str(error_from_thread).lower()
+
     async def test_cross_event_loop_raises_interface_error(self) -> None:
         """Using a connection from a different event loop must raise InterfaceError."""
         import asyncio
