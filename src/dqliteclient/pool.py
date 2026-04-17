@@ -9,6 +9,7 @@ from typing import Any
 from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import DqliteConnection
 from dqliteclient.exceptions import DqliteConnectionError
+from dqliteclient.node_store import NodeStore
 
 
 def _socket_looks_dead(conn: DqliteConnection) -> bool:
@@ -48,21 +49,29 @@ class ConnectionPool:
 
     def __init__(
         self,
-        addresses: list[str],
+        addresses: list[str] | None = None,
         *,
         database: str = "default",
         min_size: int = 1,
         max_size: int = 10,
         timeout: float = 10.0,
+        cluster: ClusterClient | None = None,
+        node_store: NodeStore | None = None,
     ) -> None:
         """Initialize connection pool.
 
         Args:
-            addresses: List of node addresses
+            addresses: List of node addresses. Ignored if ``cluster`` or
+                ``node_store`` is provided; required otherwise.
             database: Database name
             min_size: Minimum connections to maintain
             max_size: Maximum connections allowed
             timeout: Connection timeout
+            cluster: Externally-owned ClusterClient. Lets multiple pools
+                share one ClusterClient (and thus its node store, leader
+                cache, etc.) across databases or tenants.
+            node_store: Externally-owned NodeStore used to build a new
+                ClusterClient. Mutually exclusive with ``cluster``.
         """
         if min_size < 0:
             raise ValueError(f"min_size must be non-negative, got {min_size}")
@@ -72,14 +81,23 @@ class ConnectionPool:
             raise ValueError(f"min_size ({min_size}) must not exceed max_size ({max_size})")
         if timeout <= 0:
             raise ValueError(f"timeout must be positive, got {timeout}")
+        if cluster is not None and node_store is not None:
+            raise ValueError("pass only one of cluster= or node_store=")
+        if cluster is None and node_store is None and not addresses:
+            raise ValueError("pass one of addresses, cluster, or node_store")
 
-        self._addresses = addresses
+        self._addresses = addresses or []
         self._database = database
         self._min_size = min_size
         self._max_size = max_size
         self._timeout = timeout
 
-        self._cluster = ClusterClient.from_addresses(addresses, timeout=timeout)
+        if cluster is not None:
+            self._cluster = cluster
+        elif node_store is not None:
+            self._cluster = ClusterClient(node_store, timeout=timeout)
+        else:
+            self._cluster = ClusterClient.from_addresses(self._addresses, timeout=timeout)
         self._pool: asyncio.Queue[DqliteConnection] = asyncio.Queue(maxsize=max_size)
         self._size = 0
         self._lock = asyncio.Lock()

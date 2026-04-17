@@ -873,6 +873,39 @@ class TestConnectionPool:
 
         await pool.close()
 
+    async def test_pool_accepts_injected_cluster_client(self) -> None:
+        """Callers must be able to share a ClusterClient across multiple pools."""
+        from dqliteclient.cluster import ClusterClient
+
+        shared_cluster = ClusterClient.from_addresses(["localhost:9001"])
+        pool_a = ConnectionPool(cluster=shared_cluster, min_size=0, max_size=3)
+        pool_b = ConnectionPool(cluster=shared_cluster, min_size=0, max_size=3)
+        assert pool_a._cluster is shared_cluster
+        assert pool_b._cluster is shared_cluster
+
+    async def test_pool_accepts_injected_node_store(self) -> None:
+        """Callers with a persistent NodeStore must be able to thread it in."""
+        from dqliteclient.node_store import MemoryNodeStore
+
+        store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
+        pool = ConnectionPool(node_store=store, min_size=0, max_size=1)
+        nodes = await pool._cluster._node_store.get_nodes()
+        assert [n.address for n in nodes] == ["localhost:9001", "localhost:9002"]
+
+    async def test_pool_requires_some_cluster_source(self) -> None:
+        """Constructing with neither addresses nor cluster/node_store must raise."""
+        with pytest.raises(ValueError, match="addresses.*cluster.*node_store"):
+            ConnectionPool()
+
+    async def test_pool_rejects_cluster_and_node_store_together(self) -> None:
+        """Passing both cluster= and node_store= must raise — pick one."""
+        from dqliteclient.cluster import ClusterClient
+        from dqliteclient.node_store import MemoryNodeStore
+
+        cluster = ClusterClient.from_addresses(["localhost:9001"])
+        store = MemoryNodeStore(["localhost:9001"])
+        with pytest.raises(ValueError, match="only one"):
+            ConnectionPool(cluster=cluster, node_store=store)
 
     async def test_reset_connection_returns_false_on_cancelled_error(self) -> None:
         """_reset_connection must return False (not raise) when ROLLBACK is cancelled."""
