@@ -94,6 +94,7 @@ class DqliteConnection:
         self._bound_loop: asyncio.AbstractEventLoop | None = None
         self._tx_owner: asyncio.Task[Any] | None = None
         self._pool_released = False
+        self._invalidation_cause: BaseException | None = None
 
     @property
     def address(self) -> str:
@@ -173,7 +174,7 @@ class DqliteConnection:
     def _ensure_connected(self) -> tuple[DqliteProtocol, int]:
         """Ensure we're connected and return protocol and db_id."""
         if self._protocol is None or self._db_id is None:
-            raise DqliteConnectionError("Not connected")
+            raise DqliteConnectionError("Not connected") from self._invalidation_cause
         return self._protocol, self._db_id
 
     def _check_in_use(self) -> None:
@@ -214,14 +215,20 @@ class DqliteConnection:
                     "the pool."
                 )
 
-    def _invalidate(self) -> None:
-        """Mark the connection as broken after an unrecoverable error."""
+    def _invalidate(self, cause: BaseException | None = None) -> None:
+        """Mark the connection as broken after an unrecoverable error.
+
+        If ``cause`` is provided, it is remembered so a later caller that
+        hits "Not connected" can chain it as ``__cause__`` for diagnostics.
+        """
         if self._protocol is not None:
             # Connection may already be broken; suppress close errors
             with contextlib.suppress(Exception):
                 self._protocol.close()
         self._protocol = None
         self._db_id = None
+        if cause is not None:
+            self._invalidation_cause = cause
 
     async def _run_protocol[T](self, fn: Callable[[DqliteProtocol, int], Awaitable[T]]) -> T:
         """Run a protocol operation with standard error handling.
@@ -234,18 +241,18 @@ class DqliteConnection:
         self._in_use = True
         try:
             return await fn(protocol, db_id)
-        except (DqliteConnectionError, ProtocolError):
-            self._invalidate()
+        except (DqliteConnectionError, ProtocolError) as e:
+            self._invalidate(e)
             raise
         except OperationalError as e:
             if e.code in _LEADER_ERROR_CODES:
-                self._invalidate()
+                self._invalidate(e)
             raise
-        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as e:
             # Interrupted mid-operation; we don't know how much of the
             # request/response round-trip completed, so the wire state is
             # unsafe to reuse. Invalidate and re-raise.
-            self._invalidate()
+            self._invalidate(e)
             raise
         finally:
             self._in_use = False

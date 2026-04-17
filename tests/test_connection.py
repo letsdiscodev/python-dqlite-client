@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from dqliteclient.connection import DqliteConnection
-from dqliteclient.exceptions import DqliteConnectionError
+from dqliteclient.exceptions import DqliteConnectionError, OperationalError
 
 
 class TestParseAddress:
@@ -777,6 +777,29 @@ class TestDqliteConnection:
             await conn.execute("INSERT INTO t VALUES (?)", [object()])
 
         assert conn.is_connected, "client-side TypeError must not invalidate the connection"
+
+    async def test_not_connected_after_invalidation_chains_cause(
+        self, connected_connection
+    ) -> None:
+        """After invalidation, a subsequent operation's DqliteConnectionError
+        ('Not connected') must chain back to the original cause, so logs on
+        the second-use path still surface why the connection died.
+        """
+        conn, mock_reader, _ = connected_connection
+        from dqlitewire.messages import FailureResponse
+
+        # First call: server returns NOT_LEADER, connection is invalidated.
+        mock_reader.read.side_effect = [FailureResponse(code=10250, message="not leader").encode()]
+        with pytest.raises(OperationalError):
+            await conn.execute("SELECT 1")
+        assert not conn.is_connected
+
+        # Second call: should surface the original cause, not a bare
+        # "Not connected".
+        with pytest.raises(DqliteConnectionError) as exc_info:
+            await conn.execute("SELECT 2")
+        assert exc_info.value.__cause__ is not None
+        assert isinstance(exc_info.value.__cause__, OperationalError)
 
     async def test_cross_event_loop_raises_interface_error(self) -> None:
         """Using a connection from a different event loop must raise InterfaceError."""
