@@ -10,6 +10,7 @@ from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import DqliteConnection
 from dqliteclient.exceptions import (
     ClusterError,
+    DataError,
     DqliteConnectionError,
     DqliteError,
     InterfaceError,
@@ -34,6 +35,7 @@ __all__ = [
     "ProtocolError",
     "ClusterError",
     "OperationalError",
+    "DataError",
 ]
 
 __version__ = "0.1.0"

@@ -850,6 +850,18 @@ class TestDqliteConnection:
         with pytest.raises(TypeError, match="list or tuple"):
             await conn.execute("SELECT ?", "alice")  # type: ignore[arg-type]
 
+    async def test_int64_overflow_raises_dataerror(self, connected_connection) -> None:
+        """Out-of-range int (|v| >= 2^63) must surface as DataError, not the
+        internal wire-package EncodeError. The connection must remain alive.
+        """
+        from dqliteclient.exceptions import DataError
+
+        conn, _, _ = connected_connection
+        huge = 2**70
+        with pytest.raises(DataError):
+            await conn.execute("INSERT INTO t VALUES (?)", [huge])
+        assert conn.is_connected
+
     async def test_cross_event_loop_raises_interface_error(self) -> None:
         """Using a connection from a different event loop must raise InterfaceError."""
         import asyncio

@@ -21,6 +21,15 @@ class ClusterError(DqliteError):
     """Cluster-related error (leader not found, etc)."""
 
 
+class DataError(DqliteError):
+    """Client-side parameter-encoding error.
+
+    Raised when a parameter value cannot be serialized onto the wire —
+    e.g. an int outside ``[-2^63, 2^63)``, an embedded null byte in a
+    TEXT string, or an unsupported Python type.
+    """
+
+
 class OperationalError(DqliteError):
     """Database operation error."""
 

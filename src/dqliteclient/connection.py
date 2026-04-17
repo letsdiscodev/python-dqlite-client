@@ -7,12 +7,14 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from dqliteclient.exceptions import (
+    DataError,
     DqliteConnectionError,
     InterfaceError,
     OperationalError,
     ProtocolError,
 )
 from dqliteclient.protocol import DqliteProtocol
+from dqlitewire.exceptions import EncodeError as _WireEncodeError
 
 # dqlite error codes that indicate a leader change (SQLite extended error codes)
 # SQLITE_IOERR_NOT_LEADER = SQLITE_IOERR | (40 << 8) = 10250
@@ -259,6 +261,11 @@ class DqliteConnection:
         self._in_use = True
         try:
             return await fn(protocol, db_id)
+        except _WireEncodeError as e:
+            # Client-side parameter-encoding error. The wire bytes were
+            # never written, so the connection is still usable — convert
+            # into the client-level DataError and let it propagate.
+            raise DataError(str(e)) from e
         except (DqliteConnectionError, ProtocolError) as e:
             self._invalidate(e)
             raise
