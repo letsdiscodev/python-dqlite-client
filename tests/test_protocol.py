@@ -16,6 +16,59 @@ class TestDqliteProtocol:
     def protocol(self, mock_reader: AsyncMock, mock_writer: MagicMock) -> DqliteProtocol:
         return DqliteProtocol(mock_reader, mock_writer)
 
+    @pytest.mark.parametrize(
+        "err",
+        [
+            ConnectionResetError("peer reset"),
+            BrokenPipeError("pipe gone"),
+            OSError("generic os error"),
+            RuntimeError("Transport is closed"),
+        ],
+    )
+    async def test_writer_drain_errors_are_wrapped(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+        mock_writer: MagicMock,
+        err: BaseException,
+    ) -> None:
+        """Transport errors raised by writer.drain() must surface as
+        DqliteConnectionError so callers catching the client's error
+        hierarchy don't miss them, with the original attached via __cause__.
+        """
+        from dqliteclient.exceptions import DqliteConnectionError
+
+        mock_writer.drain = AsyncMock(side_effect=err)
+
+        with pytest.raises(DqliteConnectionError) as exc_info:
+            await protocol.handshake()
+        assert exc_info.value.__cause__ is err
+
+    @pytest.mark.parametrize(
+        "err",
+        [
+            ConnectionResetError("peer reset mid-read"),
+            BrokenPipeError("pipe gone mid-read"),
+            OSError("generic os error mid-read"),
+            RuntimeError("Transport is closed mid-read"),
+        ],
+    )
+    async def test_reader_errors_are_wrapped(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+        err: BaseException,
+    ) -> None:
+        """Transport errors on _read_data must also surface as
+        DqliteConnectionError, matching the write-path behaviour.
+        """
+        from dqliteclient.exceptions import DqliteConnectionError
+
+        mock_reader.read.side_effect = err
+        with pytest.raises(DqliteConnectionError) as exc_info:
+            await protocol._read_data()
+        assert exc_info.value.__cause__ is err
+
     async def test_handshake_success(
         self,
         protocol: DqliteProtocol,

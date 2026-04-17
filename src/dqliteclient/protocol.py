@@ -56,7 +56,7 @@ class DqliteProtocol:
         # Send protocol version + client registration together
         request = ClientRequest(client_id=client_id)
         self._writer.write(MessageEncoder().encode_handshake() + request.encode())
-        await self._writer.drain()
+        await self._send()
 
         # Read welcome response
         response = await self._read_response()
@@ -83,7 +83,7 @@ class DqliteProtocol:
         """
         request = LeaderRequest()
         self._writer.write(request.encode())
-        await self._writer.drain()
+        await self._send()
 
         response = await self._read_response()
 
@@ -102,7 +102,7 @@ class DqliteProtocol:
         """
         request = OpenRequest(name=name, flags=flags, vfs=vfs)
         self._writer.write(request.encode())
-        await self._writer.drain()
+        await self._send()
 
         response = await self._read_response()
 
@@ -121,7 +121,7 @@ class DqliteProtocol:
         """
         request = PrepareRequest(db_id=db_id, sql=sql)
         self._writer.write(request.encode())
-        await self._writer.drain()
+        await self._send()
 
         response = await self._read_response()
 
@@ -137,7 +137,7 @@ class DqliteProtocol:
         """Finalize (close) a prepared statement."""
         request = FinalizeRequest(db_id=db_id, stmt_id=stmt_id)
         self._writer.write(request.encode())
-        await self._writer.drain()
+        await self._send()
 
         response = await self._read_response()
 
@@ -159,7 +159,7 @@ class DqliteProtocol:
         """
         request = ExecSqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
         self._writer.write(request.encode())
-        await self._writer.drain()
+        await self._send()
 
         response = await self._read_response()
 
@@ -182,7 +182,7 @@ class DqliteProtocol:
         """
         request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
         self._writer.write(request.encode())
-        await self._writer.drain()
+        await self._send()
 
         response = await self._read_response()
 
@@ -214,12 +214,26 @@ class DqliteProtocol:
 
         return column_names, all_rows
 
+    async def _send(self) -> None:
+        """Drain the writer, wrapping transport errors as DqliteConnectionError."""
+        try:
+            await self._writer.drain()
+        except (ConnectionError, OSError, RuntimeError) as e:
+            raise DqliteConnectionError(f"Write failed: {e}") from e
+
     async def _read_data(self) -> bytes:
-        """Read data from the stream with timeout."""
+        """Read data from the stream with timeout.
+
+        Transport errors (ConnectionResetError, BrokenPipeError, OSError,
+        RuntimeError("Transport is closed")) are wrapped in
+        DqliteConnectionError to match the write-path behaviour.
+        """
         try:
             data = await asyncio.wait_for(self._reader.read(4096), timeout=self._timeout)
         except TimeoutError:
             raise DqliteConnectionError(f"Server read timed out after {self._timeout}s") from None
+        except (ConnectionError, OSError, RuntimeError) as e:
+            raise DqliteConnectionError(f"Read failed: {e}") from e
         if not data:
             raise DqliteConnectionError("Connection closed by server")
         return data
