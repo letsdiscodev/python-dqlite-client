@@ -51,11 +51,13 @@ class ClusterClient:
         if not nodes:
             raise ClusterError("No nodes configured")
 
-        # Shuffle so repeated callers don't all stampede the first-listed
-        # node. A stable first probe concentrates leader-discovery load on
-        # one seed and biases toward its (possibly stale) leader view.
+        # Shuffle first so repeated callers don't stampede the same node;
+        # then stable-sort by role so voters come before non-voters.
+        # Standby/spare nodes can never become leader (their LEADER
+        # response is always (0, "")), so probing them first wastes RTTs.
         nodes = list(nodes)
         random.shuffle(nodes)
+        nodes.sort(key=lambda n: 0 if n.role == 0 else 1)
 
         errors: list[str] = []
         last_exc: BaseException | None = None

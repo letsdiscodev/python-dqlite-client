@@ -290,6 +290,45 @@ class TestClusterClient:
         counts = Counter(firsts)
         assert len(counts) >= 2, f"find_leader always probed the same node first: {counts}"
 
+    async def test_find_leader_probes_voters_before_non_voters(self) -> None:
+        """Non-voter nodes (standby/spare) cannot become leader; probing them
+        first wastes an RTT. find_leader must prefer voters.
+        """
+        store = MemoryNodeStore()
+        # Seed with a non-voter first, then a voter.
+        await store.set_nodes(
+            [
+                NodeInfo(node_id=2, address="spare:9002", role=2),  # spare
+                NodeInfo(node_id=1, address="standby:9003", role=1),  # standby
+                NodeInfo(node_id=3, address="voter1:9001", role=0),
+                NodeInfo(node_id=4, address="voter2:9004", role=0),
+            ]
+        )
+        client = ClusterClient(store, timeout=0.2)
+
+        order: list[str] = []
+
+        async def track(address: str) -> str | None:
+            order.append(address)
+            return None  # no leader known — keep probing
+
+        from contextlib import suppress
+
+        with (
+            patch.object(client, "_query_leader", side_effect=track),
+            suppress(ClusterError),
+        ):
+            await client.find_leader()
+
+        # Both voters must be probed before the spare.
+        voter_positions = [i for i, a in enumerate(order) if a.startswith("voter")]
+        non_voter_positions = [i for i, a in enumerate(order) if not a.startswith("voter")]
+        assert voter_positions, "no voters were probed"
+        assert non_voter_positions, "test setup broken — no non-voters"
+        assert max(voter_positions) < min(non_voter_positions), (
+            f"voters should be probed first; order={order}"
+        )
+
     async def test_update_nodes(self) -> None:
         store = MemoryNodeStore()
         client = ClusterClient(store)
