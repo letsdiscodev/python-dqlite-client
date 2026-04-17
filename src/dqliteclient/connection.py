@@ -156,13 +156,21 @@ class DqliteConnection:
             self._in_use = False
 
     async def close(self) -> None:
-        """Close the connection."""
+        """Close the connection.
+
+        Idempotent: safe to call on an already-closed or pool-released
+        connection. Null ``_protocol`` before awaiting ``wait_closed`` so
+        a concurrent second close cannot re-enter the socket-close path.
+        """
+        # Pool-released or already-closed: nothing to do.
+        if self._pool_released or self._protocol is None:
+            return
         self._check_in_use()
-        if self._protocol is not None:
-            self._protocol.close()
-            await self._protocol.wait_closed()
-            self._protocol = None
-            self._db_id = None
+        protocol = self._protocol
+        self._protocol = None
+        self._db_id = None
+        protocol.close()
+        await protocol.wait_closed()
 
     async def __aenter__(self) -> "DqliteConnection":
         await self.connect()

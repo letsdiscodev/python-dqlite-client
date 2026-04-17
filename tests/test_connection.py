@@ -801,6 +801,26 @@ class TestDqliteConnection:
         assert exc_info.value.__cause__ is not None
         assert isinstance(exc_info.value.__cause__, OperationalError)
 
+    async def test_close_is_idempotent_on_second_call(self, connected_connection) -> None:
+        """close() must be safe to call twice; a second call must no-op
+        rather than re-enter _check_in_use and raise.
+        """
+        conn, _, _ = connected_connection
+        await conn.close()
+        # Second close should not raise.
+        await conn.close()
+        assert not conn.is_connected
+
+    async def test_close_on_pool_released_connection_is_noop(self, connected_connection) -> None:
+        """A pool-released connection's close() must no-op rather than raise
+        InterfaceError. __aexit__ and try/finally cleanup patterns rely on
+        this.
+        """
+        conn, _, _ = connected_connection
+        conn._pool_released = True
+        # Would previously raise InterfaceError("returned to the pool").
+        await conn.close()
+
     async def test_cross_event_loop_raises_interface_error(self) -> None:
         """Using a connection from a different event loop must raise InterfaceError."""
         import asyncio
