@@ -136,6 +136,17 @@ class DqliteConnection:
             try:
                 await self._protocol.handshake()
                 self._db_id = await self._protocol.open_database(self._database)
+            except OperationalError as e:
+                self._protocol.close()
+                self._protocol = None
+                if e.code in _LEADER_ERROR_CODES:
+                    # Leader-change errors during OPEN are transport-level
+                    # problems — the caller needs to reconnect elsewhere, not
+                    # treat this as a SQL error.
+                    raise DqliteConnectionError(
+                        f"Node {self._address} is no longer leader: {e.message}"
+                    ) from e
+                raise
             except BaseException:
                 self._protocol.close()
                 self._protocol = None

@@ -727,6 +727,37 @@ class TestDqliteConnection:
         assert isinstance(error_from_thread, InterfaceError)
         assert "event loop" in str(error_from_thread).lower()
 
+    async def test_connect_open_not_leader_surfaces_as_connection_error(self) -> None:
+        """If OPEN returns a leader-change code during connect(), callers must
+        see it as a transport-level DqliteConnectionError, not as a generic
+        OperationalError indistinguishable from a SQL error. Retry layers
+        and cluster failover hinge on this classification.
+        """
+        from dqlitewire.messages import FailureResponse, WelcomeResponse
+
+        conn = DqliteConnection("localhost:9001")
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        # Handshake succeeds, OPEN returns SQLITE_IOERR_NOT_LEADER (10250).
+        mock_reader.read.side_effect = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            FailureResponse(code=10250, message="not leader").encode(),
+        ]
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            pytest.raises(DqliteConnectionError, match="leader"),
+        ):
+            await conn.connect()
+
+        # Socket must also be cleaned up.
+        assert not conn.is_connected
+
     async def test_cross_event_loop_raises_interface_error(self) -> None:
         """Using a connection from a different event loop must raise InterfaceError."""
         import asyncio
