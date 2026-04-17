@@ -84,6 +84,7 @@ class ConnectionPool:
         self._size = 0
         self._lock = asyncio.Lock()
         self._closed = False
+        self._closed_event: asyncio.Event | None = None
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -101,6 +102,14 @@ class ConnectionPool:
         conn = await self._cluster.connect(database=self._database)
         self._size += 1
         return conn
+
+    def _get_closed_event(self) -> asyncio.Event:
+        """Lazily create the closed Event bound to the running loop."""
+        if self._closed_event is None:
+            self._closed_event = asyncio.Event()
+            if self._closed:
+                self._closed_event.set()
+        return self._closed_event
 
     async def _drain_idle(self) -> None:
         """Close all idle connections in the pool.
@@ -132,6 +141,9 @@ class ConnectionPool:
         conn: DqliteConnection | None = None
 
         while conn is None:
+            if self._closed:
+                raise DqliteConnectionError("Pool is closed")
+
             # Try to get an idle connection from the queue
             try:
                 conn = self._pool.get_nowait()
@@ -141,6 +153,8 @@ class ConnectionPool:
 
             # Try to create a new connection if under max
             async with self._lock:
+                if self._closed:
+                    raise DqliteConnectionError("Pool is closed")
                 if self._size < self._max_size:
                     conn = await self._create_connection()
                     break
@@ -153,10 +167,28 @@ class ConnectionPool:
                     f"Timed out waiting for a connection from the pool "
                     f"(max_size={self._max_size}, timeout={self._timeout}s)"
                 )
+            # Race the queue against the closed event so close() wakes
+            # waiters promptly instead of leaving them on the polling loop.
+            closed_event = self._get_closed_event()
+            get_task: asyncio.Task[DqliteConnection] = asyncio.create_task(self._pool.get())
+            closed_task = asyncio.create_task(closed_event.wait())
             try:
-                conn = await asyncio.wait_for(self._pool.get(), timeout=min(remaining, 0.5))
-            except TimeoutError:
-                # Don't fail yet — loop back to re-check _size
+                done, _pending = await asyncio.wait(
+                    {get_task, closed_task},
+                    timeout=min(remaining, 0.5),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                if not closed_task.done():
+                    closed_task.cancel()
+            if get_task in done:
+                conn = get_task.result()
+            else:
+                # Either close fired or the poll timer fired; either way,
+                # cancel the queue wait cleanly and let the loop re-check.
+                get_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await get_task
                 continue
 
         # If connection is dead, discard and create a fresh one with leader discovery.
@@ -277,6 +309,8 @@ class ConnectionPool:
         in-flight tasks before calling close().
         """
         self._closed = True
+        if self._closed_event is not None:
+            self._closed_event.set()
         await self._drain_idle()
 
         # In-use connections are closed by acquire()'s cleanup when they

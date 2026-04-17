@@ -736,6 +736,64 @@ class TestConnectionPool:
         assert result is False
         assert not exec_called, "ROLLBACK must not be sent on a dead socket"
 
+    async def test_close_wakes_waiter_promptly(self) -> None:
+        """A task blocked in acquire() waiting for a connection must be
+        woken quickly when pool.close() is called — not sit on the queue
+        until its timeout expires.
+        """
+        import asyncio
+        import time
+
+        from dqliteclient.connection import DqliteConnection
+
+        pool = ConnectionPool(["localhost:9001"], max_size=1, timeout=5.0)
+
+        mock_conn = MagicMock(spec=DqliteConnection)
+        mock_conn.is_connected = True
+        mock_conn.close = AsyncMock()
+        mock_conn._in_transaction = False
+        mock_conn._in_use = False
+        mock_conn._bound_loop = None
+        mock_conn._pool_released = False
+        mock_conn._check_in_use = MagicMock()
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+            holder_acquired = asyncio.Event()
+            release_holder = asyncio.Event()
+
+            async def hold_connection() -> None:
+                async with pool.acquire():
+                    holder_acquired.set()
+                    await release_holder.wait()
+
+            holder = asyncio.create_task(hold_connection())
+            await holder_acquired.wait()
+
+            async def try_acquire() -> BaseException | None:
+                try:
+                    async with pool.acquire():
+                        return None
+                except BaseException as e:  # noqa: BLE001
+                    return e
+
+            waiter = asyncio.create_task(try_acquire())
+            await asyncio.sleep(0.05)
+
+            t0 = time.monotonic()
+            await pool.close()
+            err = await asyncio.wait_for(waiter, timeout=1.0)
+            elapsed = time.monotonic() - t0
+
+            release_holder.set()
+            await holder
+
+        assert isinstance(err, DqliteConnectionError)
+        assert elapsed < 0.3, (
+            f"acquire() should wake within ~100ms of pool.close(); took {elapsed:.3f}s"
+        )
+
     async def test_reset_connection_returns_false_on_cancelled_error(self) -> None:
         """_reset_connection must return False (not raise) when ROLLBACK is cancelled."""
         import asyncio
