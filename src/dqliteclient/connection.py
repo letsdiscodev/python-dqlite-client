@@ -338,13 +338,23 @@ class DqliteConnection:
             self._in_transaction = False
             raise
 
+        commit_attempted = False
         try:
             yield
+            commit_attempted = True
             await self.execute("COMMIT")
         except BaseException:
-            # Swallow rollback failure; original exception is more important
-            with contextlib.suppress(BaseException):
-                await self.execute("ROLLBACK")
+            if commit_attempted:
+                # COMMIT was sent but failed. Server-side state is ambiguous
+                # (maybe committed, maybe still open, maybe rolled back). We
+                # cannot safely reuse this connection — invalidate so the
+                # pool discards it instead of recycling an unknown state.
+                self._invalidate()
+            else:
+                # Body raised before COMMIT; try to roll back. Swallow
+                # rollback errors; the original exception is more important.
+                with contextlib.suppress(BaseException):
+                    await self.execute("ROLLBACK")
             raise
         finally:
             self._tx_owner = None

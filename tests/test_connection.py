@@ -821,6 +821,26 @@ class TestDqliteConnection:
         # Would previously raise InterfaceError("returned to the pool").
         await conn.close()
 
+    async def test_commit_failure_invalidates_connection(self, connected_connection) -> None:
+        """A failed COMMIT leaves server-side state ambiguous; the connection
+        must be invalidated so the pool doesn't recycle it to another caller
+        in an unknown state.
+        """
+        from dqliteclient.exceptions import OperationalError as OpError
+        from dqlitewire.messages import FailureResponse, ResultResponse
+
+        conn, mock_reader, _ = connected_connection
+        mock_reader.read.side_effect = [
+            ResultResponse(last_insert_id=0, rows_affected=0).encode(),  # BEGIN
+            FailureResponse(code=1, message="disk I/O error").encode(),  # COMMIT
+            # ROLLBACK would also fail on an invalidated conn:
+            FailureResponse(code=1, message="should not reach").encode(),
+        ]
+        with pytest.raises(OpError):
+            async with conn.transaction():
+                pass
+        assert not conn.is_connected, "failed COMMIT must invalidate the connection"
+
     async def test_cross_event_loop_raises_interface_error(self) -> None:
         """Using a connection from a different event loop must raise InterfaceError."""
         import asyncio
