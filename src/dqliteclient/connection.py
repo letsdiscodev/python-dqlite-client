@@ -241,7 +241,10 @@ class DqliteConnection:
             if e.code in _LEADER_ERROR_CODES:
                 self._invalidate()
             raise
-        except BaseException:
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            # Interrupted mid-operation; we don't know how much of the
+            # request/response round-trip completed, so the wire state is
+            # unsafe to reuse. Invalidate and re-raise.
             self._invalidate()
             raise
         finally:

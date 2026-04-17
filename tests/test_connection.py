@@ -758,6 +758,26 @@ class TestDqliteConnection:
         # Socket must also be cleaned up.
         assert not conn.is_connected
 
+    async def test_client_side_error_does_not_invalidate_connection(
+        self, connected_connection
+    ) -> None:
+        """A client-side error (e.g., encoding bug) before any wire byte is
+        written must not destroy the connection. Only transport-level and
+        leader-change errors warrant invalidation.
+        """
+        conn, _, _ = connected_connection
+        assert conn.is_connected
+
+        async def raise_client_error(_db, _sql, _params=None):
+            raise TypeError("bad parameter type")
+
+        conn._protocol.exec_sql = raise_client_error  # type: ignore[assignment]
+
+        with pytest.raises(TypeError, match="bad parameter"):
+            await conn.execute("INSERT INTO t VALUES (?)", [object()])
+
+        assert conn.is_connected, "client-side TypeError must not invalidate the connection"
+
     async def test_cross_event_loop_raises_interface_error(self) -> None:
         """Using a connection from a different event loop must raise InterfaceError."""
         import asyncio
