@@ -147,33 +147,23 @@ class DqliteProtocol:
         """Execute SQL directly.
 
         Returns (last_insert_id, rows_affected). For multi-statement SQL
-        (semicolon-separated), returns the last statement's last_insert_id
-        and the sum of all rows_affected, matching the Go client behavior.
+        (semicolon-separated), the server aggregates internally and returns
+        a single RESULT with sqlite3_changes() of the last statement only —
+        rows_affected is NOT a sum across statements.
         """
         request = ExecSqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
         self._writer.write(request.encode())
         await self._writer.drain()
 
-        last_insert_id = 0
-        rows_affected = 0
+        response = await self._read_response()
 
-        while True:
-            response = await self._read_response()
+        if isinstance(response, FailureResponse):
+            raise OperationalError(response.code, response.message)
 
-            if isinstance(response, FailureResponse):
-                raise OperationalError(response.code, response.message)
+        if not isinstance(response, ResultResponse):
+            raise ProtocolError(f"Expected ResultResponse, got {type(response).__name__}")
 
-            if not isinstance(response, ResultResponse):
-                raise ProtocolError(f"Expected ResultResponse, got {type(response).__name__}")
-
-            last_insert_id = response.last_insert_id
-            rows_affected += response.rows_affected
-
-            # Check for more results from multi-statement SQL
-            if not self._decoder.has_message():
-                break
-
-        return last_insert_id, rows_affected
+        return response.last_insert_id, response.rows_affected
 
     async def query_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None

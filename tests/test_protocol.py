@@ -126,30 +126,35 @@ class TestDqliteProtocol:
         # Verify the request was written (meaning params=() was accepted)
         mock_writer.write.assert_called()
 
-    async def test_exec_sql_multi_statement(
+    async def test_exec_sql_reads_single_response(
         self,
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """Multi-statement SQL should drain all ResultResponse messages."""
+        """exec_sql reads exactly one ResultResponse — it must not drain extras.
+
+        The C dqlite server emits exactly one RESULT per EXEC_SQL call, even
+        for multi-statement SQL: handle_exec_sql_done_cb recurses internally
+        on exec->tail and calls SUCCESS(..., RESULT) only after the last
+        statement completes. fill_result reports sqlite3_changes() of the
+        last statement only.
+
+        If any additional response bytes are buffered (server protocol
+        violation, pipelining, test artefact), the client must leave them
+        alone rather than silently consuming them.
+        """
         from dqlitewire.messages import ResultResponse
 
-        # Server sends two ResultResponse messages (one per statement)
         result1 = ResultResponse(last_insert_id=1, rows_affected=1)
-        result2 = ResultResponse(last_insert_id=2, rows_affected=1)
-        # Both arrive in a single read
-        mock_reader.read.return_value = result1.encode() + result2.encode()
+        stray = ResultResponse(last_insert_id=99, rows_affected=99)
+        mock_reader.read.return_value = result1.encode() + stray.encode()
 
-        last_id, rows_affected = await protocol.exec_sql(
-            1, "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2)"
-        )
+        last_id, rows_affected = await protocol.exec_sql(1, "INSERT INTO t VALUES (1)")
 
-        # Should return the last statement's result with accumulated rows_affected
-        assert last_id == 2
-        assert rows_affected == 2
-
-        # The decoder buffer should be clean -- no leftover messages
-        assert not protocol._decoder.has_message()
+        assert last_id == 1
+        assert rows_affected == 1
+        # The stray message must still be buffered — not silently consumed.
+        assert protocol._decoder.has_message()
 
     async def test_query_sql_multi_statement_drains_extra(
         self,
