@@ -177,9 +177,7 @@ class ClusterClient:
         enable debug logging to diagnose cluster churn instead of
         seeing only the final exception (ISSUE-78).
         """
-        attempts_cap = (
-            max_attempts if max_attempts is not None else _DEFAULT_CONNECT_MAX_ATTEMPTS
-        )
+        attempts_cap = max_attempts if max_attempts is not None else _DEFAULT_CONNECT_MAX_ATTEMPTS
         if attempts_cap < 1:
             raise ValueError(f"max_attempts must be >= 1, got {attempts_cap}")
 

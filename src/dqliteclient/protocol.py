@@ -32,9 +32,7 @@ from dqlitewire.messages.base import Message
 _READ_CHUNK_SIZE = 4096
 
 
-def _validate_positive_int_or_none(
-    value: int | None, name: str
-) -> int | None:
+def _validate_positive_int_or_none(value: int | None, name: str) -> int | None:
     """Shared validation for positive-int-or-None parameters.
 
     Used for both ``max_total_rows`` and ``max_continuation_frames``
@@ -278,10 +276,7 @@ class DqliteProtocol:
                 raise ProtocolError(
                     "ROWS continuation made no progress: frame had 0 rows and has_more=True"
                 )
-            if (
-                self._max_continuation_frames is not None
-                and frames > self._max_continuation_frames
-            ):
+            if self._max_continuation_frames is not None and frames > self._max_continuation_frames:
                 # Per-frame cap complements max_total_rows (ISSUE-98): a
                 # slow-drip server sending 1-row-per-frame would
                 # otherwise pin a client CPU with O(n) iterations of
