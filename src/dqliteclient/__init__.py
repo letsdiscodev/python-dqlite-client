@@ -46,6 +46,9 @@ async def connect(
     *,
     database: str = "default",
     timeout: float = 10.0,
+    max_total_rows: int | None = 10_000_000,
+    max_continuation_frames: int | None = 100_000,
+    trust_server_heartbeat: bool = False,
 ) -> DqliteConnection:
     """Connect to a dqlite node.
 
@@ -53,11 +56,25 @@ async def connect(
         address: Node address in "host:port" format
         database: Database name to open
         timeout: Connection timeout in seconds
+        max_total_rows: Cumulative row cap across continuation frames
+            for a single query. Forwarded to the underlying
+            DqliteConnection. None disables the cap.
+        max_continuation_frames: Per-query continuation-frame cap.
+            Forwarded to the underlying DqliteConnection.
+        trust_server_heartbeat: Let the server-advertised heartbeat
+            widen the per-read deadline. Default False.
 
     Returns:
         A connected DqliteConnection
     """
-    conn = DqliteConnection(address, database=database, timeout=timeout)
+    conn = DqliteConnection(
+        address,
+        database=database,
+        timeout=timeout,
+        max_total_rows=max_total_rows,
+        max_continuation_frames=max_continuation_frames,
+        trust_server_heartbeat=trust_server_heartbeat,
+    )
     await conn.connect()
     return conn
 
@@ -71,6 +88,9 @@ async def create_pool(
     timeout: float = 10.0,
     cluster: ClusterClient | None = None,
     node_store: NodeStore | None = None,
+    max_total_rows: int | None = 10_000_000,
+    max_continuation_frames: int | None = 100_000,
+    trust_server_heartbeat: bool = False,
 ) -> ConnectionPool:
     """Create a connection pool with automatic leader detection.
 
@@ -84,6 +104,13 @@ async def create_pool(
         cluster: Externally-owned ClusterClient shared across pools.
         node_store: Externally-owned NodeStore used to build a new
             ClusterClient. Mutually exclusive with ``cluster``.
+        max_total_rows: Cumulative row cap across continuation frames
+            for a single query. Forwarded to the underlying
+            ConnectionPool. None disables the cap.
+        max_continuation_frames: Per-query continuation-frame cap.
+            Forwarded to the underlying ConnectionPool.
+        trust_server_heartbeat: Let the server-advertised heartbeat
+            widen the per-read deadline. Default False.
 
     Returns:
         An initialized ConnectionPool
@@ -96,6 +123,9 @@ async def create_pool(
         timeout=timeout,
         cluster=cluster,
         node_store=node_store,
+        max_total_rows=max_total_rows,
+        max_continuation_frames=max_continuation_frames,
+        trust_server_heartbeat=trust_server_heartbeat,
     )
     await pool.initialize()
     return pool
