@@ -11,7 +11,7 @@ from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import DqliteConnection
 from dqliteclient.exceptions import DqliteConnectionError
 from dqliteclient.node_store import NodeStore
-from dqliteclient.protocol import _validate_max_total_rows
+from dqliteclient.protocol import _validate_max_total_rows, _validate_positive_int_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,8 @@ class ConnectionPool:
         cluster: ClusterClient | None = None,
         node_store: NodeStore | None = None,
         max_total_rows: int | None = 10_000_000,
+        max_continuation_frames: int | None = 100_000,
+        trust_server_heartbeat: bool = False,
     ) -> None:
         """Initialize connection pool.
 
@@ -99,6 +101,16 @@ class ConnectionPool:
                 connection inherits the same governor. ``None`` disables
                 the cap entirely (not recommended in production —
                 bounds memory against slow-drip attacks).
+            max_continuation_frames: Per-query continuation-frame cap
+                (ISSUE-98). Complements ``max_total_rows``: a server
+                sending 1-row-per-frame can inflict O(n) Python decode
+                work where n is the row cap; the frame cap bounds that.
+                Forwarded to every :class:`DqliteConnection`.
+            trust_server_heartbeat: When True, the per-read deadline on
+                every connection widens to the server-advertised
+                heartbeat (up to a 300 s hard cap). Default False —
+                operator-configured ``timeout`` is authoritative and
+                the server cannot amplify it (ISSUE-101).
         """
         if min_size < 0:
             raise ValueError(f"min_size must be non-negative, got {min_size}")
@@ -119,6 +131,10 @@ class ConnectionPool:
         self._max_size = max_size
         self._timeout = timeout
         self._max_total_rows = _validate_max_total_rows(max_total_rows)
+        self._max_continuation_frames = _validate_positive_int_or_none(
+            max_continuation_frames, "max_continuation_frames"
+        )
+        self._trust_server_heartbeat = trust_server_heartbeat
 
         if cluster is not None:
             self._cluster = cluster
@@ -172,7 +188,10 @@ class ConnectionPool:
         reservation.
         """
         return await self._cluster.connect(
-            database=self._database, max_total_rows=self._max_total_rows
+            database=self._database,
+            max_total_rows=self._max_total_rows,
+            max_continuation_frames=self._max_continuation_frames,
+            trust_server_heartbeat=self._trust_server_heartbeat,
         )
 
     async def _release_reservation(self) -> None:

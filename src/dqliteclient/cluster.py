@@ -160,14 +160,17 @@ class ClusterClient:
         database: str = "default",
         *,
         max_total_rows: int | None = 10_000_000,
+        max_continuation_frames: int | None = 100_000,
+        trust_server_heartbeat: bool = False,
         max_attempts: int | None = None,
     ) -> DqliteConnection:
         """Connect to the cluster leader.
 
-        Returns a connection to the current leader. ``max_total_rows``
-        is forwarded to the underlying :class:`DqliteConnection` so
-        callers (including :class:`ConnectionPool`) can tune the
-        cumulative row cap from one place.
+        Returns a connection to the current leader. ``max_total_rows``,
+        ``max_continuation_frames``, and ``trust_server_heartbeat`` are
+        forwarded to the underlying :class:`DqliteConnection` so callers
+        (including :class:`ConnectionPool`) can tune security/DoS
+        governors from one place.
 
         ``max_attempts`` overrides the default
         :data:`_DEFAULT_CONNECT_MAX_ATTEMPTS` (ISSUE-109).
@@ -194,6 +197,8 @@ class ClusterClient:
                     database=database,
                     timeout=self._timeout,
                     max_total_rows=max_total_rows,
+                    max_continuation_frames=max_continuation_frames,
+                    trust_server_heartbeat=trust_server_heartbeat,
                 )
                 await conn.connect()
                 return conn
