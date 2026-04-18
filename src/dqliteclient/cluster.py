@@ -242,7 +242,13 @@ class ClusterClient:
                 )
                 await conn.connect()
                 return conn
-            except Exception as exc:
+            except (OSError, TimeoutError, DqliteConnectionError, ClusterError) as exc:
+                # Narrow catch: these are the transport- and cluster-level
+                # failures the retry loop re-attempts. Anything wider would
+                # silently log-and-re-raise programming bugs (TypeError,
+                # AttributeError, …) which are better left un-instrumented
+                # so the traceback points at the real source. Same pattern
+                # as the _socket_looks_dead / _drain_idle narrowings.
                 logger.debug(
                     "ClusterClient.connect attempt %d/%d failed (leader=%r): %s",
                     attempt,

@@ -629,3 +629,21 @@ class TestClusterErrorMessageTruncation:
         # marker; total upper bound well under the raw 150k.
         assert len(message) < 3_000
         assert "truncated" in message
+
+
+class TestTryConnectNarrowExcept:
+    """Programming bugs (TypeError, AttributeError, …) in the connect
+    path must propagate without being muted by the DEBUG-log instrument.
+    """
+
+    async def test_type_error_propagates(self) -> None:
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store, timeout=0.1)
+
+        async def fake_find_leader(**_kwargs: object) -> str:
+            raise TypeError("programming bug")
+
+        client.find_leader = fake_find_leader  # type: ignore[method-assign]
+
+        with pytest.raises(TypeError, match="programming bug"):
+            await client.connect(max_attempts=1)
