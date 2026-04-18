@@ -1,5 +1,7 @@
 """Tests for node store."""
 
+import pytest
+
 import dqliteclient
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo
 
@@ -8,7 +10,7 @@ class TestMemoryNodeStore:
     async def test_empty_store(self) -> None:
         store = MemoryNodeStore()
         nodes = await store.get_nodes()
-        assert nodes == []
+        assert len(nodes) == 0
 
     async def test_initial_addresses(self) -> None:
         store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
@@ -49,8 +51,29 @@ class TestMemoryNodeStore:
         assert hasattr(dqliteclient, "NodeInfo")
         assert dqliteclient.NodeInfo is NodeInfo
 
-    async def test_get_nodes_returns_copy(self) -> None:
+    async def test_get_nodes_returns_immutable_sequence(self) -> None:
+        """The store hands out an immutable tuple of frozen NodeInfo.
+
+        A caller therefore cannot corrupt store state by mutating the
+        returned sequence or its elements.
+        """
+        import dataclasses
+
         store = MemoryNodeStore(["localhost:9001"])
-        nodes1 = await store.get_nodes()
-        nodes2 = await store.get_nodes()
-        assert nodes1 is not nodes2
+        nodes = await store.get_nodes()
+        assert isinstance(nodes, tuple)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            nodes[0].address = "evil"  # type: ignore[misc]
+
+    async def test_node_info_is_frozen(self) -> None:
+        import dataclasses
+
+        info = NodeInfo(node_id=1, address="h:1", role=0)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            info.address = "other"  # type: ignore[misc]
+
+    async def test_node_info_is_hashable(self) -> None:
+        info1 = NodeInfo(node_id=1, address="h:1", role=0)
+        info2 = NodeInfo(node_id=1, address="h:1", role=0)
+        assert hash(info1) == hash(info2)
+        assert {info1, info2} == {info1}
