@@ -32,6 +32,23 @@ from dqlitewire.messages.base import Message
 _READ_CHUNK_SIZE = 4096
 
 
+def _validate_positive_int_or_none(
+    value: int | None, name: str
+) -> int | None:
+    """Shared validation for positive-int-or-None parameters.
+
+    Used for both ``max_total_rows`` and ``max_continuation_frames``
+    (ISSUE-98). None disables the cap; any int value must be > 0.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{name} must be int or None, got {type(value).__name__}")
+    if value <= 0:
+        raise ValueError(f"{name} must be > 0 or None, got {value}")
+    return value
+
+
 def _validate_max_total_rows(value: int | None) -> int | None:
     """Validate the ``max_total_rows`` constructor argument.
 
@@ -56,6 +73,8 @@ class DqliteProtocol:
         writer: asyncio.StreamWriter,
         timeout: float = 15.0,
         max_total_rows: int | None = 10_000_000,
+        max_continuation_frames: int | None = 100_000,
+        trust_server_heartbeat: bool = False,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -69,6 +88,21 @@ class DqliteProtocol:
         # could legitimately allocate hundreds of millions of rows over
         # the full deadline. None disables the cap.
         self._max_total_rows = _validate_max_total_rows(max_total_rows)
+        # Per-query frame cap. Complements max_total_rows: a server
+        # sending 10M 1-row frames to reach the row cap would still
+        # burn 10M × decode-cost of Python work; the frame cap bounds
+        # that at ~100k iterations (ISSUE-98).
+        self._max_continuation_frames = _validate_positive_int_or_none(
+            max_continuation_frames, "max_continuation_frames"
+        )
+        # When True, the client honors the server-advertised heartbeat
+        # timeout to adjust its per-read deadline (subject to the 300 s
+        # hard cap). When False (default), the server value is recorded
+        # for diagnostics only and the operator-configured ``timeout``
+        # is authoritative. Opt-in protects operators whose timeout is
+        # a latency-SLO boundary from server-induced amplification
+        # (ISSUE-101).
+        self._trust_server_heartbeat = trust_server_heartbeat
 
     async def handshake(self, client_id: int | None = None) -> int:
         """Perform protocol handshake.
@@ -96,8 +130,14 @@ class DqliteProtocol:
 
         self._client_id = client_id
         self._heartbeat_timeout = response.heartbeat_timeout
-        # Use heartbeat timeout for subsequent reads if larger than default
-        if response.heartbeat_timeout > 0:
+        # Use the server-advertised heartbeat only when explicitly
+        # trusted. Previously we always widened ``self._timeout`` up
+        # to 300 s based on the server value, which let a hostile
+        # server amplify the operator's configured timeout up to 30×
+        # (ISSUE-101). Default is now opt-out: the server value is
+        # recorded for diagnostics but does not change the per-read
+        # deadline.
+        if self._trust_server_heartbeat and response.heartbeat_timeout > 0:
             heartbeat_seconds = response.heartbeat_timeout / 1000.0
             # Cap to prevent a malicious/buggy server from disabling timeouts
             self._timeout = max(self._timeout, min(heartbeat_seconds, 300.0))
@@ -230,11 +270,26 @@ class DqliteProtocol:
         """
         all_rows = list(initial.rows)
         response = initial
+        frames = 1  # the initial frame counts
         while response.has_more:
             next_response = await self._read_continuation(deadline=deadline)
+            frames += 1
             if not next_response.rows and next_response.has_more:
                 raise ProtocolError(
                     "ROWS continuation made no progress: frame had 0 rows and has_more=True"
+                )
+            if (
+                self._max_continuation_frames is not None
+                and frames > self._max_continuation_frames
+            ):
+                # Per-frame cap complements max_total_rows (ISSUE-98): a
+                # slow-drip server sending 1-row-per-frame would
+                # otherwise pin a client CPU with O(n) iterations of
+                # decode work, where n is max_total_rows.
+                raise ProtocolError(
+                    f"Query exceeded max_continuation_frames cap "
+                    f"({self._max_continuation_frames}); server may be "
+                    f"slow-dripping rows."
                 )
             if self._max_total_rows is not None and (
                 len(all_rows) + len(next_response.rows) > self._max_total_rows

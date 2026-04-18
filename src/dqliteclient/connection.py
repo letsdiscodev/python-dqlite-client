@@ -14,7 +14,11 @@ from dqliteclient.exceptions import (
     OperationalError,
     ProtocolError,
 )
-from dqliteclient.protocol import DqliteProtocol, _validate_max_total_rows
+from dqliteclient.protocol import (
+    DqliteProtocol,
+    _validate_max_total_rows,
+    _validate_positive_int_or_none,
+)
 from dqlitewire.exceptions import EncodeError as _WireEncodeError
 
 # dqlite error codes that indicate a leader change (SQLite extended error codes)
@@ -76,6 +80,8 @@ class DqliteConnection:
         database: str = "default",
         timeout: float = 10.0,
         max_total_rows: int | None = 10_000_000,
+        max_continuation_frames: int | None = 100_000,
+        trust_server_heartbeat: bool = False,
     ) -> None:
         """Initialize connection (does not connect yet).
 
@@ -87,6 +93,16 @@ class DqliteConnection:
                 frames for a single query. Prevents a slow-drip server
                 from keeping the client alive indefinitely within the
                 per-operation deadline. Set to ``None`` to disable.
+            max_continuation_frames: Maximum number of continuation
+                frames in a single query result. Caps the per-query
+                Python-side decode work a hostile server can inflict
+                by sending many 1-row frames (ISSUE-98). Set to
+                ``None`` to disable.
+            trust_server_heartbeat: When True, widen the per-read
+                deadline to the server-advertised heartbeat (subject
+                to a 300 s hard cap). When False (default), ``timeout``
+                is authoritative — the server value cannot amplify it
+                (ISSUE-101).
         """
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a positive finite number, got {timeout}")
@@ -94,6 +110,10 @@ class DqliteConnection:
         self._database = database
         self._timeout = timeout
         self._max_total_rows = _validate_max_total_rows(max_total_rows)
+        self._max_continuation_frames = _validate_positive_int_or_none(
+            max_continuation_frames, "max_continuation_frames"
+        )
+        self._trust_server_heartbeat = trust_server_heartbeat
         self._protocol: DqliteProtocol | None = None
         self._db_id: int | None = None
         self._in_transaction = False
@@ -148,6 +168,8 @@ class DqliteConnection:
                 writer,
                 timeout=self._timeout,
                 max_total_rows=self._max_total_rows,
+                max_continuation_frames=self._max_continuation_frames,
+                trust_server_heartbeat=self._trust_server_heartbeat,
             )
 
             try:

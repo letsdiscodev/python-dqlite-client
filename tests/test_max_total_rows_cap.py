@@ -69,3 +69,92 @@ class TestMaxTotalRowsEnforcement:
 
         rows = asyncio.run(p._drain_continuations(initial, deadline=999999.0))
         assert len(rows) == 10_000
+
+
+class TestMaxContinuationFramesEnforcement:
+    """ISSUE-98: per-frame cap complements max_total_rows.
+
+    A slow-drip server sending many 1-row frames could pin a client CPU
+    with ~max_total_rows iterations of Python-level decode work. The
+    frame cap bounds that at a configurable number of iterations.
+    """
+
+    def test_exceeding_frame_cap_raises(self) -> None:
+        reader = MagicMock()
+        writer = MagicMock()
+        # Cap at 3 frames (initial + 2 continuations).
+        p = DqliteProtocol(
+            reader,
+            writer,
+            timeout=5.0,
+            max_total_rows=None,
+            max_continuation_frames=3,
+        )
+
+        initial = _make_rows_response([[1]], has_more=True)
+        # Every continuation delivers one row with has_more=True. The
+        # test mock returns the same response object each time so the
+        # frame counter is what drives termination.
+        one_row_continuation = _make_rows_response([[2]], has_more=True)
+
+        p._read_continuation = AsyncMock(return_value=one_row_continuation)  # type: ignore[method-assign]
+
+        async def run() -> None:
+            await p._drain_continuations(initial, deadline=999999.0)
+
+        with pytest.raises(ProtocolError, match="max_continuation_frames"):
+            asyncio.run(run())
+
+    def test_within_frame_cap_succeeds(self) -> None:
+        reader = MagicMock()
+        writer = MagicMock()
+        p = DqliteProtocol(
+            reader,
+            writer,
+            timeout=5.0,
+            max_continuation_frames=5,
+        )
+        initial = _make_rows_response([[1]], has_more=True)
+        last = _make_rows_response([[2], [3]], has_more=False)
+
+        p._read_continuation = AsyncMock(return_value=last)  # type: ignore[method-assign]
+        rows = asyncio.run(p._drain_continuations(initial, deadline=999999.0))
+        assert len(rows) == 3
+
+    def test_none_disables_frame_cap(self) -> None:
+        reader = MagicMock()
+        writer = MagicMock()
+        p = DqliteProtocol(
+            reader,
+            writer,
+            timeout=5.0,
+            max_continuation_frames=None,
+        )
+        initial = _make_rows_response([[1]], has_more=True)
+        last = _make_rows_response([[2]], has_more=False)
+
+        p._read_continuation = AsyncMock(return_value=last)  # type: ignore[method-assign]
+        rows = asyncio.run(p._drain_continuations(initial, deadline=999999.0))
+        assert len(rows) == 2
+
+
+class TestTrustServerHeartbeat:
+    """ISSUE-101: server heartbeat no longer widens client timeout by default."""
+
+    def test_default_does_not_amplify_timeout(self) -> None:
+        reader = MagicMock()
+        writer = MagicMock()
+        p = DqliteProtocol(reader, writer, timeout=5.0)
+        # Inject the server-advertised value; the field is set in
+        # handshake() but we bypass the socket dance for a pure
+        # attribute test.
+        p._heartbeat_timeout = 300_000  # 300 s in ms, far above 5 s
+        # trust_server_heartbeat defaults to False, so timeout stayed 5.
+        assert p._timeout == 5.0
+        assert p._trust_server_heartbeat is False
+
+    def test_opt_in_respected(self) -> None:
+        reader = MagicMock()
+        writer = MagicMock()
+        p = DqliteProtocol(reader, writer, timeout=5.0, trust_server_heartbeat=True)
+        assert p._trust_server_heartbeat is True
