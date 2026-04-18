@@ -118,29 +118,57 @@ class ConnectionPool:
         self._initialized = False
 
     async def initialize(self) -> None:
-        """Initialize the pool with minimum connections."""
+        """Initialize the pool with minimum connections.
+
+        Idempotent: concurrent callers share the same initialization —
+        only one performs the TCP work, the others await its result.
+        """
+        # Hold the lock across the gather so a second concurrent
+        # initialize() call observes _initialized=True after the first
+        # completes and returns without re-creating.
         async with self._lock:
             if self._initialized:
                 return
-            # Create min_size connections concurrently so pool startup
-            # latency doesn't scale with min_size × per-connect RTT. If any
-            # one fails, cancel the rest and propagate; leave _initialized
-            # False so the caller can retry.
             if self._min_size > 0:
-                conns = await asyncio.gather(
-                    *(self._create_connection() for _ in range(self._min_size))
-                )
+                self._size += self._min_size
+                try:
+                    # Create min_size connections concurrently so startup
+                    # latency doesn't scale with min_size × per-connect RTT.
+                    conns = await asyncio.gather(
+                        *(self._create_connection() for _ in range(self._min_size))
+                    )
+                except BaseException:
+                    self._size -= self._min_size
+                    self._signal_state_change()
+                    raise
                 for conn in conns:
                     await self._pool.put(conn)
             self._initialized = True
 
     async def _create_connection(self) -> DqliteConnection:
-        """Create a new connection to the leader."""
-        conn = await self._cluster.connect(
+        """Create a new connection to the leader.
+
+        Does NOT mutate ``self._size`` — callers must have incremented
+        ``_size`` under ``_lock`` as a reservation before calling this
+        method (see ``acquire`` / ``initialize``) so that concurrent
+        callers cannot collectively exceed ``_max_size``. On failure,
+        the caller is responsible for decrementing to release the
+        reservation.
+        """
+        return await self._cluster.connect(
             database=self._database, max_total_rows=self._max_total_rows
         )
-        self._size += 1
-        return conn
+
+    async def _release_reservation(self) -> None:
+        """Decrement ``_size`` under the lock, waking waiters.
+
+        Every ``_size -= 1`` call in the pool must go through this
+        helper so the counter stays consistent against concurrent
+        capacity checks in ``acquire``.
+        """
+        async with self._lock:
+            self._size -= 1
+        self._signal_state_change()
 
     def _get_closed_event(self) -> asyncio.Event:
         """Lazily create the closed Event bound to the running loop."""
@@ -178,8 +206,7 @@ class ConnectionPool:
             except BaseException:
                 pass
             finally:
-                self._size -= 1
-                self._signal_state_change()
+                await self._release_reservation()
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
@@ -202,13 +229,23 @@ class ConnectionPool:
             except asyncio.QueueEmpty:
                 pass
 
-            # Try to create a new connection if under max
+            # Try to reserve a new-connection slot under the lock, then
+            # drop the lock before the TCP handshake so concurrent
+            # pool users aren't serialized on network latency.
+            reserved = False
             async with self._lock:
                 if self._closed:
                     raise DqliteConnectionError("Pool is closed")
                 if self._size < self._max_size:
+                    self._size += 1
+                    reserved = True
+            if reserved:
+                try:
                     conn = await self._create_connection()
-                    break
+                except BaseException:
+                    await self._release_reservation()
+                    raise
+                break
 
             # At capacity — wait briefly on the queue, then loop back to
             # re-check capacity (another coroutine may have freed a slot)
@@ -250,9 +287,16 @@ class ConnectionPool:
         # Also drain other idle connections — they likely point to the same dead server.
         if not conn.is_connected:
             await self._drain_idle()
+            # Release the dead reservation, reserve a new slot, then
+            # do the network work outside the lock.
             async with self._lock:
-                self._size -= 1
+                self._size -= 1  # dead conn's reservation
+                self._size += 1  # fresh reservation
+            try:
                 conn = await self._create_connection()
+            except BaseException:
+                await self._release_reservation()
+                raise
 
         conn._pool_released = False
         try:
@@ -265,16 +309,14 @@ class ConnectionPool:
                     conn._pool_released = True
                     with contextlib.suppress(Exception):
                         await conn.close()
-                    self._size -= 1
-                    self._signal_state_change()
+                    await self._release_reservation()
                     raise
                 conn._pool_released = True
                 try:
                     self._pool.put_nowait(conn)
                 except asyncio.QueueFull:
                     await conn.close()
-                    self._size -= 1
-                    self._signal_state_change()
+                    await self._release_reservation()
             else:
                 # Connection is broken (invalidated by execute/fetch error handlers).
                 # Drain other idle connections — they likely point to the same dead server.
@@ -282,8 +324,7 @@ class ConnectionPool:
                 await self._drain_idle()
                 with contextlib.suppress(BaseException):
                     await conn.close()
-                self._size -= 1
-                self._signal_state_change()
+                await self._release_reservation()
             raise
         else:
             await self._release(conn)
@@ -330,16 +371,14 @@ class ConnectionPool:
         if self._closed:
             conn._pool_released = True
             await conn.close()
-            self._size -= 1
-            self._signal_state_change()
+            await self._release_reservation()
             return
 
         if not await self._reset_connection(conn):
             conn._pool_released = True
             with contextlib.suppress(Exception):
                 await conn.close()
-            self._size -= 1
-            self._signal_state_change()
+            await self._release_reservation()
             return
 
         conn._pool_released = True
@@ -347,8 +386,7 @@ class ConnectionPool:
             self._pool.put_nowait(conn)
         except asyncio.QueueFull:
             await conn.close()
-            self._size -= 1
-            self._signal_state_change()
+            await self._release_reservation()
 
     async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
         """Execute a SQL statement using a pooled connection."""

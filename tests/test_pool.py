@@ -300,7 +300,15 @@ class TestConnectionPool:
         await pool.close()
 
     async def test_dead_conn_replacement_respects_max_size(self) -> None:
-        """Dead-connection replacement must not allow _size to exceed max_size."""
+        """Dead-connection replacement must not allow _size to exceed max_size.
+
+        ISSUE-34/58 changed the pool to a reservation pattern: the
+        lock is released before the TCP handshake. The invariant we
+        assert here is the one that actually matters — that
+        ``_size`` never exceeds ``_max_size`` at any observation
+        point — rather than the specific implementation detail of
+        "lock held during create".
+        """
         pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=2)
 
         dead_conn = MagicMock()
@@ -313,16 +321,16 @@ class TestConnectionPool:
 
         assert pool._size == 1
 
-        # Track whether the lock is held during dead-conn replacement.
-        # If _create_connection is called while the lock is NOT held,
-        # another coroutine could race and exceed max_size.
-        lock_was_held_during_create = False
+        # Track _size at every create call. It must never exceed
+        # max_size, even transiently, because creates happen outside
+        # the lock under the new pattern and concurrent acquires
+        # would otherwise race past the cap.
+        peak_size_during_create = 0
         original_create = pool._create_connection
 
         async def tracking_create():
-            nonlocal lock_was_held_during_create
-            if pool._lock.locked():
-                lock_was_held_during_create = True
+            nonlocal peak_size_during_create
+            peak_size_during_create = max(peak_size_during_create, pool._size)
             return await original_create()
 
         new_conn = MagicMock()
@@ -335,9 +343,9 @@ class TestConnectionPool:
             async with pool.acquire() as conn:
                 assert conn is new_conn
 
-        assert lock_was_held_during_create, (
-            "Dead-connection replacement must hold the lock to prevent "
-            "_size race with concurrent acquire() calls"
+        assert peak_size_during_create <= pool._max_size, (
+            f"_size exceeded max_size during dead-conn replacement "
+            f"(peak={peak_size_during_create}, max={pool._max_size})"
         )
 
         await pool.close()
