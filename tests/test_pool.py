@@ -1303,3 +1303,117 @@ class TestDrainIdleCancellation:
         c2.close.assert_awaited_once()
         assert pool._size == 0
         assert any("boom" in rec.getMessage() for rec in caplog.records)
+
+
+class TestAcquireCancellationPreservesCapacity:
+    """An external cancellation of a coroutine parked in ``acquire()``'s
+    ``asyncio.wait(...)`` must not leak a connection or shrink effective
+    pool capacity. The abandoned ``get_task`` could win a subsequent
+    ``put()`` race; the fix must either cancel it or reclaim the
+    connection it took.
+    """
+
+    @pytest.fixture
+    def mock_connection(self) -> MagicMock:
+        conn = MagicMock()
+        conn.is_connected = True
+        conn._in_transaction = False
+        conn._pool_released = False
+        conn.connect = AsyncMock()
+        conn.close = AsyncMock()
+        conn._protocol = MagicMock()
+        conn._protocol._writer = MagicMock()
+        conn._protocol._writer.transport = MagicMock()
+        conn._protocol._writer.transport.is_closing = MagicMock(return_value=False)
+        conn._protocol._reader = MagicMock()
+        conn._protocol._reader.at_eof = MagicMock(return_value=False)
+        return conn
+
+    async def test_cancelled_waiter_does_not_wedge_pool(
+        self,
+        mock_connection: MagicMock,
+    ) -> None:
+        pool = ConnectionPool(["localhost:9001"], max_size=1, timeout=5.0)
+
+        with patch.object(pool._cluster, "connect", return_value=mock_connection):
+            await pool.initialize()
+
+            holder_released = asyncio.Event()
+            waiter_parked = asyncio.Event()
+
+            async def holder() -> None:
+                async with pool.acquire():
+                    waiter_parked.set()
+                    # Hold until the waiter has been cancelled AND we've
+                    # been signalled to exit.
+                    await holder_released.wait()
+
+            async def waiter() -> None:
+                async with pool.acquire():
+                    pass
+
+            holder_task = asyncio.create_task(holder())
+            await waiter_parked.wait()
+
+            waiter_task = asyncio.create_task(waiter())
+            # Give waiter() time to enter acquire() and park in asyncio.wait.
+            await asyncio.sleep(0.05)
+
+            waiter_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await waiter_task
+
+            # Release the in-use connection; the post-cancel put() must
+            # not be stolen by the abandoned get_task.
+            holder_released.set()
+            await holder_task
+
+            # Pool must still accept a new acquire within a short window —
+            # if the abandoned task captured the connection, this would
+            # time out.
+            async with asyncio.timeout(1.0):
+                async with pool.acquire() as conn:
+                    assert conn is mock_connection
+
+            assert pool._size == 1
+
+        await pool.close()
+
+    async def test_repeated_cancel_release_keeps_size_consistent(
+        self,
+        mock_connection: MagicMock,
+    ) -> None:
+        """Invariant: after any cancel/release cycle the ``_size`` counter
+        equals the number of connections actually reachable. Fuzz-test 100
+        rounds (smaller than the issue file's 1000 — kept light for CI)."""
+        pool = ConnectionPool(["localhost:9001"], max_size=1, timeout=5.0)
+
+        with patch.object(pool._cluster, "connect", return_value=mock_connection):
+            await pool.initialize()
+
+            for _ in range(100):
+                release_event = asyncio.Event()
+
+                async def holder(event: asyncio.Event = release_event) -> None:
+                    async with pool.acquire():
+                        await event.wait()
+
+                async def waiter() -> None:
+                    async with pool.acquire():
+                        pass
+
+                h = asyncio.create_task(holder())
+                await asyncio.sleep(0)
+                w = asyncio.create_task(waiter())
+                await asyncio.sleep(0.01)
+                w.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await w
+                release_event.set()
+                await h
+
+                # After every round the pool must have exactly one
+                # reachable reservation — queued or returned-by-holder.
+                assert pool._size == 1
+
+        await pool.close()

@@ -344,9 +344,31 @@ class ConnectionPool:
                     timeout=remaining,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-            finally:
+            except BaseException:
+                # Outer cancellation of this coroutine while suspended in
+                # ``asyncio.wait``. ``asyncio.wait`` does not cancel its
+                # argument tasks, so both children are still alive — we
+                # MUST stop them before propagating, otherwise the
+                # abandoned get_task can win a later queue.put() and
+                # orphan a connection (silently shrinking pool capacity).
                 if not closed_task.done():
                     closed_task.cancel()
+                if get_task.done() and not get_task.cancelled() and get_task.exception() is None:
+                    # Outer cancel raced with a successful get. The
+                    # reservation that backed this connection is still
+                    # valid; return it to the queue so the next
+                    # acquirer can use it instead of closing and
+                    # releasing (which would shrink _size).
+                    conn_won = get_task.result()
+                    with contextlib.suppress(asyncio.QueueFull):
+                        self._pool.put_nowait(conn_won)
+                elif not get_task.done():
+                    get_task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await get_task
+                raise
+            if not closed_task.done():
+                closed_task.cancel()
             if get_task in done:
                 conn = get_task.result()
             else:
