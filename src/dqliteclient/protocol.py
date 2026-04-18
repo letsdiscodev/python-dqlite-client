@@ -27,6 +27,10 @@ from dqlitewire.messages import (
 )
 from dqlitewire.messages.base import Message
 
+# Socket read buffer size. 4 KiB balances syscall overhead for typical
+# request/response payloads against latency for small wire messages.
+_READ_CHUNK_SIZE = 4096
+
 
 class DqliteProtocol:
     """Low-level protocol handler for a single dqlite connection."""
@@ -292,7 +296,7 @@ class DqliteProtocol:
         else:
             timeout = self._timeout
         try:
-            data = await asyncio.wait_for(self._reader.read(4096), timeout=timeout)
+            data = await asyncio.wait_for(self._reader.read(_READ_CHUNK_SIZE), timeout=timeout)
         except TimeoutError:
             raise DqliteConnectionError(f"Server read timed out after {timeout:.1f}s") from None
         except (ConnectionError, OSError, RuntimeError) as e:
