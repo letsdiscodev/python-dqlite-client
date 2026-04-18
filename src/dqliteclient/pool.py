@@ -73,6 +73,12 @@ class ConnectionPool:
                 cache, etc.) across databases or tenants.
             node_store: Externally-owned NodeStore used to build a new
                 ClusterClient. Mutually exclusive with ``cluster``.
+            max_total_rows: Cumulative row cap across continuation
+                frames for a single query. Forwarded to every
+                :class:`DqliteConnection` the pool hands out, so every
+                connection inherits the same governor. ``None`` disables
+                the cap entirely (not recommended in production —
+                bounds memory against slow-drip attacks).
         """
         if min_size < 0:
             raise ValueError(f"min_size must be non-negative, got {min_size}")
