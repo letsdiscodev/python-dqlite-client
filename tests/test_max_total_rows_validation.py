@@ -6,37 +6,37 @@ import pytest
 
 from dqliteclient.connection import DqliteConnection
 from dqliteclient.pool import ConnectionPool
-from dqliteclient.protocol import DqliteProtocol, _validate_max_total_rows
+from dqliteclient.protocol import DqliteProtocol, _validate_positive_int_or_none
 
 
 class TestValidator:
     def test_none_allowed(self) -> None:
-        assert _validate_max_total_rows(None) is None
+        assert _validate_positive_int_or_none(None, "max_total_rows") is None
 
     def test_positive_int_allowed(self) -> None:
-        assert _validate_max_total_rows(1) == 1
-        assert _validate_max_total_rows(10_000_000) == 10_000_000
+        assert _validate_positive_int_or_none(1, "max_total_rows") == 1
+        assert _validate_positive_int_or_none(10_000_000, "max_total_rows") == 10_000_000
 
     def test_zero_rejected(self) -> None:
         with pytest.raises(ValueError, match="max_total_rows must be > 0"):
-            _validate_max_total_rows(0)
+            _validate_positive_int_or_none(0, "max_total_rows")
 
     def test_negative_rejected(self) -> None:
         with pytest.raises(ValueError, match="max_total_rows must be > 0"):
-            _validate_max_total_rows(-1)
+            _validate_positive_int_or_none(-1, "max_total_rows")
 
     def test_float_rejected(self) -> None:
         with pytest.raises(TypeError, match="max_total_rows must be int or None"):
-            _validate_max_total_rows(1.5)  # type: ignore[arg-type]
+            _validate_positive_int_or_none(1.5, "max_total_rows")  # type: ignore[arg-type]
 
     def test_bool_rejected(self) -> None:
         # True is technically int, but PEP-489-style APIs rightly reject it.
         with pytest.raises(TypeError, match="max_total_rows must be int or None"):
-            _validate_max_total_rows(True)  # type: ignore[arg-type]
+            _validate_positive_int_or_none(True, "max_total_rows")  # type: ignore[arg-type]
 
     def test_string_rejected(self) -> None:
         with pytest.raises(TypeError, match="max_total_rows must be int or None"):
-            _validate_max_total_rows("100")  # type: ignore[arg-type]
+            _validate_positive_int_or_none("100", "max_total_rows")  # type: ignore[arg-type]
 
 
 class TestConstructorValidation:

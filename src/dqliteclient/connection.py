@@ -16,7 +16,6 @@ from dqliteclient.exceptions import (
 )
 from dqliteclient.protocol import (
     DqliteProtocol,
-    _validate_max_total_rows,
     _validate_positive_int_or_none,
 )
 from dqlitewire.exceptions import EncodeError as _WireEncodeError
@@ -108,7 +107,7 @@ class DqliteConnection:
         self._address = address
         self._database = database
         self._timeout = timeout
-        self._max_total_rows = _validate_max_total_rows(max_total_rows)
+        self._max_total_rows = _validate_positive_int_or_none(max_total_rows, "max_total_rows")
         self._max_continuation_frames = _validate_positive_int_or_none(
             max_continuation_frames, "max_continuation_frames"
         )

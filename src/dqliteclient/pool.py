@@ -11,7 +11,7 @@ from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import DqliteConnection
 from dqliteclient.exceptions import DqliteConnectionError
 from dqliteclient.node_store import NodeStore
-from dqliteclient.protocol import _validate_max_total_rows, _validate_positive_int_or_none
+from dqliteclient.protocol import _validate_positive_int_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ class ConnectionPool:
         self._min_size = min_size
         self._max_size = max_size
         self._timeout = timeout
-        self._max_total_rows = _validate_max_total_rows(max_total_rows)
+        self._max_total_rows = _validate_positive_int_or_none(max_total_rows, "max_total_rows")
         self._max_continuation_frames = _validate_positive_int_or_none(
             max_continuation_frames, "max_continuation_frames"
         )

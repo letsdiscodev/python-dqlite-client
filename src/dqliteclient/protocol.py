@@ -47,21 +47,6 @@ def _validate_positive_int_or_none(value: int | None, name: str) -> int | None:
     return value
 
 
-def _validate_max_total_rows(value: int | None) -> int | None:
-    """Validate the ``max_total_rows`` constructor argument.
-
-    ``None`` disables the cap. Otherwise the value must be a positive
-    ``int`` (``bool`` is rejected even though it's a subclass of int).
-    """
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"max_total_rows must be int or None, got {type(value).__name__}")
-    if value <= 0:
-        raise ValueError(f"max_total_rows must be > 0 or None, got {value}")
-    return value
-
-
 class DqliteProtocol:
     """Low-level protocol handler for a single dqlite connection."""
 
@@ -85,7 +70,7 @@ class DqliteProtocol:
         # the per-operation deadline; without a cumulative cap, clients
         # could legitimately allocate hundreds of millions of rows over
         # the full deadline. None disables the cap.
-        self._max_total_rows = _validate_max_total_rows(max_total_rows)
+        self._max_total_rows = _validate_positive_int_or_none(max_total_rows, "max_total_rows")
         # Per-query frame cap. Complements max_total_rows: a server
         # sending 10M 1-row frames to reach the row cap would still
         # burn 10M × decode-cost of Python work; the frame cap bounds
