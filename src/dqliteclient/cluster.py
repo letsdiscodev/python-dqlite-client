@@ -15,7 +15,6 @@ from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
 from dqliteclient.protocol import DqliteProtocol
 from dqliteclient.retry import retry_with_backoff
 
-
 # Type alias for a redirect-target policy. Returns True if the address
 # should be accepted, False to reject with a ClusterError.
 RedirectPolicy = Callable[[str], bool]
@@ -67,9 +66,7 @@ class ClusterClient:
         if self._redirect_policy is None:
             return
         if not self._redirect_policy(address):
-            raise ClusterError(
-                f"Leader redirect to {address!r} rejected by redirect_policy"
-            )
+            raise ClusterError(f"Leader redirect to {address!r} rejected by redirect_policy")
 
     async def find_leader(self) -> str:
         """Find the current cluster leader.

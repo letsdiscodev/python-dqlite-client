@@ -38,9 +38,11 @@ class TestRedirectPolicy:
             redirect_policy=allowlist_policy(["10.0.0.1:9001"]),
         )
         # A compromised peer redirects to an attacker-controlled host.
-        with patch.object(cc, "_query_leader", new=AsyncMock(return_value="attacker.com:9001")):
-            with pytest.raises(ClusterError, match="rejected"):
-                asyncio.run(cc.find_leader())
+        with (
+            patch.object(cc, "_query_leader", new=AsyncMock(return_value="attacker.com:9001")),
+            pytest.raises(ClusterError, match="rejected"),
+        ):
+            asyncio.run(cc.find_leader())
 
     def test_no_policy_means_any_redirect_accepted(self) -> None:
         """Default (None) policy preserves legacy behavior."""

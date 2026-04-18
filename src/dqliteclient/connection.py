@@ -116,9 +116,7 @@ class DqliteConnection:
 
     def __repr__(self) -> str:
         state = "connected" if self._protocol is not None else "disconnected"
-        return (
-            f"<DqliteConnection address={self._address!r} database={self._database!r} {state}>"
-        )
+        return f"<DqliteConnection address={self._address!r} database={self._database!r} {state}>"
 
     @property
     def in_transaction(self) -> bool:
