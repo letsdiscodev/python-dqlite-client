@@ -187,6 +187,48 @@ class TestClusterClient:
         # Even though DqliteProtocol() failed, the writer must be closed
         mock_writer.close.assert_called()
 
+    async def test_find_leader_skips_node_with_bad_handshake(self) -> None:
+        """When a node's handshake round-trip fails (malformed response
+        triggers a wire-level ProtocolError), ``find_leader`` must move
+        on to the next node and succeed. Guards the skip-and-continue
+        loop at cluster.py:109-132 against regressions — a bug in the
+        except tuple would turn one bad peer into a cluster-wide failure.
+        """
+        store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
+        client = ClusterClient(store, timeout=1.0)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+
+        # Node A responds with 64 bytes of zeros: that decodes as a
+        # FAILURE-typed frame with a zero-byte body, and FailureResponse.
+        # decode_body raises DecodeError because the body is too short
+        # for the uint64 code. The wire ProtocolError is wrapped into
+        # the client ProtocolError by DqliteProtocol._read_response and
+        # caught by find_leader, which moves on to Node B.
+        #
+        # Node B responds with a valid Welcome + Leader pair, so
+        # find_leader returns Node B's address.
+        responses = [
+            b"\x00" * 64,
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            LeaderResponse(node_id=2, address="").encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            leader = await client.find_leader()
+
+        assert leader in {"localhost:9001", "localhost:9002"}
+        # Two open_connection attempts expected (one per node); the
+        # failing node's writer was closed before the skip.
+        assert mock_writer.close.call_count >= 2
+
     async def test_query_leader_does_not_hang_on_slow_wait_closed(self) -> None:
         """_query_leader must not hang if wait_closed() blocks (e.g., unresponsive peer)."""
         import asyncio
