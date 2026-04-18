@@ -53,4 +53,7 @@ async def retry_with_backoff[T](
 
             await asyncio.sleep(delay)
 
+    # last_error is non-None here: the break on the final attempt only
+    # runs after ``last_error = e`` executes, and max_attempts < 1 is
+    # rejected above. mypy can't see the loop invariant.
     raise last_error  # type: ignore[misc]

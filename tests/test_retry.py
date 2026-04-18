@@ -47,6 +47,23 @@ class TestRetryWithBackoff:
 
         assert call_count == 3
 
+    async def test_max_attempts_one_raises_on_first_failure(self) -> None:
+        """Edge case: with ``max_attempts=1`` the loop breaks on its first
+        iteration. Covers the ``if attempt == max_attempts - 1: break``
+        path that the final ``raise last_error`` relies on.
+        """
+        call_count = 0
+
+        async def fail_once() -> str:
+            nonlocal call_count
+            call_count += 1
+            raise ValueError("fail")
+
+        with pytest.raises(ValueError, match="fail"):
+            await retry_with_backoff(fail_once, max_attempts=1, base_delay=0.01)
+
+        assert call_count == 1
+
     async def test_max_attempts_zero_raises_value_error(self) -> None:
         async def should_not_be_called() -> str:
             raise AssertionError("Should not be called with max_attempts=0")
