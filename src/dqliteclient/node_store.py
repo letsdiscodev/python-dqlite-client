@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from dqlitewire import NodeRole
+
 
 @dataclass(frozen=True, slots=True)
 class NodeInfo:
@@ -16,7 +18,7 @@ class NodeInfo:
 
     node_id: int
     address: str
-    role: int  # 0=voter, 1=standby, 2=spare
+    role: NodeRole
 
 
 class NodeStore(ABC):
@@ -44,7 +46,7 @@ class MemoryNodeStore(NodeStore):
     def __init__(self, initial_addresses: list[str] | None = None) -> None:
         if initial_addresses:
             self._nodes: tuple[NodeInfo, ...] = tuple(
-                NodeInfo(node_id=i + 1, address=addr, role=0)
+                NodeInfo(node_id=i + 1, address=addr, role=NodeRole.VOTER)
                 for i, addr in enumerate(initial_addresses)
             )
         else:

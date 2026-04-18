@@ -77,3 +77,20 @@ class TestMemoryNodeStore:
         info2 = NodeInfo(node_id=1, address="h:1", role=0)
         assert hash(info1) == hash(info2)
         assert {info1, info2} == {info1}
+
+    async def test_memory_store_seeds_with_noderole_voter(self) -> None:
+        from dqlitewire import NodeRole
+
+        store = MemoryNodeStore(initial_addresses=["a:9001", "b:9001"])
+        nodes = await store.get_nodes()
+        assert all(isinstance(n.role, NodeRole) for n in nodes)
+        assert all(n.role == NodeRole.VOTER for n in nodes)
+        # IntEnum comparison with raw int still works.
+        assert nodes[0].role == 0
+
+    async def test_node_info_role_accepts_noderole(self) -> None:
+        from dqlitewire import NodeRole
+
+        info = NodeInfo(node_id=1, address="h:1", role=NodeRole.STANDBY)
+        assert info.role is NodeRole.STANDBY
+        assert info.role == 1
