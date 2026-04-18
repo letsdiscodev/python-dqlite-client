@@ -78,10 +78,13 @@ class ClusterClient:
         if not self._redirect_policy(address):
             raise ClusterError(f"Leader redirect to {address!r} rejected by redirect_policy")
 
-    async def find_leader(self) -> str:
+    async def find_leader(self, *, trust_server_heartbeat: bool = False) -> str:
         """Find the current cluster leader.
 
-        Returns the leader address.
+        Returns the leader address. ``trust_server_heartbeat`` is forwarded
+        to each probe protocol so operators who opted into a widened
+        heartbeat window for the main query path get the same semantics
+        during leader discovery.
         """
         nodes = await self._node_store.get_nodes()
 
@@ -109,7 +112,11 @@ class ClusterClient:
         for node in nodes:
             try:
                 leader_address = await asyncio.wait_for(
-                    self._query_leader(node.address), timeout=self._timeout
+                    self._query_leader(
+                        node.address,
+                        trust_server_heartbeat=trust_server_heartbeat,
+                    ),
+                    timeout=self._timeout,
                 )
                 if leader_address:
                     # Only leader_address values that did NOT come from
@@ -133,7 +140,9 @@ class ClusterClient:
 
         raise ClusterError(f"Could not find leader. Errors: {'; '.join(errors)}") from last_exc
 
-    async def _query_leader(self, address: str) -> str | None:
+    async def _query_leader(
+        self, address: str, *, trust_server_heartbeat: bool = False
+    ) -> str | None:
         """Query a node for the current leader."""
         host, port = _parse_address(address)
 
@@ -146,7 +155,12 @@ class ClusterClient:
             return None
 
         try:
-            protocol = DqliteProtocol(reader, writer, timeout=self._timeout)
+            protocol = DqliteProtocol(
+                reader,
+                writer,
+                timeout=self._timeout,
+                trust_server_heartbeat=trust_server_heartbeat,
+            )
             await protocol.handshake()
             node_id, leader_addr = await protocol.get_leader()
 
@@ -198,7 +212,9 @@ class ClusterClient:
             attempt = attempt_counter[0]
             leader: str | None = None
             try:
-                leader = await self.find_leader()
+                leader = await self.find_leader(
+                    trust_server_heartbeat=trust_server_heartbeat,
+                )
                 conn = DqliteConnection(
                     leader,
                     database=database,

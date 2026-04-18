@@ -52,10 +52,12 @@ class TestClusterClient:
 
         from dqlitewire.messages import LeaderResponse, WelcomeResponse
 
-        # First call for handshake, second for leader query
+        # Upstream raft_leader sets id and address atomically: a voter
+        # that IS the leader returns its own id AND its own address
+        # (never (nonzero, "")).
         responses = [
             WelcomeResponse(heartbeat_timeout=15000).encode(),
-            LeaderResponse(node_id=1, address="").encode(),  # Empty = this node is leader
+            LeaderResponse(node_id=1, address="localhost:9001").encode(),
         ]
         mock_reader.read.side_effect = responses
 
@@ -217,7 +219,7 @@ class TestClusterClient:
         responses = [
             b"\x00" * 64,
             WelcomeResponse(heartbeat_timeout=15000).encode(),
-            LeaderResponse(node_id=2, address="").encode(),
+            LeaderResponse(node_id=2, address="localhost:9002").encode(),
         ]
         mock_reader.read.side_effect = responses
 
@@ -251,7 +253,7 @@ class TestClusterClient:
 
         responses = [
             WelcomeResponse(heartbeat_timeout=15000).encode(),
-            LeaderResponse(node_id=1, address="").encode(),
+            LeaderResponse(node_id=1, address="localhost:9001").encode(),
         ]
         mock_reader.read.side_effect = responses
 
@@ -276,7 +278,7 @@ class TestClusterClient:
         store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
         client = ClusterClient(store, timeout=0.5)
 
-        async def buggy_query(_address: str) -> str | None:
+        async def buggy_query(_address: str, **_kwargs: object) -> str | None:
             raise TypeError("programmer mistake")
 
         with (
@@ -297,7 +299,7 @@ class TestClusterClient:
 
         boom = DqliteConnectionError("handshake failed")
 
-        async def failing_query(_address: str) -> str | None:
+        async def failing_query(_address: str, **_kwargs: object) -> str | None:
             raise boom
 
         with (
@@ -318,7 +320,7 @@ class TestClusterClient:
 
         first_probed: list[str] = []
 
-        async def track(address: str) -> str | None:
+        async def track(address: str, **_kwargs: object) -> str | None:
             first_probed.append(address)
             raise DqliteConnectionError("not leader")
 
@@ -350,7 +352,7 @@ class TestClusterClient:
 
         order: list[str] = []
 
-        async def track(address: str) -> str | None:
+        async def track(address: str, **_kwargs: object) -> str | None:
             order.append(address)
             return None  # no leader known — keep probing
 
@@ -383,7 +385,7 @@ class TestClusterClient:
 
         call_count = 0
 
-        async def always_sql_error() -> str:
+        async def always_sql_error(**_kwargs: object) -> str:
             nonlocal call_count
             call_count += 1
             raise OperationalError(1, "some sql error")
@@ -431,7 +433,7 @@ class TestConnectMaxAttempts:
 
         call_count = [0]
 
-        async def fake_find_leader() -> str:
+        async def fake_find_leader(**_kwargs: object) -> str:
             call_count[0] += 1
             raise DqliteConnectionError("unreachable")
 
@@ -457,7 +459,7 @@ class TestConnectObservability:
         store = MemoryNodeStore(["localhost:1"])  # unreachable
         client = ClusterClient(store, timeout=0.1)
 
-        async def fake_find_leader() -> str:
+        async def fake_find_leader(**_kwargs: object) -> str:
             raise DqliteConnectionError("simulated")
 
         client.find_leader = fake_find_leader  # type: ignore[method-assign]
@@ -472,3 +474,68 @@ class TestConnectObservability:
             f"Expected 2 per-attempt log lines, got {len(attempt_logs)}: "
             f"{[r.message for r in attempt_logs]}"
         )
+
+
+class TestQueryLeaderTrustsHeartbeat:
+    """_query_leader forwards the trust_server_heartbeat flag."""
+
+    async def test_flag_propagates_to_probe_protocol(self) -> None:
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store, timeout=1.0)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        captured: dict[str, object] = {}
+
+        class FakeProto:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+            async def handshake(self) -> None:
+                pass
+
+            async def get_leader(self) -> tuple[int, str]:
+                return (1, "localhost:9001")
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            patch("dqliteclient.cluster.DqliteProtocol", FakeProto),
+        ):
+            await client._query_leader("localhost:9001", trust_server_heartbeat=True)
+
+        assert captured.get("trust_server_heartbeat") is True
+
+    async def test_flag_default_false(self) -> None:
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store, timeout=1.0)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        captured: dict[str, object] = {}
+
+        class FakeProto:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+            async def handshake(self) -> None:
+                pass
+
+            async def get_leader(self) -> tuple[int, str]:
+                return (1, "localhost:9001")
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            patch("dqliteclient.cluster.DqliteProtocol", FakeProto),
+        ):
+            await client._query_leader("localhost:9001")
+
+        assert captured.get("trust_server_heartbeat") is False
+
