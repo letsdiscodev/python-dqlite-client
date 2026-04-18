@@ -41,10 +41,10 @@ def _parse_address(address: str) -> tuple[str, int]:
 
     try:
         port = int(port_str)
-    except ValueError:
+    except ValueError as e:
         raise ValueError(
             f"Invalid port in address {address!r}: {port_str!r} is not a number"
-        ) from None
+        ) from e
 
     if not (1 <= port <= 65535):
         raise ValueError(f"Invalid port in address {address!r}: {port} is not in range 1-65535")
