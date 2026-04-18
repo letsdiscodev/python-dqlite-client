@@ -1,5 +1,6 @@
 """Tests for connection pooling."""
 
+import asyncio
 import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1243,3 +1244,62 @@ class TestSocketLooksDead:
         conn = self._make_conn(transport=transport, reader=reader)
         with pytest.raises(ValueError, match="broken mock"):
             _socket_looks_dead(conn)
+
+
+class TestDrainIdleCancellation:
+    """``_drain_idle`` must not swallow ``CancelledError`` or any other
+    ``BaseException``. The reservation release on each iteration still runs,
+    so cancellation is clean — but the cancel signal itself must propagate.
+
+    A close() failure for a non-cancellation reason should be absorbed so
+    drain can finish the remaining connections, but logged for diagnostics.
+    """
+
+    async def test_cancelled_error_in_close_propagates(self) -> None:
+        """An async close() raising ``CancelledError`` must escape ``_drain_idle``.
+        Previously the helper's ``except BaseException: pass`` swallowed it,
+        breaking structured concurrency (``asyncio.timeout`` / ``TaskGroup``).
+        """
+        pool = ConnectionPool(["localhost:9001"])
+
+        bad_conn = MagicMock()
+
+        async def cancel_close() -> None:
+            raise asyncio.CancelledError("outer timeout")
+
+        bad_conn.close = cancel_close
+        await pool._pool.put(bad_conn)
+        pool._size = 1
+
+        with pytest.raises(asyncio.CancelledError, match="outer timeout"):
+            await pool._drain_idle()
+
+        # Reservation must still be released on the cancellation path so
+        # the pool is recoverable after the cancel.
+        assert pool._size == 0
+
+    async def test_ordinary_exception_is_absorbed_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An ``OSError`` from close() should be absorbed so drain continues.
+        Behaviour is logged at DEBUG for operator diagnostics.
+        """
+        import logging
+
+        pool = ConnectionPool(["localhost:9001"])
+
+        c1, c2 = MagicMock(), MagicMock()
+        c1._address = "n1:9001"
+        c2._address = "n2:9001"
+        c1.close = AsyncMock(side_effect=OSError("boom"))
+        c2.close = AsyncMock()
+        await pool._pool.put(c1)
+        await pool._pool.put(c2)
+        pool._size = 2
+
+        with caplog.at_level(logging.DEBUG, logger="dqliteclient.pool"):
+            await pool._drain_idle()
+
+        c2.close.assert_awaited_once()
+        assert pool._size == 0
+        assert any("boom" in rec.getMessage() for rec in caplog.records)

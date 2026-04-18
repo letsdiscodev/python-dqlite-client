@@ -264,8 +264,18 @@ class ConnectionPool:
                 break
             try:
                 await conn.close()
-            except BaseException:
-                pass
+            except Exception as exc:
+                # Transport-level failures (BrokenPipeError, OSError, our
+                # own DqliteConnectionError) are absorbed so drain can
+                # finish the remaining connections. CancelledError /
+                # KeyboardInterrupt / SystemExit propagate — swallowing
+                # them used to break structured concurrency (``asyncio.
+                # timeout`` around ``pool.close()`` would silently hang).
+                logger.debug(
+                    "pool: close() on idle connection %r failed: %r",
+                    getattr(conn, "_address", "?"),
+                    exc,
+                )
             finally:
                 await self._release_reservation()
 
