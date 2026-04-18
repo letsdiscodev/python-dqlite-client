@@ -2,6 +2,7 @@
 
 import asyncio
 import random
+from collections.abc import Callable
 
 from dqliteclient.connection import DqliteConnection, _parse_address
 from dqliteclient.exceptions import (
@@ -15,6 +16,11 @@ from dqliteclient.protocol import DqliteProtocol
 from dqliteclient.retry import retry_with_backoff
 
 
+# Type alias for a redirect-target policy. Returns True if the address
+# should be accepted, False to reject with a ClusterError.
+RedirectPolicy = Callable[[str], bool]
+
+
 class ClusterClient:
     """Client with automatic leader detection and failover."""
 
@@ -23,23 +29,47 @@ class ClusterClient:
         node_store: NodeStore,
         *,
         timeout: float = 10.0,
+        redirect_policy: RedirectPolicy | None = None,
     ) -> None:
         """Initialize cluster client.
 
         Args:
             node_store: Store for cluster node information
             timeout: Connection timeout in seconds
+            redirect_policy: Optional callable ``(address) -> bool`` that
+                authorizes each leader redirect target. If None (default),
+                redirects are accepted — this preserves backward
+                compatibility but permits a compromised peer to redirect
+                clients to arbitrary hosts (SSRF-style). Supply a
+                callable or the ``only_nodes_in_store`` helper to
+                constrain where redirects can go.
         """
         if timeout <= 0:
             raise ValueError(f"timeout must be positive, got {timeout}")
         self._node_store = node_store
         self._timeout = timeout
+        self._redirect_policy = redirect_policy
 
     @classmethod
-    def from_addresses(cls, addresses: list[str], timeout: float = 10.0) -> "ClusterClient":
+    def from_addresses(
+        cls,
+        addresses: list[str],
+        timeout: float = 10.0,
+        *,
+        redirect_policy: RedirectPolicy | None = None,
+    ) -> "ClusterClient":
         """Create cluster client from list of addresses."""
         store = MemoryNodeStore(addresses)
-        return cls(store, timeout=timeout)
+        return cls(store, timeout=timeout, redirect_policy=redirect_policy)
+
+    def _check_redirect(self, address: str) -> None:
+        """Reject leader-redirect targets that fail the configured policy."""
+        if self._redirect_policy is None:
+            return
+        if not self._redirect_policy(address):
+            raise ClusterError(
+                f"Leader redirect to {address!r} rejected by redirect_policy"
+            )
 
     async def find_leader(self) -> str:
         """Find the current cluster leader.
@@ -68,6 +98,12 @@ class ClusterClient:
                     self._query_leader(node.address), timeout=self._timeout
                 )
                 if leader_address:
+                    # Only leader_address values that did NOT come from
+                    # node.address itself need authorizing — those are
+                    # real redirects. If the server returned its own
+                    # address, it's the leader and already in the store.
+                    if leader_address != node.address:
+                        self._check_redirect(leader_address)
                     return leader_address
             except TimeoutError as e:
                 errors.append(f"{node.address}: timed out")
@@ -143,3 +179,19 @@ class ClusterClient:
     async def update_nodes(self, nodes: list[NodeInfo]) -> None:
         """Update the node store with new node information."""
         await self._node_store.set_nodes(nodes)
+
+
+def allowlist_policy(addresses: list[str] | set[str]) -> RedirectPolicy:
+    """Build a redirect policy that accepts only the given addresses.
+
+    Useful for the common case: "only allow redirects to hosts I've
+    explicitly seed-listed." Addresses are matched by exact string
+    equality — callers that need CIDR / DNS / wildcard matching should
+    supply their own callable.
+    """
+    allowed = set(addresses)
+
+    def policy(addr: str) -> bool:
+        return addr in allowed
+
+    return policy
