@@ -36,6 +36,7 @@ class DqliteProtocol:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         timeout: float = 15.0,
+        max_total_rows: int | None = 10_000_000,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -43,6 +44,12 @@ class DqliteProtocol:
         self._client_id = 0
         self._heartbeat_timeout = 0
         self._timeout = timeout
+        # Cumulative cap across continuation frames for a single query.
+        # A hostile or buggy server can drip-feed 1-row-per-frame inside
+        # the per-operation deadline; without a cumulative cap, clients
+        # could legitimately allocate hundreds of millions of rows over
+        # the full deadline. None disables the cap.
+        self._max_total_rows = max_total_rows
 
     async def handshake(self, client_id: int | None = None) -> int:
         """Perform protocol handshake.
@@ -180,6 +187,11 @@ class DqliteProtocol:
         column_types are the wire-level ``ValueType`` integer tags from the
         first response frame — what DBAPI cursor.description maps into
         ``type_code``.
+
+        Atomicity: a mid-stream server failure or an unexpected message
+        type raises before any rows are returned to the caller; the
+        local row list is discarded. The connection is invalidated so
+        callers don't accidentally reuse it with torn protocol state.
         """
         request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
         self._writer.write(request.encode())
@@ -197,6 +209,17 @@ class DqliteProtocol:
         all_rows = list(response.rows)
         while response.has_more:
             next_response = await self._read_continuation(deadline=deadline)
+            if not next_response.rows and next_response.has_more:
+                raise ProtocolError(
+                    "ROWS continuation made no progress: frame had 0 rows and has_more=True"
+                )
+            if self._max_total_rows is not None and (
+                len(all_rows) + len(next_response.rows) > self._max_total_rows
+            ):
+                raise ProtocolError(
+                    f"Query exceeded max_total_rows cap ({self._max_total_rows}); "
+                    f"reduce result size or raise the cap on the connection/pool."
+                )
             all_rows.extend(next_response.rows)
             response = next_response
         return column_names, column_types, all_rows
@@ -244,6 +267,13 @@ class DqliteProtocol:
                 # page buffer). Bail out instead of livelocking.
                 raise ProtocolError(
                     "ROWS continuation made no progress: frame had 0 rows and has_more=True"
+                )
+            if self._max_total_rows is not None and (
+                len(all_rows) + len(next_response.rows) > self._max_total_rows
+            ):
+                raise ProtocolError(
+                    f"Query exceeded max_total_rows cap ({self._max_total_rows}); "
+                    f"reduce result size or raise the cap on the connection/pool."
                 )
             all_rows.extend(next_response.rows)
             response = next_response
