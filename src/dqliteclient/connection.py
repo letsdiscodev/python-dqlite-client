@@ -5,6 +5,7 @@ import contextlib
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from types import TracebackType
 from typing import Any
 
 from dqliteclient.exceptions import (
@@ -225,7 +226,12 @@ class DqliteConnection:
         await self.connect()
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         await self.close()
 
     def _ensure_connected(self) -> tuple[DqliteProtocol, int]:
