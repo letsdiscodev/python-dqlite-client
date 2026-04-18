@@ -111,6 +111,12 @@ class DqliteProtocol:
         from the server.
         """
         if client_id is None:
+            # Deliberate divergence from go-dqlite: Go leaves the default
+            # client_id; we randomize so each connection is distinguishable
+            # in server logs, traces, and per-client metrics. 63 bits
+            # avoids sign-extension pitfalls if an intermediate layer
+            # treats the id as int64. The ``or 1`` guards against the
+            # (astronomically unlikely) all-zero draw.
             client_id = secrets.randbits(63) or 1
         # Send protocol version + client registration together
         request = ClientRequest(client_id=client_id)

@@ -92,6 +92,13 @@ class ClusterClient:
         # then stable-sort by role so voters come before non-voters.
         # Standby/spare nodes can never become leader (their LEADER
         # response is always (0, "")), so probing them first wastes RTTs.
+        #
+        # Deliberate divergence from go-dqlite: the Go connector iterates
+        # nodes in their stored order (deterministic) and relies on role
+        # to decide candidacy. We shuffle within role class to avoid
+        # stampeding a single node across parallel callers. Do not
+        # "fix" this toward Go's deterministic behavior without adding
+        # an explicit stampede-avoidance mechanism elsewhere.
         nodes = list(nodes)
         random.shuffle(nodes)
         nodes.sort(key=lambda n: 0 if n.role == 0 else 1)
