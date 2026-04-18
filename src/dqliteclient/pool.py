@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
@@ -11,6 +12,8 @@ from dqliteclient.connection import DqliteConnection
 from dqliteclient.exceptions import DqliteConnectionError
 from dqliteclient.node_store import NodeStore
 from dqliteclient.protocol import _validate_max_total_rows
+
+logger = logging.getLogger(__name__)
 
 
 def _socket_looks_dead(conn: DqliteConnection) -> bool:
@@ -290,16 +293,33 @@ class ConnectionPool:
 
         Returns True if the connection is clean and can be reused,
         False if it should be destroyed.
+
+        If ROLLBACK raises, the connection's transaction state is
+        unknowable from the client's side — the wire request may have
+        been half-sent, or delivered but not acknowledged. The pool
+        therefore drops the connection; the dqlite cluster's Raft log
+        eventually reclaims any uncommitted work from the terminated
+        session. A DEBUG log entry is emitted to help operators
+        diagnose churning pools.
         """
         if conn._in_transaction:
             # Cheap pre-write liveness check: if the transport is already
             # closing or the reader has seen EOF, ROLLBACK would stall on
             # _read_data until self._timeout. Bail fast instead.
             if _socket_looks_dead(conn):
+                logger.debug(
+                    "pool: dropping connection %s (socket looks dead before ROLLBACK)",
+                    conn._address,
+                )
                 return False
             try:
                 await conn.execute("ROLLBACK")
-            except BaseException:
+            except BaseException as exc:
+                logger.debug(
+                    "pool: dropping connection %s after ROLLBACK failure: %r",
+                    conn._address,
+                    exc,
+                )
                 return False
             conn._in_transaction = False
             conn._tx_owner = None
