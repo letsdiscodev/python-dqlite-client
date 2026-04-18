@@ -4,6 +4,19 @@ import asyncio
 import random
 from collections.abc import Awaitable, Callable
 
+from dqliteclient.exceptions import DqliteError
+
+# Default retry set: transport- and cluster-level errors that a caller
+# could reasonably want auto-retried. Leaves programming bugs
+# (TypeError, AttributeError, KeyError, …) to propagate on first call
+# so debugging is not buried under exponential-backoff pauses. Callers
+# that genuinely want "retry anything" can pass their own tuple.
+_DEFAULT_RETRYABLE: tuple[type[BaseException], ...] = (
+    OSError,
+    TimeoutError,
+    DqliteError,
+)
+
 
 async def retry_with_backoff[T](
     func: Callable[[], Awaitable[T]],
@@ -11,7 +24,7 @@ async def retry_with_backoff[T](
     base_delay: float = 0.1,
     max_delay: float = 10.0,
     jitter: float = 0.1,
-    retryable_exceptions: tuple[type[Exception], ...] = (Exception,),
+    retryable_exceptions: tuple[type[BaseException], ...] = _DEFAULT_RETRYABLE,
 ) -> T:
     """Retry an async function with exponential backoff.
 
@@ -33,7 +46,7 @@ async def retry_with_backoff[T](
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
 
-    last_error: Exception | None = None
+    last_error: BaseException | None = None
 
     for attempt in range(max_attempts):
         try:

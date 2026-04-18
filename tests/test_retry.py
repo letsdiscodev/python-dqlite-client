@@ -30,7 +30,11 @@ class TestRetryWithBackoff:
                 raise ValueError("not yet")
             return "ok"
 
-        result = await retry_with_backoff(fail_then_succeed, base_delay=0.01)
+        result = await retry_with_backoff(
+            fail_then_succeed,
+            base_delay=0.01,
+            retryable_exceptions=(ValueError,),
+        )
         assert result == "ok"
         assert call_count == 3
 
@@ -43,7 +47,12 @@ class TestRetryWithBackoff:
             raise ValueError("fail")
 
         with pytest.raises(ValueError, match="fail"):
-            await retry_with_backoff(always_fail, max_attempts=3, base_delay=0.01)
+            await retry_with_backoff(
+                always_fail,
+                max_attempts=3,
+                base_delay=0.01,
+                retryable_exceptions=(ValueError,),
+            )
 
         assert call_count == 3
 
@@ -111,7 +120,12 @@ class TestRetryWithBackoff:
 
         with patch("dqliteclient.retry.asyncio.sleep", side_effect=mock_sleep):
             await retry_with_backoff(
-                fail_twice, max_attempts=3, base_delay=0.1, max_delay=0.05, jitter=0
+                fail_twice,
+                max_attempts=3,
+                base_delay=0.1,
+                max_delay=0.05,
+                jitter=0,
+                retryable_exceptions=(ValueError,),
             )
 
         assert call_count == 3
@@ -151,9 +165,48 @@ class TestRetryWithBackoff:
                 base_delay=1.0,
                 max_delay=2.0,
                 jitter=0.1,
+                retryable_exceptions=(ValueError,),
             )
 
         # Several attempts will hit the cap; none should exceed max_delay.
         assert sleep_args, "expected at least one sleep"
         for d in sleep_args:
             assert d <= 2.0, f"delay {d} exceeded max_delay=2.0"
+
+
+class TestRetryDefaults:
+    """The default retryable set is restricted to transport- / cluster-
+    level exceptions; programming bugs propagate on first call."""
+
+    async def test_default_retries_oserror(self) -> None:
+        call_count = 0
+
+        async def fail_once() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise OSError("transient")
+            return "ok"
+
+        result = await retry_with_backoff(fail_once, base_delay=0.01)
+        assert result == "ok"
+        assert call_count == 2
+
+    async def test_default_does_not_retry_programming_errors(self) -> None:
+        import pytest as _pytest
+
+        from dqliteclient.retry import retry_with_backoff
+
+        call_count = 0
+
+        async def buggy() -> str:
+            nonlocal call_count
+            call_count += 1
+            raise TypeError("bug")
+
+        with _pytest.raises(TypeError, match="bug"):
+            await retry_with_backoff(buggy, max_attempts=5, base_delay=0.01)
+
+        assert call_count == 1, (
+            "TypeError is outside the default retryable set and must propagate on the first call"
+        )
