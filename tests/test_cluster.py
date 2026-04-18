@@ -539,3 +539,65 @@ class TestQueryLeaderTrustsHeartbeat:
 
         assert captured.get("trust_server_heartbeat") is False
 
+
+class TestQueryLeaderRejectsUnreachableCombo:
+    """A (nonzero id, empty address) response is a protocol violation;
+    reject it instead of silently substituting the queried address.
+    """
+
+    async def test_nonzero_id_with_empty_address_raises_protocol_error(self) -> None:
+        from dqliteclient.exceptions import ProtocolError
+
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store, timeout=1.0)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        class FakeProto:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            async def handshake(self) -> None:
+                pass
+
+            async def get_leader(self) -> tuple[int, str]:
+                return (42, "")
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            patch("dqliteclient.cluster.DqliteProtocol", FakeProto),
+            pytest.raises(ProtocolError),
+        ):
+            await client._query_leader("localhost:9001")
+
+    async def test_zero_id_empty_address_returns_none(self) -> None:
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store, timeout=1.0)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        class FakeProto:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            async def handshake(self) -> None:
+                pass
+
+            async def get_leader(self) -> tuple[int, str]:
+                return (0, "")
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            patch("dqliteclient.cluster.DqliteProtocol", FakeProto),
+        ):
+            result = await client._query_leader("localhost:9001")
+
+        assert result is None

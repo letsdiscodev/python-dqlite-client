@@ -164,15 +164,20 @@ class ClusterClient:
             await protocol.handshake()
             node_id, leader_addr = await protocol.get_leader()
 
-            if not leader_addr and node_id != 0:
-                # Non-zero node_id with empty address: this node is the leader
-                return address
-            elif leader_addr:
-                # Non-empty address: redirect to the reported leader
+            # Upstream dqlite's ``raft_leader`` sets ``id`` and ``address``
+            # atomically: either both are filled in (a leader is known) or
+            # both are zero/NULL. The server substitutes ``""`` for NULL,
+            # so the only wire-legal shapes are ``(0, "")`` and
+            # ``(nonzero, nonempty)``.
+            if node_id != 0 and not leader_addr:
+                raise ProtocolError(
+                    f"server {address} returned node_id={node_id} with empty "
+                    f"leader address; expected both or neither"
+                )
+            if leader_addr:
                 return leader_addr
-            else:
-                # node_id=0 and empty address: no leader known
-                return None
+            # node_id=0 and empty address: no leader known
+            return None
         finally:
             writer.close()
 
