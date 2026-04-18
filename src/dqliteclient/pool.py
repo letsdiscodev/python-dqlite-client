@@ -154,6 +154,13 @@ class ConnectionPool:
 
         Idempotent: concurrent callers share the same initialization —
         only one performs the TCP work, the others await its result.
+
+        Partial-failure behavior (ISSUE-77): ``asyncio.gather`` with the
+        default ``return_exceptions=False`` cancels sibling tasks on
+        first failure but does NOT close connections that already
+        succeeded — they leak as orphaned transports. Use
+        ``return_exceptions=True`` so every task resolves, then close
+        survivors explicitly before re-raising the first failure.
         """
         # Hold the lock across the gather so a second concurrent
         # initialize() call observes _initialized=True after the first
@@ -163,17 +170,31 @@ class ConnectionPool:
                 return
             if self._min_size > 0:
                 self._size += self._min_size
-                try:
-                    # Create min_size connections concurrently so startup
-                    # latency doesn't scale with min_size × per-connect RTT.
-                    conns = await asyncio.gather(
-                        *(self._create_connection() for _ in range(self._min_size))
-                    )
-                except BaseException:
+                # Create min_size connections concurrently so startup
+                # latency doesn't scale with min_size × per-connect RTT.
+                results = await asyncio.gather(
+                    *(self._create_connection() for _ in range(self._min_size)),
+                    return_exceptions=True,
+                )
+                successes: list[DqliteConnection] = []
+                failures: list[BaseException] = []
+                for r in results:
+                    if isinstance(r, BaseException):
+                        failures.append(r)
+                    else:
+                        successes.append(r)
+                if failures:
+                    # Close the connections that did succeed — they are
+                    # unowned now that initialize is aborting.
+                    for conn in successes:
+                        with contextlib.suppress(BaseException):
+                            await conn.close()
                     self._size -= self._min_size
                     self._signal_state_change()
-                    raise
-                for conn in conns:
+                    # Re-raise the first observed failure as the root
+                    # cause; additional failures chain as context.
+                    raise failures[0]
+                for conn in successes:
                     await self._pool.put(conn)
             self._initialized = True
 
@@ -292,10 +313,13 @@ class ConnectionPool:
                 )
             # Race the queue against the state-change event so any pool
             # state change (close, size decrement, drain) wakes waiters
-            # promptly. Clear right before parking so we only wake on
-            # subsequent signals; the loop top re-checks _closed.
-            closed_event = self._get_closed_event()
-            if not self._closed:
+            # promptly. The check-_closed-then-clear pair runs under
+            # the lock so a concurrent close() can't set() the event
+            # between our read and our clear (ISSUE-74).
+            async with self._lock:
+                closed_event = self._get_closed_event()
+                if self._closed:
+                    raise DqliteConnectionError("Pool is closed")
                 closed_event.clear()
             get_task: asyncio.Task[DqliteConnection] = asyncio.create_task(self._pool.get())
             closed_task = asyncio.create_task(closed_event.wait())
@@ -337,29 +361,51 @@ class ConnectionPool:
         try:
             yield conn
         except BaseException:
-            if conn.is_connected and not self._closed:
-                # Connection is healthy — user code raised a non-connection error.
-                # Roll back any open transaction, then return to pool.
-                if not await self._reset_connection(conn):
-                    conn._pool_released = True
-                    with contextlib.suppress(Exception):
+            # Cleanup must complete even if a second cancellation lands
+            # mid-await (ISSUE-76). ``returned_to_queue`` tracks whether
+            # the reservation was transferred to an in-queue connection;
+            # if not, the ``finally`` below releases it. ``asyncio.shield``
+            # around ``_release_reservation`` makes the decrement itself
+            # uninterruptible so ``_size`` stays consistent under rapid-
+            # fire cancellation.
+            #
+            # Order note: ``conn.close()`` has a guard that returns early
+            # when ``_pool_released`` is True (so user code can't
+            # accidentally close a connection they returned to the
+            # pool). The pool itself MUST therefore close BEFORE setting
+            # the flag, or the transport leaks.
+            returned_to_queue = False
+            try:
+                if conn.is_connected and not self._closed:
+                    # Connection is healthy — user code raised a non-connection
+                    # error. Roll back any open transaction, then return to pool.
+                    if await self._reset_connection(conn):
+                        try:
+                            self._pool.put_nowait(conn)
+                        except asyncio.QueueFull:
+                            with contextlib.suppress(Exception):
+                                await conn.close()
+                            conn._pool_released = True
+                        else:
+                            conn._pool_released = True
+                            returned_to_queue = True
+                    else:
+                        with contextlib.suppress(Exception):
+                            await conn.close()
+                        conn._pool_released = True
+                else:
+                    # Connection is broken (invalidated by execute/fetch error
+                    # handlers). Drain other idle connections — they likely
+                    # point to the same dead server.
+                    with contextlib.suppress(BaseException):
+                        await self._drain_idle()
+                    with contextlib.suppress(BaseException):
                         await conn.close()
-                    await self._release_reservation()
-                    raise
-                conn._pool_released = True
-                try:
-                    self._pool.put_nowait(conn)
-                except asyncio.QueueFull:
-                    await conn.close()
-                    await self._release_reservation()
-            else:
-                # Connection is broken (invalidated by execute/fetch error handlers).
-                # Drain other idle connections — they likely point to the same dead server.
-                conn._pool_released = True
-                await self._drain_idle()
-                with contextlib.suppress(BaseException):
-                    await conn.close()
-                await self._release_reservation()
+                    conn._pool_released = True
+            finally:
+                if not returned_to_queue:
+                    with contextlib.suppress(BaseException):
+                        await asyncio.shield(self._release_reservation())
             raise
         else:
             await self._release(conn)
@@ -402,26 +448,38 @@ class ConnectionPool:
         return True
 
     async def _release(self, conn: DqliteConnection) -> None:
-        """Return a connection to the pool or close it."""
+        """Return a connection to the pool or close it.
+
+        ``conn.close()`` has an early-return guard against
+        ``_pool_released=True``, so close MUST run before the flag is
+        set — otherwise the transport leaks (ISSUE-76 review found
+        this bug across every branch that closes a pool-owned
+        connection).
+        """
         if self._closed:
-            conn._pool_released = True
             await conn.close()
+            conn._pool_released = True
             await self._release_reservation()
             return
 
         if not await self._reset_connection(conn):
-            conn._pool_released = True
             with contextlib.suppress(Exception):
                 await conn.close()
+            conn._pool_released = True
             await self._release_reservation()
             return
 
-        conn._pool_released = True
+        # Healthy connection returning to queue: no close; just flip
+        # the flag and enqueue. If the queue is full we must close
+        # before setting the flag.
         try:
             self._pool.put_nowait(conn)
         except asyncio.QueueFull:
             await conn.close()
+            conn._pool_released = True
             await self._release_reservation()
+        else:
+            conn._pool_released = True
 
     async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
         """Execute a SQL statement using a pooled connection."""

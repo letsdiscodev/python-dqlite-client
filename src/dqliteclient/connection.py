@@ -176,8 +176,7 @@ class DqliteConnection:
                 await self._protocol.handshake()
                 self._db_id = await self._protocol.open_database(self._database)
             except OperationalError as e:
-                self._protocol.close()
-                self._protocol = None
+                await self._abort_protocol()
                 if e.code in _LEADER_ERROR_CODES:
                     # Leader-change errors during OPEN are transport-level
                     # problems — the caller needs to reconnect elsewhere, not
@@ -187,8 +186,7 @@ class DqliteConnection:
                     ) from e
                 raise
             except BaseException:
-                self._protocol.close()
-                self._protocol = None
+                await self._abort_protocol()
                 raise
         finally:
             self._in_use = False
@@ -209,6 +207,25 @@ class DqliteConnection:
         self._db_id = None
         protocol.close()
         await protocol.wait_closed()
+
+    async def _abort_protocol(self) -> None:
+        """Tear down a half-open protocol during a connect failure path.
+
+        Close the writer, then give ``wait_closed`` a bounded budget so
+        the transport drains under normal conditions but never hangs on
+        an unresponsive peer (ISSUE-72). Cycle-2 ISSUE-38 rejected an
+        unbounded ``wait_closed`` in the leader-query finally block
+        because leader-query is a discovery path that runs against
+        arbitrary nodes; connect is a retry-loop path that benefits
+        from draining, so the two sites take different decisions.
+        """
+        protocol = self._protocol
+        if protocol is None:
+            return
+        self._protocol = None
+        protocol.close()
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(protocol.wait_closed(), timeout=0.5)
 
     async def __aenter__(self) -> "DqliteConnection":
         await self.connect()
@@ -383,7 +400,26 @@ class DqliteConnection:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
-        """Context manager for transactions."""
+        """Context manager for transactions.
+
+        Cancellation contract (ISSUE-75 / ISSUE-79):
+        - Cancellation during BEGIN: state cleared, CancelledError
+          propagates.
+        - Cancellation during the body: ROLLBACK is attempted. If
+          ROLLBACK itself is cancelled, the connection is invalidated
+          and CancelledError propagates (structured-concurrency
+          contract — TaskGroup / asyncio.timeout() require this).
+        - Cancellation during COMMIT: connection invalidated
+          (server-side state ambiguous), CancelledError propagates.
+        - Cancellation during ROLLBACK (body already raised): connection
+          invalidated, CancelledError propagates and supersedes the
+          body exception (Python chains it via ``__context__``).
+
+        Non-cancellation ROLLBACK failure (ISSUE-73): connection is
+        invalidated so the pool discards it instead of reusing a
+        Python-side "_in_transaction=False" connection with live
+        server-side transaction state.
+        """
         if self._in_transaction:
             raise InterfaceError("Nested transactions are not supported; use SAVEPOINT directly")
 
@@ -409,10 +445,35 @@ class DqliteConnection:
                 # pool discards it instead of recycling an unknown state.
                 self._invalidate()
             else:
-                # Body raised before COMMIT; try to roll back. Swallow
-                # rollback errors; the original exception is more important.
-                with contextlib.suppress(BaseException):
+                # Body raised before COMMIT; try to roll back.
+                #
+                # Narrow suppression to Exception (NOT BaseException):
+                # CancelledError / KeyboardInterrupt / SystemExit must
+                # propagate. Previously ``suppress(BaseException)``
+                # swallowed cancellation, breaking structured-concurrency
+                # contracts (ISSUE-75).
+                #
+                # If ROLLBACK fails for any reason (including the narrow
+                # cancellation catch below), the connection's transaction
+                # state is unknowable from our side and the connection
+                # must be invalidated so the pool discards it on return
+                # (ISSUE-73). The original body exception is still the
+                # one that propagates, except for cancellation which
+                # takes precedence.
+                try:
                     await self.execute("ROLLBACK")
+                except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+                    # Rollback interrupted mid-flight. Server-side tx is
+                    # in an unknown state; invalidate and propagate the
+                    # higher-priority signal.
+                    self._invalidate()
+                    raise
+                except Exception:
+                    # Rollback failed for a non-cancellation reason.
+                    # Invalidate so the pool discards on return, then
+                    # re-raise the ORIGINAL body exception (below)
+                    # — rollback failure is a secondary concern.
+                    self._invalidate()
             raise
         finally:
             self._tx_owner = None
