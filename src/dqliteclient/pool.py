@@ -29,13 +29,18 @@ def _socket_looks_dead(conn: DqliteConnection) -> bool:
     writer = getattr(protocol, "_writer", None)
     reader = getattr(protocol, "_reader", None)
     transport = getattr(writer, "transport", None) if writer is not None else None
+    # Narrow suppression to the specific categories a mock / partially
+    # torn-down transport can legitimately raise. Wider `except Exception`
+    # would mask programmer bugs (e.g. a misnamed attribute introduced by a
+    # refactor). Mirrors the precedent set by ``_cleanup_loop_thread`` in
+    # ``dqlitedbapi.connection``.
     try:
         closing = transport.is_closing() if transport is not None else False
-    except Exception:
+    except (AttributeError, RuntimeError):
         closing = False
     try:
         eof = reader.at_eof() if reader is not None else False
-    except Exception:
+    except (AttributeError, RuntimeError):
         eof = False
     return (isinstance(closing, bool) and closing) or (isinstance(eof, bool) and eof)
 

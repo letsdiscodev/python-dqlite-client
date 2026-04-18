@@ -1156,3 +1156,90 @@ class TestConnectionPoolIntegration:
             assert result == 42
 
         await pool.close()
+
+
+class TestSocketLooksDead:
+    """Contract tests for the pool's ``_socket_looks_dead`` heuristic.
+
+    The helper must tolerate mocked / missing transport attributes (returning
+    ``False`` so ROLLBACK still gets attempted) but must NOT silently swallow
+    arbitrary exceptions — an unexpected error is a programmer bug that should
+    surface, not a signal of a dead socket.
+    """
+
+    def _make_conn(
+        self,
+        *,
+        transport: object | None = None,
+        reader: object | None = None,
+    ) -> MagicMock:
+        writer = MagicMock()
+        writer.transport = transport
+        protocol = MagicMock()
+        protocol._writer = writer
+        protocol._reader = reader
+        conn = MagicMock()
+        conn._protocol = protocol
+        return conn
+
+    def test_returns_true_when_protocol_is_none(self) -> None:
+        from dqliteclient.pool import _socket_looks_dead
+
+        conn = MagicMock()
+        conn._protocol = None
+        assert _socket_looks_dead(conn) is True
+
+    def test_returns_false_when_transport_and_reader_both_alive(self) -> None:
+        from dqliteclient.pool import _socket_looks_dead
+
+        transport = MagicMock()
+        transport.is_closing = MagicMock(return_value=False)
+        reader = MagicMock()
+        reader.at_eof = MagicMock(return_value=False)
+
+        conn = self._make_conn(transport=transport, reader=reader)
+        assert _socket_looks_dead(conn) is False
+
+    def test_returns_true_when_transport_is_closing(self) -> None:
+        from dqliteclient.pool import _socket_looks_dead
+
+        transport = MagicMock()
+        transport.is_closing = MagicMock(return_value=True)
+        reader = MagicMock()
+        reader.at_eof = MagicMock(return_value=False)
+
+        conn = self._make_conn(transport=transport, reader=reader)
+        assert _socket_looks_dead(conn) is True
+
+    def test_returns_true_when_reader_at_eof(self) -> None:
+        from dqliteclient.pool import _socket_looks_dead
+
+        transport = MagicMock()
+        transport.is_closing = MagicMock(return_value=False)
+        reader = MagicMock()
+        reader.at_eof = MagicMock(return_value=True)
+
+        conn = self._make_conn(transport=transport, reader=reader)
+        assert _socket_looks_dead(conn) is True
+
+    def test_attribute_error_falls_through_as_alive(self) -> None:
+        """Mocks missing ``is_closing`` / ``at_eof`` default to "assume alive"."""
+        from dqliteclient.pool import _socket_looks_dead
+
+        transport = object()  # no is_closing attribute
+        reader = object()  # no at_eof attribute
+        conn = self._make_conn(transport=transport, reader=reader)
+        assert _socket_looks_dead(conn) is False
+
+    def test_unexpected_exception_is_not_swallowed(self) -> None:
+        """A ``ValueError`` from a broken mock must propagate, not be suppressed."""
+        from dqliteclient.pool import _socket_looks_dead
+
+        transport = MagicMock()
+        transport.is_closing = MagicMock(side_effect=ValueError("broken mock"))
+        reader = MagicMock()
+        reader.at_eof = MagicMock(return_value=False)
+
+        conn = self._make_conn(transport=transport, reader=reader)
+        with pytest.raises(ValueError, match="broken mock"):
+            _socket_looks_dead(conn)
