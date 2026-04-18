@@ -29,6 +29,18 @@ RedirectPolicy = Callable[[str], bool]
 # max_attempts=...).
 _DEFAULT_CONNECT_MAX_ATTEMPTS = 3
 
+# Cap per-node error messages at this length before concatenating them
+# into the final ClusterError. A failing peer that returns a multi-MB
+# FailureResponse message would otherwise produce an O(N * M) string
+# held in memory and serialised into every traceback.
+_MAX_ERROR_MESSAGE_SNIPPET = 200
+
+
+def _truncate_error(message: str) -> str:
+    if len(message) <= _MAX_ERROR_MESSAGE_SNIPPET:
+        return message
+    return message[:_MAX_ERROR_MESSAGE_SNIPPET] + f"... [truncated, {len(message)} chars]"
+
 
 class ClusterClient:
     """Client with automatic leader detection and failover."""
@@ -134,7 +146,7 @@ class ClusterClient:
                 # Narrow the catch so programming bugs (TypeError, KeyError,
                 # etc.) propagate directly instead of being stringified into
                 # a retryable ClusterError.
-                errors.append(f"{node.address}: {e}")
+                errors.append(f"{node.address}: {_truncate_error(str(e))}")
                 last_exc = e
                 continue
 

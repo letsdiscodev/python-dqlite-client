@@ -601,3 +601,31 @@ class TestQueryLeaderRejectsUnreachableCombo:
             result = await client._query_leader("localhost:9001")
 
         assert result is None
+
+
+class TestClusterErrorMessageTruncation:
+    """Per-node error snippets are capped before concatenation so a
+    verbose server message cannot inflate the ClusterError payload to
+    O(N * M).
+    """
+
+    async def test_large_per_node_error_is_truncated(self) -> None:
+        store = MemoryNodeStore(["a:9001", "b:9001", "c:9001"])
+        client = ClusterClient(store, timeout=1.0)
+
+        huge = "x" * 50_000
+
+        async def fake_query(_address: str, **_kwargs: object) -> str | None:
+            raise DqliteConnectionError(huge)
+
+        with (
+            patch.object(client, "_query_leader", side_effect=fake_query),
+            pytest.raises(ClusterError) as exc_info,
+        ):
+            await client.find_leader()
+
+        message = str(exc_info.value)
+        # Each per-node snippet is capped to ~200 chars + truncation
+        # marker; total upper bound well under the raw 150k.
+        assert len(message) < 3_000
+        assert "truncated" in message
