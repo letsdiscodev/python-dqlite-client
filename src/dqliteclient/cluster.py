@@ -2,7 +2,7 @@
 
 import asyncio
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from dqliteclient.connection import DqliteConnection, _parse_address
 from dqliteclient.exceptions import (
@@ -191,15 +191,19 @@ class ClusterClient:
         await self._node_store.set_nodes(nodes)
 
 
-def allowlist_policy(addresses: list[str] | set[str]) -> RedirectPolicy:
+def allowlist_policy(addresses: Iterable[str]) -> RedirectPolicy:
     """Build a redirect policy that accepts only the given addresses.
 
     Useful for the common case: "only allow redirects to hosts I've
     explicitly seed-listed." Addresses are matched by exact string
     equality — callers that need CIDR / DNS / wildcard matching should
     supply their own callable.
+
+    Accepts any iterable (list, set, tuple, generator, dict_keys). The
+    iterable is materialized into a frozen set once, so passing a
+    generator is safe — the returned closure doesn't re-iterate.
     """
-    allowed = set(addresses)
+    allowed = frozenset(addresses)
 
     def policy(addr: str) -> bool:
         return addr in allowed

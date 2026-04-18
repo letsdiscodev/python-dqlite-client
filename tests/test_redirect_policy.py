@@ -52,6 +52,40 @@ class TestRedirectPolicy:
             result = asyncio.run(cc.find_leader())
         assert result == "anywhere.invalid:9001"
 
+    def test_empty_allowlist_rejects_all_redirects(self) -> None:
+        """Empty allowlist means every redirect fails; self-leader still
+        works because that path bypasses the policy entirely (it's not a
+        real redirect)."""
+        store = MemoryNodeStore(["10.0.0.1:9001"])
+        cc = ClusterClient(
+            store,
+            timeout=5.0,
+            redirect_policy=allowlist_policy([]),
+        )
+        with (
+            patch.object(cc, "_query_leader", new=AsyncMock(return_value="other:9001")),
+            pytest.raises(ClusterError, match="rejected"),
+        ):
+            asyncio.run(cc.find_leader())
+
+    def test_allowlist_accepts_iterator_input(self) -> None:
+        """The helper accepts any iterable; internally it materializes once
+        into a set, so a generator is safe (no iterator-exhaustion trap on
+        repeated calls)."""
+        store = MemoryNodeStore(["10.0.0.1:9001"])
+        cc = ClusterClient(
+            store,
+            timeout=5.0,
+            redirect_policy=allowlist_policy(x for x in ["10.0.0.1:9001", "10.0.0.2:9001"]),
+        )
+        # First call — would have drained the generator already.
+        with patch.object(cc, "_query_leader", new=AsyncMock(return_value="10.0.0.2:9001")):
+            assert asyncio.run(cc.find_leader()) == "10.0.0.2:9001"
+        # Second call still honors the allowlist (proves the set was
+        # materialized up-front, not re-iterated).
+        with patch.object(cc, "_query_leader", new=AsyncMock(return_value="10.0.0.2:9001")):
+            assert asyncio.run(cc.find_leader()) == "10.0.0.2:9001"
+
     def test_self_leader_bypasses_policy(self) -> None:
         """If the queried node is the leader (returns its own address),
         the redirect policy doesn't apply — the address is already in the
