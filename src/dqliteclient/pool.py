@@ -366,8 +366,8 @@ class ConnectionPool:
 
         # In-use connections are closed by acquire()'s cleanup when they
         # return — the else branch checks _closed and closes instead of
-        # returning to the pool.  Force-closing them here would race with
-        # the acquire context manager and corrupt _size (see #080).
+        # returning to the pool. Force-closing them here would race with
+        # the acquire context manager and corrupt _size.
 
     async def __aenter__(self) -> "ConnectionPool":
         await self.initialize()
