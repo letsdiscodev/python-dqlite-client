@@ -981,3 +981,57 @@ class TestDqliteConnection:
         )
         assert isinstance(errors[0], InterfaceError)
         assert "transaction" in str(errors[0]).lower()
+
+
+class TestAbortProtocolNarrowSuppression:
+    """_abort_protocol must let CancelledError propagate so an outer
+    ``asyncio.timeout`` scope sees the cancellation instead of being
+    swallowed along with the TimeoutError from the bounded drain.
+    """
+
+    async def test_outer_cancel_propagates_through_abort(self) -> None:
+        import asyncio
+        from unittest.mock import MagicMock
+
+        import pytest
+
+        from dqliteclient.connection import DqliteConnection
+
+        conn = DqliteConnection("localhost:9001", database="x", timeout=1.0)
+        proto = MagicMock()
+        proto.close = MagicMock()
+
+        # wait_closed hangs forever; we wrap the abort in wait_for with
+        # a short outer timeout and assert the outer TimeoutError
+        # propagates (in the previous BaseException-suppressing code
+        # it would have been eaten).
+        async def hang_forever() -> None:
+            await asyncio.sleep(999)
+
+        proto.wait_closed = hang_forever
+        conn._protocol = proto
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(conn._abort_protocol(), timeout=0.1)
+
+    async def test_timeout_during_drain_is_suppressed(self) -> None:
+        """The bounded wait_closed budget *internally* expiring is
+        expected (slow peer) and must not propagate."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from dqliteclient.connection import DqliteConnection
+
+        conn = DqliteConnection("localhost:9001", database="x", timeout=1.0)
+        proto = MagicMock()
+        proto.close = MagicMock()
+
+        async def hang_forever() -> None:
+            await asyncio.sleep(999)
+
+        proto.wait_closed = hang_forever
+        conn._protocol = proto
+
+        # No outer timeout: the internal 0.5s wait_for expires, the
+        # resulting TimeoutError is suppressed, and the call returns.
+        await conn._abort_protocol()

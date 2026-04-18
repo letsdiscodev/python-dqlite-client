@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -21,6 +22,8 @@ from dqliteclient.protocol import (
 )
 from dqlitewire import LEADER_ERROR_CODES as _LEADER_ERROR_CODES
 from dqlitewire.exceptions import EncodeError as _WireEncodeError
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_address(address: str) -> tuple[str, int]:
@@ -219,8 +222,19 @@ class DqliteConnection:
             return
         self._protocol = None
         protocol.close()
-        with contextlib.suppress(BaseException):
+        # Narrow the suppression: a bounded wait on the transport drain
+        # can legitimately raise TimeoutError (slow peer) or OSError
+        # (already-closed writer). Anything else — especially
+        # CancelledError from an outer ``asyncio.timeout`` scope — must
+        # propagate so structured-concurrency cancellation semantics
+        # remain intact. DEBUG-log an unexpected Exception for
+        # diagnostics; do not swallow.
+        try:
             await asyncio.wait_for(protocol.wait_closed(), timeout=0.5)
+        except (TimeoutError, OSError):
+            pass
+        except Exception:  # pragma: no cover
+            logger.debug("_abort_protocol: unexpected drain error", exc_info=True)
 
     async def __aenter__(self) -> "DqliteConnection":
         await self.connect()
