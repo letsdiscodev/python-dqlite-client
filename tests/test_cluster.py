@@ -368,3 +368,65 @@ class TestClusterClient:
 
         stored = await store.get_nodes()
         assert len(stored) == 2
+
+
+class TestConnectMaxAttempts:
+    """ISSUE-109: connect() exposes a max_attempts parameter.
+
+    The previous hardcoded ``max_attempts=3`` forced operators to patch
+    the library to tune retry behavior. The default is unchanged; the
+    knob simply becomes adjustable.
+    """
+
+    async def test_max_attempts_defaults_to_three(self) -> None:
+        from dqliteclient.cluster import _DEFAULT_CONNECT_MAX_ATTEMPTS
+
+        assert _DEFAULT_CONNECT_MAX_ATTEMPTS == 3
+
+    async def test_max_attempts_override_honored(self) -> None:
+        store = MemoryNodeStore(["localhost:1"])  # unreachable
+        client = ClusterClient(store, timeout=0.1)
+
+        call_count = [0]
+
+        async def fake_find_leader() -> str:
+            call_count[0] += 1
+            raise DqliteConnectionError("unreachable")
+
+        client.find_leader = fake_find_leader  # type: ignore[method-assign]
+
+        with contextlib.suppress(DqliteConnectionError):
+            await client.connect(max_attempts=5)
+        assert call_count[0] == 5, f"Expected 5 attempts with max_attempts=5, got {call_count[0]}"
+
+    async def test_max_attempts_zero_rejected(self) -> None:
+        store = MemoryNodeStore(["localhost:1"])
+        client = ClusterClient(store, timeout=0.1)
+        with pytest.raises(ValueError, match=">= 1"):
+            await client.connect(max_attempts=0)
+
+
+class TestConnectObservability:
+    """ISSUE-78: per-attempt failures are logged at DEBUG for diagnosis."""
+
+    async def test_failed_attempts_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        store = MemoryNodeStore(["localhost:1"])  # unreachable
+        client = ClusterClient(store, timeout=0.1)
+
+        async def fake_find_leader() -> str:
+            raise DqliteConnectionError("simulated")
+
+        client.find_leader = fake_find_leader  # type: ignore[method-assign]
+
+        caplog.set_level(logging.DEBUG, logger="dqliteclient.cluster")
+        with contextlib.suppress(DqliteConnectionError):
+            await client.connect(max_attempts=2)
+
+        # Every attempt should emit a debug log.
+        attempt_logs = [r for r in caplog.records if "connect attempt" in r.message]
+        assert len(attempt_logs) == 2, (
+            f"Expected 2 per-attempt log lines, got {len(attempt_logs)}: "
+            f"{[r.message for r in attempt_logs]}"
+        )

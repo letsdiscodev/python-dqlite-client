@@ -1,6 +1,7 @@
 """Cluster management and leader detection for dqlite."""
 
 import asyncio
+import logging
 import random
 from collections.abc import Callable, Iterable
 
@@ -15,9 +16,18 @@ from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
 from dqliteclient.protocol import DqliteProtocol
 from dqliteclient.retry import retry_with_backoff
 
+logger = logging.getLogger(__name__)
+
 # Type alias for a redirect-target policy. Returns True if the address
 # should be accepted, False to reject with a ClusterError.
 RedirectPolicy = Callable[[str], bool]
+
+# Default attempt count for connect(). Three attempts cover one leader
+# change plus one transport hiccup; substantially higher counts risk
+# hiding genuine cluster instability under what looks like "a slow
+# connect" (ISSUE-109). Operators can override via ClusterClient.connect(
+# max_attempts=...).
+_DEFAULT_CONNECT_MAX_ATTEMPTS = 3
 
 
 class ClusterClient:
@@ -150,6 +160,7 @@ class ClusterClient:
         database: str = "default",
         *,
         max_total_rows: int | None = 10_000_000,
+        max_attempts: int | None = None,
     ) -> DqliteConnection:
         """Connect to the cluster leader.
 
@@ -157,18 +168,46 @@ class ClusterClient:
         is forwarded to the underlying :class:`DqliteConnection` so
         callers (including :class:`ConnectionPool`) can tune the
         cumulative row cap from one place.
+
+        ``max_attempts`` overrides the default
+        :data:`_DEFAULT_CONNECT_MAX_ATTEMPTS` (ISSUE-109).
+
+        Each attempt's failure is logged at DEBUG level with the
+        attempted leader address and the error, so operators can
+        enable debug logging to diagnose cluster churn instead of
+        seeing only the final exception (ISSUE-78).
         """
+        attempts_cap = (
+            max_attempts if max_attempts is not None else _DEFAULT_CONNECT_MAX_ATTEMPTS
+        )
+        if attempts_cap < 1:
+            raise ValueError(f"max_attempts must be >= 1, got {attempts_cap}")
+
+        attempt_counter = [0]
 
         async def try_connect() -> DqliteConnection:
-            leader = await self.find_leader()
-            conn = DqliteConnection(
-                leader,
-                database=database,
-                timeout=self._timeout,
-                max_total_rows=max_total_rows,
-            )
-            await conn.connect()
-            return conn
+            attempt_counter[0] += 1
+            attempt = attempt_counter[0]
+            leader: str | None = None
+            try:
+                leader = await self.find_leader()
+                conn = DqliteConnection(
+                    leader,
+                    database=database,
+                    timeout=self._timeout,
+                    max_total_rows=max_total_rows,
+                )
+                await conn.connect()
+                return conn
+            except Exception as exc:
+                logger.debug(
+                    "ClusterClient.connect attempt %d/%d failed (leader=%r): %s",
+                    attempt,
+                    attempts_cap,
+                    leader,
+                    exc,
+                )
+                raise
 
         # Retry only transport-level errors. Leader-change OperationalError
         # codes are reclassified into DqliteConnectionError inside
@@ -177,7 +216,7 @@ class ClusterClient:
         # into 5 × N_nodes RTTs before propagating.
         return await retry_with_backoff(
             try_connect,
-            max_attempts=3,
+            max_attempts=attempts_cap,
             retryable_exceptions=(
                 DqliteConnectionError,
                 ClusterError,
