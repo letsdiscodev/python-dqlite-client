@@ -101,8 +101,8 @@ class ConnectionPool:
                 connection inherits the same governor. ``None`` disables
                 the cap entirely (not recommended in production —
                 bounds memory against slow-drip attacks).
-            max_continuation_frames: Per-query continuation-frame cap
-                (ISSUE-98). Complements ``max_total_rows``: a server
+            max_continuation_frames: Per-query continuation-frame cap.
+                Complements ``max_total_rows``: a server
                 sending 1-row-per-frame can inflict O(n) Python decode
                 work where n is the row cap; the frame cap bounds that.
                 Forwarded to every :class:`DqliteConnection`.
@@ -110,7 +110,7 @@ class ConnectionPool:
                 every connection widens to the server-advertised
                 heartbeat (up to a 300 s hard cap). Default False —
                 operator-configured ``timeout`` is authoritative and
-                the server cannot amplify it (ISSUE-101).
+                the server cannot amplify it.
         """
         if min_size < 0:
             raise ValueError(f"min_size must be non-negative, got {min_size}")
@@ -155,7 +155,7 @@ class ConnectionPool:
         Idempotent: concurrent callers share the same initialization —
         only one performs the TCP work, the others await its result.
 
-        Partial-failure behavior (ISSUE-77): ``asyncio.gather`` with the
+        Partial-failure behavior: ``asyncio.gather`` with the
         default ``return_exceptions=False`` cancels sibling tasks on
         first failure but does NOT close connections that already
         succeeded — they leak as orphaned transports. Use
@@ -315,7 +315,7 @@ class ConnectionPool:
             # state change (close, size decrement, drain) wakes waiters
             # promptly. The check-_closed-then-clear pair runs under
             # the lock so a concurrent close() can't set() the event
-            # between our read and our clear (ISSUE-74).
+            # between our read and our clear.
             async with self._lock:
                 closed_event = self._get_closed_event()
                 if self._closed:
@@ -362,7 +362,7 @@ class ConnectionPool:
             yield conn
         except BaseException:
             # Cleanup must complete even if a second cancellation lands
-            # mid-await (ISSUE-76). ``returned_to_queue`` tracks whether
+            # mid-await. ``returned_to_queue`` tracks whether
             # the reservation was transferred to an in-queue connection;
             # if not, the ``finally`` below releases it. ``asyncio.shield``
             # around ``_release_reservation`` makes the decrement itself
@@ -452,9 +452,8 @@ class ConnectionPool:
 
         ``conn.close()`` has an early-return guard against
         ``_pool_released=True``, so close MUST run before the flag is
-        set — otherwise the transport leaks (ISSUE-76 review found
-        this bug across every branch that closes a pool-owned
-        connection).
+        set — otherwise the transport leaks (a bug that affects every
+        branch that closes a pool-owned connection).
         """
         if self._closed:
             await conn.close()

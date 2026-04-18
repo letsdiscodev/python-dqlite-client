@@ -25,7 +25,7 @@ RedirectPolicy = Callable[[str], bool]
 # Default attempt count for connect(). Three attempts cover one leader
 # change plus one transport hiccup; substantially higher counts risk
 # hiding genuine cluster instability under what looks like "a slow
-# connect" (ISSUE-109). Operators can override via ClusterClient.connect(
+# connect". Operators can override via ClusterClient.connect(
 # max_attempts=...).
 _DEFAULT_CONNECT_MAX_ATTEMPTS = 3
 
@@ -180,12 +180,12 @@ class ClusterClient:
         governors from one place.
 
         ``max_attempts`` overrides the default
-        :data:`_DEFAULT_CONNECT_MAX_ATTEMPTS` (ISSUE-109).
+        :data:`_DEFAULT_CONNECT_MAX_ATTEMPTS`.
 
         Each attempt's failure is logged at DEBUG level with the
         attempted leader address and the error, so operators can
         enable debug logging to diagnose cluster churn instead of
-        seeing only the final exception (ISSUE-78).
+        seeing only the final exception.
         """
         attempts_cap = max_attempts if max_attempts is not None else _DEFAULT_CONNECT_MAX_ATTEMPTS
         if attempts_cap < 1:

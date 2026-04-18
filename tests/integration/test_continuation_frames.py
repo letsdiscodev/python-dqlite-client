@@ -1,4 +1,4 @@
-"""Integration test for multi-frame rows continuation (ISSUE-66).
+"""Integration test for multi-frame rows continuation.
 
 The dqlite server batches query results into frames that fit in its
 per-response buffer. For result sets larger than one frame's worth of

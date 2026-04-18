@@ -3,21 +3,21 @@
 Pins the ``ConnectionPool`` lifecycle guarantees against cancellation
 and partial failures:
 
-- Cancelling a parked ``acquire()`` caller must not leak ``_size``
-  (ISSUE-71 + ISSUE-76). ``_size`` must reflect reality at all times.
+- Cancelling a parked ``acquire()`` caller must not leak ``_size``.
+  ``_size`` must reflect reality at all times.
 - ``pool.close()`` must wake every parked acquirer via the close
-  signal, not via the per-poll timeout (ISSUE-74). Waking via timeout
-  would produce "Timed out waiting for a connection" instead of
+  signal, not via the per-poll timeout. Waking via timeout would
+  produce "Timed out waiting for a connection" instead of
   "Pool is closed" — the message is the observable signal.
 - ``_reset_connection`` failure during cleanup must release the
-  reservation and effectively close the connection (ISSUE-76).
-  ``_FakeConn`` replicates the real ``DqliteConnection.close``
-  early-return guard on ``_pool_released``, so any regression that
-  flips the flag before calling close() surfaces as a failed
-  ``close_effective`` assertion.
+  reservation and effectively close the connection. ``_FakeConn``
+  replicates the real ``DqliteConnection.close`` early-return guard
+  on ``_pool_released``, so any regression that flips the flag
+  before calling close() surfaces as a failed ``close_effective``
+  assertion.
 - ``initialize()`` partial failure: sibling connections that already
   succeeded must be effectively closed before ``gather()`` propagates
-  the first failure (ISSUE-77). The previous default
+  the first failure. The previous default
   ``return_exceptions=False`` cancelled siblings but did NOT close
   them, leaking transports.
 
@@ -120,10 +120,10 @@ def _make_pool_with_fake_cluster(
 
 
 class TestInitializePartialFailureClosesSurvivors:
-    """ISSUE-77: if a single _create_connection fails in initialize's
-    gather, the connections that already succeeded must be closed.
-    Currently they leak (asyncio.gather cancels siblings but does not
-    await their .close()).
+    """If a single _create_connection fails in initialize's gather,
+    the connections that already succeeded must be closed. Previously
+    they leaked (asyncio.gather cancels siblings but does not await
+    their .close()).
     """
 
     async def test_survivors_closed_on_partial_init_failure(self) -> None:
@@ -170,10 +170,10 @@ class TestInitializePartialFailureClosesSurvivors:
 
 
 class TestAcquireCancellationRestoresSize:
-    """ISSUE-71 + ISSUE-76: a caller cancelled while parked in acquire()
-    must not leak the pool reservation. If a connection was pulled off
-    the queue and handed to the cancelled task's get_task, it must either
-    be returned to the pool or closed with _size decremented. Likewise
+    """A caller cancelled while parked in acquire() must not leak the
+    pool reservation. If a connection was pulled off the queue and
+    handed to the cancelled task's get_task, it must either be
+    returned to the pool or closed with _size decremented. Likewise
     for body-raised cancellation during yield cleanup.
     """
 
@@ -215,9 +215,9 @@ class TestAcquireCancellationRestoresSize:
         await pool.close()
 
     async def test_reset_connection_failure_releases_reservation(self) -> None:
-        """ISSUE-76: when the pool's cleanup path runs _reset_connection
-        and it fails (e.g. ROLLBACK raises), the reservation must be
-        released and the connection closed — never leaked.
+        """When the pool's cleanup path runs _reset_connection and it
+        fails (e.g. ROLLBACK raises), the reservation must be released
+        and the connection closed — never leaked.
         """
 
         class _RollbackFailingConn(_FakeConn):
@@ -271,8 +271,8 @@ class TestAcquireCancellationRestoresSize:
 
 
 class TestCloseWakesAllWaiters:
-    """ISSUE-74: when pool.close() runs, every parked acquire() must
-    return DqliteConnectionError promptly. The current clear()-then-wait
+    """When pool.close() runs, every parked acquire() must return
+    DqliteConnectionError promptly. The current clear()-then-wait
     pattern has a tiny window where close()'s set() can be erased,
     leaving waiters stalled until timeout.
     """

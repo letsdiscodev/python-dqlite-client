@@ -1,8 +1,8 @@
 """max_total_rows cap actually fires in the continuation-drain loop.
 
-Cycle 9 wired the cap through the layers; cycle 16 adds the missing
-test that exercises the enforcement itself. Uses a mocked protocol
-response stream so we don't need a cluster to deliver millions of rows.
+The cap is wired through every layer; this test exercises the
+enforcement itself. Uses a mocked protocol response stream so we
+don't need a cluster to deliver millions of rows.
 """
 
 import asyncio
@@ -72,7 +72,7 @@ class TestMaxTotalRowsEnforcement:
 
 
 class TestMaxContinuationFramesEnforcement:
-    """ISSUE-98: per-frame cap complements max_total_rows.
+    """Per-frame cap complements max_total_rows.
 
     A slow-drip server sending many 1-row frames could pin a client CPU
     with ~max_total_rows iterations of Python-level decode work. The
@@ -139,7 +139,7 @@ class TestMaxContinuationFramesEnforcement:
 
 
 class TestTrustServerHeartbeat:
-    """ISSUE-101: server heartbeat no longer widens client timeout by default."""
+    """Server heartbeat no longer widens client timeout by default."""
 
     def test_default_does_not_amplify_timeout(self) -> None:
         reader = MagicMock()
@@ -163,7 +163,7 @@ class TestTrustServerHeartbeat:
         """With trust_server_heartbeat=True, a handshake reply with a
         larger-than-local heartbeat widens the per-read deadline (up to
         the 300 s hard cap). Exercises the actual handshake code path
-        rather than just checking the flag is set (ISSUE-101 review)."""
+        rather than just checking the flag is set."""
         from dqlitewire.messages import WelcomeResponse
 
         reader = AsyncMock()

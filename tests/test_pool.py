@@ -302,7 +302,7 @@ class TestConnectionPool:
     async def test_dead_conn_replacement_respects_max_size(self) -> None:
         """Dead-connection replacement must not allow _size to exceed max_size.
 
-        ISSUE-34/58 changed the pool to a reservation pattern: the
+        An earlier change introduced the reservation pattern: the
         lock is released before the TCP handshake. The invariant we
         assert here is the one that actually matters — that
         ``_size`` never exceeds ``_max_size`` at any observation

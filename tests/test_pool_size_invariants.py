@@ -1,4 +1,4 @@
-"""ISSUE-34 / ISSUE-58: concurrent-access invariants of ConnectionPool.
+"""Concurrent-access invariants of ConnectionPool.
 
 Verifies that _size never exceeds max_size under concurrent acquires,
 even when _create_connection is slow (simulating TCP handshake

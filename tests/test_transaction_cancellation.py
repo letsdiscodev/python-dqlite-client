@@ -5,11 +5,11 @@ Pins the cancellation behavior of ``DqliteConnection.transaction()``:
 - ROLLBACK failure in the body-raised path invalidates the connection
   so the pool discards it on return. Without invalidation, the pool
   would recycle a connection whose server-side transaction is still
-  open (ISSUE-73).
+  open.
 - ``transaction()`` must not swallow ``CancelledError`` raised during
   ROLLBACK. Structured concurrency (``TaskGroup`` / ``asyncio.timeout()``)
-  relies on cancellation propagating (ISSUE-75).
-- Parameterized cancellation-at-phase matrix (ISSUE-79):
+  relies on cancellation propagating.
+- Parameterized cancellation-at-phase matrix:
     - ``before_begin``: cancel between ``transaction()`` entry and BEGIN
       returning
     - ``in_body``: cancel during the yield body
@@ -101,9 +101,9 @@ def conn_and_proto() -> Any:
 
 
 class TestRollbackFailureInvalidatesConnection:
-    """ISSUE-73: when the body raises AND ROLLBACK also fails, the
-    connection must be marked invalid so the pool discards it instead
-    of recycling a Python-side ``_in_transaction=False`` connection that
+    """When the body raises AND ROLLBACK also fails, the connection
+    must be marked invalid so the pool discards it instead of
+    recycling a Python-side ``_in_transaction=False`` connection that
     has a live server-side transaction.
     """
 
@@ -163,9 +163,9 @@ class TestRollbackHappyPath:
 
 
 class TestRollbackCancellationPropagates:
-    """ISSUE-75: CancelledError raised during the body-error ROLLBACK path
-    must not be swallowed. ``suppress(BaseException)`` catches it and
-    the enclosing task continues as if never cancelled, breaking
+    """CancelledError raised during the body-error ROLLBACK path must
+    not be swallowed. ``suppress(BaseException)`` catches it and the
+    enclosing task continues as if never cancelled, breaking
     structured-concurrency guarantees.
     """
 
@@ -200,7 +200,7 @@ class TestRollbackCancellationPropagates:
 
 
 class TestTransactionCancellationPhases:
-    """ISSUE-79: exhaustive cancellation-at-phase matrix.
+    """Exhaustive cancellation-at-phase matrix.
 
     For each phase, we assert:
     1. CancelledError is observed by the caller.
@@ -283,7 +283,7 @@ class TestTransactionCancellationPhases:
             await task
 
         # Connection must be invalidated (COMMIT is ambiguous under cancel).
-        # This is the same contract as ISSUE-73's commit_attempted branch.
+        # Same contract as the commit_attempted branch above.
         assert conn._protocol is None, (
             "Connection must be invalidated after COMMIT cancellation — "
             "server-side state is ambiguous (maybe committed, maybe not)."
@@ -292,7 +292,7 @@ class TestTransactionCancellationPhases:
         assert conn._tx_owner is None
 
     async def test_cancel_during_rollback(self, conn_and_proto: Any) -> None:
-        # This is the ISSUE-75 scenario framed as a phase test.
+        # Body-error ROLLBACK cancellation, framed as a phase test.
         conn, proto = await conn_and_proto()
 
         class _BodyError(Exception):

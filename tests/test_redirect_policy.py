@@ -1,4 +1,4 @@
-"""Leader-redirect allowlist policy (ISSUE-04).
+"""Leader-redirect allowlist policy.
 
 A compromised peer can return any address as the leader; the client
 used to open a TCP connection to whatever it was told. ClusterClient

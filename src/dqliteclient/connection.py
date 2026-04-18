@@ -96,13 +96,12 @@ class DqliteConnection:
             max_continuation_frames: Maximum number of continuation
                 frames in a single query result. Caps the per-query
                 Python-side decode work a hostile server can inflict
-                by sending many 1-row frames (ISSUE-98). Set to
+                by sending many 1-row frames. Set to
                 ``None`` to disable.
             trust_server_heartbeat: When True, widen the per-read
                 deadline to the server-advertised heartbeat (subject
                 to a 300 s hard cap). When False (default), ``timeout``
-                is authoritative — the server value cannot amplify it
-                (ISSUE-101).
+                is authoritative — the server value cannot amplify it.
         """
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a positive finite number, got {timeout}")
@@ -213,11 +212,11 @@ class DqliteConnection:
 
         Close the writer, then give ``wait_closed`` a bounded budget so
         the transport drains under normal conditions but never hangs on
-        an unresponsive peer (ISSUE-72). Cycle-2 ISSUE-38 rejected an
-        unbounded ``wait_closed`` in the leader-query finally block
-        because leader-query is a discovery path that runs against
-        arbitrary nodes; connect is a retry-loop path that benefits
-        from draining, so the two sites take different decisions.
+        an unresponsive peer. The leader-query finally block rejects an
+        unbounded ``wait_closed`` because leader-query is a discovery
+        path that runs against arbitrary nodes; connect is a retry-loop
+        path that benefits from draining, so the two sites take
+        different decisions.
         """
         protocol = self._protocol
         if protocol is None:
@@ -402,7 +401,7 @@ class DqliteConnection:
     async def transaction(self) -> AsyncIterator[None]:
         """Context manager for transactions.
 
-        Cancellation contract (ISSUE-75 / ISSUE-79):
+        Cancellation contract:
         - Cancellation during BEGIN: state cleared, CancelledError
           propagates.
         - Cancellation during the body: ROLLBACK is attempted. If
@@ -415,7 +414,7 @@ class DqliteConnection:
           invalidated, CancelledError propagates and supersedes the
           body exception (Python chains it via ``__context__``).
 
-        Non-cancellation ROLLBACK failure (ISSUE-73): connection is
+        Non-cancellation ROLLBACK failure: connection is
         invalidated so the pool discards it instead of reusing a
         Python-side "_in_transaction=False" connection with live
         server-side transaction state.
@@ -451,13 +450,13 @@ class DqliteConnection:
                 # CancelledError / KeyboardInterrupt / SystemExit must
                 # propagate. Previously ``suppress(BaseException)``
                 # swallowed cancellation, breaking structured-concurrency
-                # contracts (ISSUE-75).
+                # contracts.
                 #
                 # If ROLLBACK fails for any reason (including the narrow
                 # cancellation catch below), the connection's transaction
                 # state is unknowable from our side and the connection
                 # must be invalidated so the pool discards it on return
-                # (ISSUE-73). The original body exception is still the
+                # from our side. The original body exception is still the
                 # one that propagates, except for cancellation which
                 # takes precedence.
                 try:

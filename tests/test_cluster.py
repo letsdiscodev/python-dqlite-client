@@ -371,7 +371,7 @@ class TestClusterClient:
 
 
 class TestConnectMaxAttempts:
-    """ISSUE-109: connect() exposes a max_attempts parameter.
+    """connect() exposes a max_attempts parameter.
 
     The previous hardcoded ``max_attempts=3`` forced operators to patch
     the library to tune retry behavior. The default is unchanged; the
@@ -407,7 +407,7 @@ class TestConnectMaxAttempts:
 
 
 class TestConnectObservability:
-    """ISSUE-78: per-attempt failures are logged at DEBUG for diagnosis."""
+    """Per-attempt failures are logged at DEBUG for diagnosis."""
 
     async def test_failed_attempts_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         import logging
