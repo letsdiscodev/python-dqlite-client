@@ -18,12 +18,8 @@ from dqliteclient.protocol import (
     DqliteProtocol,
     _validate_positive_int_or_none,
 )
+from dqlitewire import LEADER_ERROR_CODES as _LEADER_ERROR_CODES
 from dqlitewire.exceptions import EncodeError as _WireEncodeError
-
-# dqlite error codes that indicate a leader change (SQLite extended error codes)
-# SQLITE_IOERR_NOT_LEADER = SQLITE_IOERR | (40 << 8) = 10250
-# SQLITE_IOERR_LEADERSHIP_LOST = SQLITE_IOERR | (41 << 8) = 10506
-_LEADER_ERROR_CODES = {10250, 10506}
 
 
 def _parse_address(address: str) -> tuple[str, int]:
