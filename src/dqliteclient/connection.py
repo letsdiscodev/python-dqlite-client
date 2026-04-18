@@ -74,6 +74,7 @@ class DqliteConnection:
         *,
         database: str = "default",
         timeout: float = 10.0,
+        max_total_rows: int | None = 10_000_000,
     ) -> None:
         """Initialize connection (does not connect yet).
 
@@ -81,6 +82,10 @@ class DqliteConnection:
             address: Node address in "host:port" format
             database: Database name to open
             timeout: Connection timeout in seconds
+            max_total_rows: Cumulative row cap across continuation
+                frames for a single query. Prevents a slow-drip server
+                from keeping the client alive indefinitely within the
+                per-operation deadline. Set to ``None`` to disable.
         """
         import math
 
@@ -89,6 +94,7 @@ class DqliteConnection:
         self._address = address
         self._database = database
         self._timeout = timeout
+        self._max_total_rows = max_total_rows
         self._protocol: DqliteProtocol | None = None
         self._db_id: int | None = None
         self._in_transaction = False
@@ -140,7 +146,12 @@ class DqliteConnection:
             except OSError as e:
                 raise DqliteConnectionError(f"Failed to connect to {self._address}: {e}") from e
 
-            self._protocol = DqliteProtocol(reader, writer, timeout=self._timeout)
+            self._protocol = DqliteProtocol(
+                reader,
+                writer,
+                timeout=self._timeout,
+                max_total_rows=self._max_total_rows,
+            )
 
             try:
                 await self._protocol.handshake()
