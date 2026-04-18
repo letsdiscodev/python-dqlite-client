@@ -14,7 +14,7 @@ from dqliteclient.exceptions import (
     OperationalError,
     ProtocolError,
 )
-from dqliteclient.protocol import DqliteProtocol
+from dqliteclient.protocol import DqliteProtocol, _validate_max_total_rows
 from dqlitewire.exceptions import EncodeError as _WireEncodeError
 
 # dqlite error codes that indicate a leader change (SQLite extended error codes)
@@ -93,7 +93,7 @@ class DqliteConnection:
         self._address = address
         self._database = database
         self._timeout = timeout
-        self._max_total_rows = max_total_rows
+        self._max_total_rows = _validate_max_total_rows(max_total_rows)
         self._protocol: DqliteProtocol | None = None
         self._db_id: int | None = None
         self._in_transaction = False

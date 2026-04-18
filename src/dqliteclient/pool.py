@@ -10,6 +10,7 @@ from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import DqliteConnection
 from dqliteclient.exceptions import DqliteConnectionError
 from dqliteclient.node_store import NodeStore
+from dqliteclient.protocol import _validate_max_total_rows
 
 
 def _socket_looks_dead(conn: DqliteConnection) -> bool:
@@ -98,7 +99,7 @@ class ConnectionPool:
         self._min_size = min_size
         self._max_size = max_size
         self._timeout = timeout
-        self._max_total_rows = max_total_rows
+        self._max_total_rows = _validate_max_total_rows(max_total_rows)
 
         if cluster is not None:
             self._cluster = cluster
