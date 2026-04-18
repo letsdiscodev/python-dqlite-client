@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
@@ -87,8 +88,6 @@ class DqliteConnection:
                 from keeping the client alive indefinitely within the
                 per-operation deadline. Set to ``None`` to disable.
         """
-        import math
-
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a positive finite number, got {timeout}")
         self._address = address
