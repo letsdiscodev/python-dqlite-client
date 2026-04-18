@@ -1035,3 +1035,39 @@ class TestAbortProtocolNarrowSuppression:
         # No outer timeout: the internal 0.5s wait_for expires, the
         # resulting TimeoutError is suppressed, and the call returns.
         await conn._abort_protocol()
+
+
+class TestProtocolErrorHierarchy:
+    """Cross-layer exception catching works: dqliteclient.ProtocolError
+    is a subclass of BOTH dqliteclient.DqliteError and
+    dqlitewire.exceptions.ProtocolError, so callers can catch either
+    ancestor and get both variants.
+    """
+
+    def test_client_protocol_error_subclass_of_wire_version(self) -> None:
+        import dqlitewire.exceptions
+        from dqliteclient.exceptions import ProtocolError
+
+        assert issubclass(ProtocolError, dqlitewire.exceptions.ProtocolError)
+
+    def test_client_protocol_error_subclass_of_dqlite_error(self) -> None:
+        from dqliteclient.exceptions import DqliteError, ProtocolError
+
+        assert issubclass(ProtocolError, DqliteError)
+
+    def test_except_wire_protocol_error_catches_client_variant(self) -> None:
+        import pytest as _pytest
+
+        import dqlitewire.exceptions
+        from dqliteclient.exceptions import ProtocolError
+
+        with _pytest.raises(dqlitewire.exceptions.ProtocolError):
+            raise ProtocolError("boom")
+
+    def test_except_dqlite_error_still_catches_client_variant(self) -> None:
+        import pytest as _pytest
+
+        from dqliteclient.exceptions import DqliteError, ProtocolError
+
+        with _pytest.raises(DqliteError):
+            raise ProtocolError("boom")

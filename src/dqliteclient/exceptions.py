@@ -1,5 +1,7 @@
 """Exceptions for dqlite client."""
 
+from dqlitewire.exceptions import ProtocolError as _WireProtocolError
+
 
 class DqliteError(Exception):
     """Base exception for dqlite client errors."""
@@ -9,8 +11,18 @@ class DqliteConnectionError(DqliteError):
     """Error establishing or maintaining connection."""
 
 
-class ProtocolError(DqliteError):
-    """Protocol-level error."""
+class ProtocolError(DqliteError, _WireProtocolError):
+    """Protocol-level error.
+
+    Inherits from both the client's ``DqliteError`` hierarchy (so
+    ``except DqliteError`` still catches it) and the wire-layer
+    ``dqlitewire.exceptions.ProtocolError`` (so a caller who wants to
+    catch protocol-level problems at *any* layer can write
+    ``except dqlitewire.ProtocolError`` and get both the wire- and
+    client-level variants). Without the dual parent, the two identically
+    named classes caught only half the surface depending on which module
+    the caller imported.
+    """
 
 
 class InterfaceError(DqliteError):
