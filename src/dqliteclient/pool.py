@@ -75,8 +75,24 @@ class ConnectionPool:
             cluster: Externally-owned ClusterClient. Lets multiple pools
                 share one ClusterClient (and thus its node store, leader
                 cache, etc.) across databases or tenants.
+
+                Ownership: the pool does NOT take ownership of this
+                cluster. The caller is responsible for eventually calling
+                ``cluster.close()`` and MUST NOT close the cluster while
+                any pool is still in use. ``pool.close()`` does not close
+                the cluster — it only drains pool-owned connections.
+
+                Sharing: one ClusterClient may back multiple pools
+                concurrently. Direct use of the cluster (e.g.,
+                ``await cluster.find_leader()``) from outside the pool is
+                safe — each call opens a short-lived leader-query socket
+                and does not contend with pool checkout.
             node_store: Externally-owned NodeStore used to build a new
-                ClusterClient. Mutually exclusive with ``cluster``.
+                ClusterClient. Mutually exclusive with ``cluster``. Note
+                that ``pool.close()`` does not close this auto-constructed
+                cluster either — leader-query sockets it opens are
+                short-lived and close on their own; the NodeStore itself
+                is caller-owned.
             max_total_rows: Cumulative row cap across continuation
                 frames for a single query. Forwarded to every
                 :class:`DqliteConnection` the pool hands out, so every
