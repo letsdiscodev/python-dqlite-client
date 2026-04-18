@@ -148,15 +148,28 @@ class ClusterClient:
         finally:
             writer.close()
 
-    async def connect(self, database: str = "default") -> DqliteConnection:
+    async def connect(
+        self,
+        database: str = "default",
+        *,
+        max_total_rows: int | None = 10_000_000,
+    ) -> DqliteConnection:
         """Connect to the cluster leader.
 
-        Returns a connection to the current leader.
+        Returns a connection to the current leader. ``max_total_rows``
+        is forwarded to the underlying :class:`DqliteConnection` so
+        callers (including :class:`ConnectionPool`) can tune the
+        cumulative row cap from one place.
         """
 
         async def try_connect() -> DqliteConnection:
             leader = await self.find_leader()
-            conn = DqliteConnection(leader, database=database, timeout=self._timeout)
+            conn = DqliteConnection(
+                leader,
+                database=database,
+                timeout=self._timeout,
+                max_total_rows=max_total_rows,
+            )
             await conn.connect()
             return conn
 

@@ -57,6 +57,7 @@ class ConnectionPool:
         timeout: float = 10.0,
         cluster: ClusterClient | None = None,
         node_store: NodeStore | None = None,
+        max_total_rows: int | None = 10_000_000,
     ) -> None:
         """Initialize connection pool.
 
@@ -91,6 +92,7 @@ class ConnectionPool:
         self._min_size = min_size
         self._max_size = max_size
         self._timeout = timeout
+        self._max_total_rows = max_total_rows
 
         if cluster is not None:
             self._cluster = cluster
@@ -124,7 +126,9 @@ class ConnectionPool:
 
     async def _create_connection(self) -> DqliteConnection:
         """Create a new connection to the leader."""
-        conn = await self._cluster.connect(database=self._database)
+        conn = await self._cluster.connect(
+            database=self._database, max_total_rows=self._max_total_rows
+        )
         self._size += 1
         return conn
 
