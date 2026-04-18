@@ -179,6 +179,55 @@ class DqliteProtocol:
 
         return response.last_insert_id, response.rows_affected
 
+    async def _send_query(
+        self, db_id: int, sql: str, params: Sequence[Any] | None
+    ) -> tuple["RowsResponse", float]:
+        """Send a QUERY_SQL request and return the first RowsResponse + deadline.
+
+        Raises OperationalError for server FailureResponse and ProtocolError
+        for any other unexpected message type.
+        """
+        request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
+        self._writer.write(request.encode())
+        await self._send()
+
+        deadline = self._operation_deadline()
+        response = await self._read_response(deadline=deadline)
+        if isinstance(response, FailureResponse):
+            raise OperationalError(response.code, response.message)
+        if not isinstance(response, RowsResponse):
+            raise ProtocolError(f"Expected RowsResponse, got {type(response).__name__}")
+        return response, deadline
+
+    async def _drain_continuations(
+        self, initial: "RowsResponse", deadline: float
+    ) -> list[list[Any]]:
+        """Drain all continuation frames, enforcing the progress + total-row caps.
+
+        Returns the full list of rows (initial frame first). A
+        continuation claiming more rows with zero delivered, or a
+        cumulative row count exceeding ``max_total_rows``, raises
+        ProtocolError.
+        """
+        all_rows = list(initial.rows)
+        response = initial
+        while response.has_more:
+            next_response = await self._read_continuation(deadline=deadline)
+            if not next_response.rows and next_response.has_more:
+                raise ProtocolError(
+                    "ROWS continuation made no progress: frame had 0 rows and has_more=True"
+                )
+            if self._max_total_rows is not None and (
+                len(all_rows) + len(next_response.rows) > self._max_total_rows
+            ):
+                raise ProtocolError(
+                    f"Query exceeded max_total_rows cap ({self._max_total_rows}); "
+                    f"reduce result size or raise the cap on the connection/pool."
+                )
+            all_rows.extend(next_response.rows)
+            response = next_response
+        return all_rows
+
     async def query_sql_typed(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
     ) -> tuple[list[str], list[int], list[list[Any]]]:
@@ -193,35 +242,10 @@ class DqliteProtocol:
         local row list is discarded. The connection is invalidated so
         callers don't accidentally reuse it with torn protocol state.
         """
-        request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
-        self._writer.write(request.encode())
-        await self._send()
-
-        deadline = self._operation_deadline()
-        response = await self._read_response(deadline=deadline)
-        if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message)
-        if not isinstance(response, RowsResponse):
-            raise ProtocolError(f"Expected RowsResponse, got {type(response).__name__}")
-
+        response, deadline = await self._send_query(db_id, sql, params)
         column_names = list(response.column_names)
         column_types = [int(t) for t in response.column_types]
-        all_rows = list(response.rows)
-        while response.has_more:
-            next_response = await self._read_continuation(deadline=deadline)
-            if not next_response.rows and next_response.has_more:
-                raise ProtocolError(
-                    "ROWS continuation made no progress: frame had 0 rows and has_more=True"
-                )
-            if self._max_total_rows is not None and (
-                len(all_rows) + len(next_response.rows) > self._max_total_rows
-            ):
-                raise ProtocolError(
-                    f"Query exceeded max_total_rows cap ({self._max_total_rows}); "
-                    f"reduce result size or raise the cap on the connection/pool."
-                )
-            all_rows.extend(next_response.rows)
-            response = next_response
+        all_rows = await self._drain_continuations(response, deadline)
         return column_names, column_types, all_rows
 
     async def query_sql(
@@ -235,48 +259,9 @@ class DqliteProtocol:
         Use :meth:`query_sql_typed` to also get per-column ``ValueType``
         tags.
         """
-        request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
-        self._writer.write(request.encode())
-        await self._send()
-
-        # Single deadline spans the initial response plus every continuation
-        # frame; otherwise a server that split a reply into N frames could
-        # legitimately take N * self._timeout to complete.
-        deadline = self._operation_deadline()
-        response = await self._read_response(deadline=deadline)
-
-        if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message)
-
-        if not isinstance(response, RowsResponse):
-            raise ProtocolError(f"Expected RowsResponse, got {type(response).__name__}")
-
+        response, deadline = await self._send_query(db_id, sql, params)
         column_names = response.column_names
-
-        # Handle multi-part responses via decode_continuation(),
-        # which decodes each continuation frame using the same layout
-        # as the initial frame (column_count + column_names + rows +
-        # marker), matching the C dqlite server's wire format.
-        all_rows = list(response.rows)
-        while response.has_more:
-            next_response = await self._read_continuation(deadline=deadline)
-            if not next_response.rows and next_response.has_more:
-                # Server claimed "more coming" but delivered zero rows in a
-                # continuation frame. That would spin forever (known
-                # pathological case: column header larger than the server's
-                # page buffer). Bail out instead of livelocking.
-                raise ProtocolError(
-                    "ROWS continuation made no progress: frame had 0 rows and has_more=True"
-                )
-            if self._max_total_rows is not None and (
-                len(all_rows) + len(next_response.rows) > self._max_total_rows
-            ):
-                raise ProtocolError(
-                    f"Query exceeded max_total_rows cap ({self._max_total_rows}); "
-                    f"reduce result size or raise the cap on the connection/pool."
-                )
-            all_rows.extend(next_response.rows)
-            response = next_response
+        all_rows = await self._drain_continuations(response, deadline)
 
         return column_names, all_rows
 
