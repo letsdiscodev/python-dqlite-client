@@ -133,6 +133,38 @@ class TestConnectionPool:
 
         await pool.close()
 
+    async def test_initialize_size_resets_if_put_raises(self) -> None:
+        """``_size`` must stay consistent with the actual pool membership
+        even if a non-_POOL_CLEANUP_EXCEPTIONS error escapes during the
+        put-to-queue phase of initialize(). Today the decrement only
+        runs inside the ``if failures:`` branch — so a raise from
+        ``self._pool.put`` (or an outer ``CancelledError`` mid-loop)
+        leaks the reservation and a subsequent ``initialize()`` retry
+        climbs toward ``_max_size`` without ever creating real
+        connections.
+        """
+        pool = ConnectionPool(["localhost:9001"], min_size=2, max_size=5)
+
+        async def fake_create(**kwargs):
+            mock_conn = MagicMock()
+            mock_conn.is_connected = True
+            mock_conn.connect = AsyncMock()
+            mock_conn.close = AsyncMock()
+            return mock_conn
+
+        with (
+            patch.object(pool._cluster, "connect", side_effect=fake_create),
+            patch.object(pool._pool, "put", side_effect=RuntimeError("synthetic")),
+            pytest.raises(RuntimeError, match="synthetic"),
+        ):
+            await pool.initialize()
+
+        # Reservation must be released so retries start from zero.
+        assert pool._size == 0, f"_size should have been decremented back to 0, got {pool._size}"
+        assert not pool._initialized
+
+        await pool.close()
+
     async def test_cancellation_returns_healthy_connection_to_pool(self) -> None:
         """Cancelling a task holding a healthy connection should return it to the pool."""
         import asyncio

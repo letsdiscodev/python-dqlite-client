@@ -195,32 +195,43 @@ class ConnectionPool:
                 return
             if self._min_size > 0:
                 self._size += self._min_size
-                # Create min_size connections concurrently so startup
-                # latency doesn't scale with min_size × per-connect RTT.
-                results = await asyncio.gather(
-                    *(self._create_connection() for _ in range(self._min_size)),
-                    return_exceptions=True,
-                )
-                successes: list[DqliteConnection] = []
-                failures: list[BaseException] = []
-                for r in results:
-                    if isinstance(r, BaseException):
-                        failures.append(r)
-                    else:
-                        successes.append(r)
-                if failures:
-                    # Close the connections that did succeed — they are
-                    # unowned now that initialize is aborting.
+                reservation_committed = False
+                try:
+                    # Create min_size connections concurrently so startup
+                    # latency doesn't scale with min_size × per-connect RTT.
+                    results = await asyncio.gather(
+                        *(self._create_connection() for _ in range(self._min_size)),
+                        return_exceptions=True,
+                    )
+                    successes: list[DqliteConnection] = []
+                    failures: list[BaseException] = []
+                    for r in results:
+                        if isinstance(r, BaseException):
+                            failures.append(r)
+                        else:
+                            successes.append(r)
+                    if failures:
+                        # Close the connections that did succeed — they
+                        # are unowned now that initialize is aborting.
+                        for conn in successes:
+                            with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
+                                await conn.close()
+                        # Re-raise the first observed failure as the
+                        # root cause; the finally releases the
+                        # reservation before the raise propagates.
+                        raise failures[0]
                     for conn in successes:
-                        with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                            await conn.close()
-                    self._size -= self._min_size
-                    self._signal_state_change()
-                    # Re-raise the first observed failure as the root
-                    # cause; additional failures chain as context.
-                    raise failures[0]
-                for conn in successes:
-                    await self._pool.put(conn)
+                        await self._pool.put(conn)
+                    reservation_committed = True
+                finally:
+                    if not reservation_committed:
+                        # Any exit path that did not commit the reservation
+                        # — failed gather, raise from _pool.put, outer
+                        # CancelledError — must return _size to reality so
+                        # a subsequent initialize()/acquire() is not stuck
+                        # against a stale counter climbing toward _max_size.
+                        self._size -= self._min_size
+                        self._signal_state_change()
             self._initialized = True
 
     async def _create_connection(self) -> DqliteConnection:
