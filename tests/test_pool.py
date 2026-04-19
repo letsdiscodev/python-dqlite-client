@@ -178,6 +178,11 @@ class TestConnectionPool:
         mock_conn.is_connected = True
         mock_conn.connect = AsyncMock()
         mock_conn.close = AsyncMock()
+        # Must be explicitly falsy: the pool's _reset_connection takes
+        # the ROLLBACK branch when _in_transaction is truthy, and
+        # MagicMock's attribute-auto-vivification makes bare
+        # ``mock_conn._in_transaction`` a truthy MagicMock.
+        mock_conn._in_transaction = False
 
         with patch.object(pool._cluster, "connect", return_value=mock_conn):
             await pool.initialize()
@@ -338,6 +343,7 @@ class TestConnectionPool:
         new_conn.is_connected = True
         new_conn.connect = AsyncMock()
         new_conn.close = AsyncMock()
+        new_conn._in_transaction = False
 
         pool._create_connection = tracking_create
         with patch.object(pool._cluster, "connect", return_value=new_conn):
@@ -632,7 +638,11 @@ class TestConnectionPool:
 
         async def failing_execute(sql, params=None):
             if "ROLLBACK" in sql:
-                raise Exception("connection lost")
+                # Use a transport-level error: _reset_connection narrows
+                # to (OSError, TimeoutError, DqliteConnectionError,
+                # ProtocolError, OperationalError) so programming-error
+                # categories like bare Exception propagate as bugs.
+                raise DqliteConnectionError("connection lost")
             return (0, 0)
 
         mock_conn.execute = failing_execute
@@ -648,56 +658,6 @@ class TestConnectionPool:
         # ROLLBACK failed, so connection should be destroyed
         mock_conn.close.assert_called()
         assert pool._size == initial_size - 1
-
-        await pool.close()
-
-    async def test_cancelled_error_during_reset_does_not_leak(self) -> None:
-        """CancelledError during ROLLBACK in _reset_connection must not leak connections."""
-        import asyncio
-
-        from dqliteclient.connection import DqliteConnection
-
-        pool = ConnectionPool(["localhost:9001"], max_size=1)
-
-        real_conn = DqliteConnection("127.0.0.1:9001")
-        real_conn._protocol = MagicMock()
-        real_conn._db_id = 1
-        real_conn._bound_loop = asyncio.get_running_loop()
-        real_conn._in_transaction = False
-        real_conn._protocol.close = MagicMock()
-        real_conn._protocol.wait_closed = AsyncMock()
-
-        # execute succeeds normally, but ROLLBACK raises CancelledError
-        async def exec_or_cancel(db_id, sql, params=None):
-            if "ROLLBACK" in str(sql):
-                raise asyncio.CancelledError()
-            return (0, 0)
-
-        real_conn._protocol.exec_sql = exec_or_cancel
-
-        with patch.object(pool._cluster, "connect", return_value=real_conn):
-            await pool.initialize()
-
-        initial_size = pool._size
-
-        # Use the connection with a transaction open, then raise to trigger cleanup
-        try:
-            async with pool.acquire() as conn:
-                conn._in_transaction = True
-                conn._tx_owner = asyncio.current_task()
-                raise ValueError("app error triggers pool cleanup with ROLLBACK")
-        except (ValueError, asyncio.CancelledError):
-            pass
-
-        # After cleanup: connection should be destroyed and size decremented
-        assert pool._size == initial_size - 1, (
-            f"_size should have decremented from {initial_size} to {initial_size - 1}, "
-            f"got {pool._size}. CancelledError during ROLLBACK leaked the connection."
-        )
-        assert real_conn._pool_released, (
-            "_pool_released should be True after connection cleanup, "
-            "but CancelledError during ROLLBACK skipped setting it."
-        )
 
         await pool.close()
 
@@ -916,8 +876,14 @@ class TestConnectionPool:
         with pytest.raises(ValueError, match="only one"):
             ConnectionPool(cluster=cluster, node_store=store)
 
-    async def test_reset_connection_returns_false_on_cancelled_error(self) -> None:
-        """_reset_connection must return False (not raise) when ROLLBACK is cancelled."""
+    async def test_reset_connection_propagates_cancelled_error(self) -> None:
+        """_reset_connection must let CancelledError propagate, not
+        convert it into a ``return False`` (connection-drop). Catching
+        CancelledError would silently eat structured-concurrency
+        cancellations delivered from a parent ``asyncio.timeout()`` or
+        sibling-task cancel. The ROLLBACK catch is scoped to transport
+        errors only.
+        """
         import asyncio
 
         from dqliteclient.connection import DqliteConnection
@@ -939,13 +905,8 @@ class TestConnectionPool:
         conn._protocol.close = MagicMock()
         conn._protocol.wait_closed = AsyncMock()
 
-        # _reset_connection should catch CancelledError and return False,
-        # not let it propagate
-        result = await pool._reset_connection(conn)
-        assert result is False, (
-            f"_reset_connection should return False when ROLLBACK raises "
-            f"CancelledError, but got {result}. CancelledError escaped the handler."
-        )
+        with pytest.raises(asyncio.CancelledError):
+            await pool._reset_connection(conn)
 
     async def test_escaped_reference_rejected_after_release(self) -> None:
         """Using a connection after it's returned to the pool must raise InterfaceError."""

@@ -327,3 +327,87 @@ class TestCloseWakesAllWaiters:
         holder_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await holder_task
+
+
+class TestResetConnectionNarrowsException:
+    """_reset_connection's ROLLBACK catch must not swallow programming
+    errors or cancellation. Only transport-level categories should be
+    treated as "connection is unhealthy, drop it"; anything else signals
+    a bug or a structured-concurrency cancel that must propagate.
+    """
+
+    async def test_rollback_programming_error_propagates(self) -> None:
+        class _BoomConn(_FakeConn):
+            async def execute(self, sql: str, params: Any = None) -> tuple[int, int]:
+                if sql.upper().strip().startswith("ROLLBACK"):
+                    raise AttributeError("stale attribute — programmer bug")
+                return (0, 0)
+
+        conn = _BoomConn(name="boom-rollback")
+
+        async def _connect_once(**kwargs: Any) -> _FakeConn:
+            return conn
+
+        cluster = MagicMock(spec=ClusterClient)
+        cluster.connect = _connect_once
+        pool = ConnectionPool(
+            addresses=["localhost:9001"],
+            min_size=0,
+            max_size=1,
+            timeout=5.0,
+            cluster=cluster,
+        )
+
+        class _BodyDone(Exception):
+            pass
+
+        # Programming errors from ROLLBACK must not be silently logged
+        # and converted into "drop the connection". A bare
+        # `except BaseException` would swallow the AttributeError.
+        with pytest.raises(AttributeError, match="stale attribute"):
+            async with pool.acquire() as c:
+                c._in_transaction = True
+                raise _BodyDone()
+
+        await pool.close()
+
+
+class TestInitializeCleanupNarrowsException:
+    """initialize() cleanup on partial failure must not swallow
+    programming errors during conn.close(). A bare
+    `suppress(BaseException)` masks refactor bugs and cancellation.
+    """
+
+    async def test_cleanup_programming_error_propagates(self) -> None:
+        call_count = [0]
+
+        class _CloseBoomConn(_FakeConn):
+            async def close(self) -> None:
+                raise AttributeError("close bug in survivor")
+
+        async def _flaky_connect(**kwargs: Any) -> _FakeConn:
+            n = call_count[0]
+            call_count[0] += 1
+            if n == 1:
+                # Second connect fails → cleanup path runs on the first.
+                await asyncio.sleep(0.01)
+                raise DqliteConnectionError("second connect failed")
+            c = _CloseBoomConn(name=f"c{n}")
+            return c
+
+        cluster = MagicMock(spec=ClusterClient)
+        cluster.connect = _flaky_connect
+        pool = ConnectionPool(
+            addresses=["localhost:9001"],
+            min_size=2,
+            max_size=2,
+            timeout=5.0,
+            cluster=cluster,
+        )
+
+        # The cleanup loop previously wrapped conn.close() in
+        # `suppress(BaseException)`, masking an AttributeError in a
+        # survivor's close. After narrowing, the programming error
+        # propagates out of initialize().
+        with pytest.raises(AttributeError, match="close bug"):
+            await pool.initialize()

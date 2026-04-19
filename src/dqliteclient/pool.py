@@ -10,9 +10,28 @@ from typing import Any
 
 from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import DqliteConnection
-from dqliteclient.exceptions import DqliteConnectionError
+from dqliteclient.exceptions import (
+    DqliteConnectionError,
+    OperationalError,
+    ProtocolError,
+)
 from dqliteclient.node_store import NodeStore
 from dqliteclient.protocol import _validate_positive_int_or_none
+
+# Exception categories a best-effort pool cleanup (ROLLBACK, close())
+# can legitimately raise on a partially-torn-down transport. Anything
+# outside this tuple — ``CancelledError``, ``KeyboardInterrupt``,
+# ``SystemExit``, and programming errors (``AttributeError``,
+# ``TypeError``, ``RuntimeError``) — must propagate so structured
+# concurrency and refactor bugs are observable. Mirrors the narrowing
+# in ``AsyncAdaptedConnection.close`` and ``DqliteConnection.transaction``.
+_POOL_CLEANUP_EXCEPTIONS = (
+    OSError,
+    TimeoutError,
+    DqliteConnectionError,
+    ProtocolError,
+    OperationalError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +212,7 @@ class ConnectionPool:
                     # Close the connections that did succeed — they are
                     # unowned now that initialize is aborting.
                     for conn in successes:
-                        with contextlib.suppress(BaseException):
+                        with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
                             await conn.close()
                     self._size -= self._min_size
                     self._signal_state_change()
@@ -494,7 +513,7 @@ class ConnectionPool:
                 return False
             try:
                 await conn.execute("ROLLBACK")
-            except BaseException as exc:
+            except _POOL_CLEANUP_EXCEPTIONS as exc:
                 logger.debug(
                     "pool: dropping connection %s after ROLLBACK failure: %r",
                     conn._address,
