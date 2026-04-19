@@ -140,6 +140,36 @@ class TestClusterClient:
         ):
             await client.find_leader()
 
+    async def test_query_leader_awaits_wait_closed_on_success(self) -> None:
+        """The leader-probe socket should close cleanly: ``close()`` is
+        fire-and-forget, so a bare ``writer.close()`` leaves the
+        transport in FIN-WAIT until the OS reclaims it. Awaiting
+        ``wait_closed()`` with a bounded timeout matches the asyncio
+        documented full-close idiom and keeps FD pressure low under
+        heavy connect churn (pool warm-up after a leader flip)."""
+        store = MemoryNodeStore(["localhost:9001"])
+        client = ClusterClient(store)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+
+        responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            LeaderResponse(node_id=1, address="localhost:9001").encode(),
+        ]
+        mock_reader.read.side_effect = responses
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await client.find_leader()
+
+        mock_writer.close.assert_called()
+        mock_writer.wait_closed.assert_awaited()
+
     async def test_query_leader_closes_writer_on_handshake_error(self) -> None:
         """Writer must be closed even if handshake raises an unexpected error."""
         store = MemoryNodeStore(["localhost:9001"])

@@ -1,6 +1,7 @@
 """Cluster management and leader detection for dqlite."""
 
 import asyncio
+import contextlib
 import logging
 import random
 from collections.abc import Callable, Iterable
@@ -192,6 +193,17 @@ class ClusterClient:
             return None
         finally:
             writer.close()
+            # close() is fire-and-forget; without the bounded
+            # wait_closed() the transport sits in FIN-WAIT until the
+            # OS reclaims it, which adds up under heavy leader-probe
+            # churn (pool warm-up after a leader flip). Cap the wait
+            # at 100 ms: a responsive peer drains FIN/ACK in microseconds
+            # and a slow peer must never hold up leader discovery — the
+            # OS will reap the socket later. Suppress expected socket-
+            # close errors; do NOT suppress CancelledError (an outer
+            # cancel must propagate past this cleanup step).
+            with contextlib.suppress(OSError, TimeoutError):
+                await asyncio.wait_for(writer.wait_closed(), timeout=0.1)
 
     async def connect(
         self,
