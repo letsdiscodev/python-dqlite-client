@@ -435,14 +435,34 @@ class ConnectionPool:
                     # Connection is broken (invalidated by execute/fetch error
                     # handlers). Drain other idle connections — they likely
                     # point to the same dead server.
-                    with contextlib.suppress(BaseException):
+                    #
+                    # Cleanup narrowing (matches ISSUE-139 / 148 / 157
+                    # precedent): these ``suppress`` blocks used to catch
+                    # ``BaseException``, which silently ate cancellation and
+                    # interpreter-exit signals delivered mid-cleanup.
+                    # ``_drain_idle`` already narrows internally; the outer
+                    # catch stays for defence against a regression there.
+                    try:
                         await self._drain_idle()
-                    with contextlib.suppress(BaseException):
+                    except Exception as exc:
+                        logger.debug("pool.acquire cleanup: _drain_idle failed: %r", exc)
+                    try:
                         await conn.close()
+                    except (OSError, TimeoutError, DqliteConnectionError) as exc:
+                        logger.debug(
+                            "pool.acquire cleanup: conn.close(%r) failed: %r",
+                            getattr(conn, "_address", "?"),
+                            exc,
+                        )
                     conn._pool_released = True
             finally:
                 if not returned_to_queue:
-                    with contextlib.suppress(BaseException):
+                    # ``asyncio.shield`` already prevents an outer cancel
+                    # from interrupting ``_release_reservation``; the narrow
+                    # ``CancelledError`` suppression here only absorbs a
+                    # fresh nested cancel delivered between the shielded
+                    # return and the end of this block.
+                    with contextlib.suppress(asyncio.CancelledError):
                         await asyncio.shield(self._release_reservation())
             raise
         else:
