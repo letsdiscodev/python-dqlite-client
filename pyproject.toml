@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dqlite-client"
-version = "0.1.0"
+version = "0.1.3"
 description = "Async Python client for dqlite with connection pooling and leader detection"
 readme = "README.md"
 requires-python = ">=3.13"

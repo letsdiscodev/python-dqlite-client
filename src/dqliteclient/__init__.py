@@ -38,7 +38,7 @@ __all__ = [
     "DataError",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.3"
 
 
 async def connect(
