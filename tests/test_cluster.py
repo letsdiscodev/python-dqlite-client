@@ -1,6 +1,7 @@
 """Tests for cluster management."""
 
 import contextlib
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -139,6 +140,39 @@ class TestClusterClient:
             pytest.raises(ClusterError, match="Could not find leader"),
         ):
             await client.find_leader()
+
+    async def test_find_leader_logs_per_node_attempts_on_failure(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """find_leader's retry loop should emit a DEBUG log for each
+        node's failure. Without per-node tracing, a slow leader-discovery
+        stall is only visible as a single accumulated ClusterError
+        string; operators cannot distinguish one slow node from a
+        cluster-wide problem."""
+        import logging
+
+        from dqliteclient.exceptions import DqliteConnectionError
+
+        store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
+        client = ClusterClient(store, timeout=1.0)
+
+        async def always_fail(address: str, **kw: Any) -> str | None:
+            raise DqliteConnectionError(f"probe of {address} refused")
+
+        caplog.set_level(logging.DEBUG, logger="dqliteclient.cluster")
+        with (
+            patch.object(client, "_query_leader", side_effect=always_fail),
+            pytest.raises(ClusterError),
+        ):
+            await client.find_leader()
+
+        messages = [rec.message for rec in caplog.records if rec.levelno == logging.DEBUG]
+        assert any("localhost:9001" in m for m in messages), (
+            f"DEBUG log must mention each attempted node, got: {messages}"
+        )
+        assert any("localhost:9002" in m for m in messages), (
+            f"DEBUG log must mention each attempted node, got: {messages}"
+        )
 
     async def test_query_leader_awaits_wait_closed_on_success(self) -> None:
         """The leader-probe socket should close cleanly: ``close()`` is

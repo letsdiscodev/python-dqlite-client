@@ -121,8 +121,9 @@ class ClusterClient:
 
         errors: list[str] = []
         last_exc: BaseException | None = None
+        total_nodes = len(nodes)
 
-        for node in nodes:
+        for idx, node in enumerate(nodes):
             try:
                 leader_address = await asyncio.wait_for(
                     self._query_leader(
@@ -140,6 +141,13 @@ class ClusterClient:
                         self._check_redirect(leader_address)
                     return leader_address
             except TimeoutError as e:
+                logger.debug(
+                    "find_leader: %s timed out after %.3fs (%d/%d)",
+                    node.address,
+                    self._timeout,
+                    idx + 1,
+                    total_nodes,
+                )
                 errors.append(f"{node.address}: timed out")
                 last_exc = e
                 continue
@@ -147,6 +155,14 @@ class ClusterClient:
                 # Narrow the catch so programming bugs (TypeError, KeyError,
                 # etc.) propagate directly instead of being stringified into
                 # a retryable ClusterError.
+                logger.debug(
+                    "find_leader: %s failed with %s: %s (%d/%d)",
+                    node.address,
+                    type(e).__name__,
+                    _truncate_error(str(e)),
+                    idx + 1,
+                    total_nodes,
+                )
                 errors.append(f"{node.address}: {_truncate_error(str(e))}")
                 last_exc = e
                 continue
