@@ -347,6 +347,21 @@ class TestDqliteConnection:
 
         assert not conn.is_connected
 
+    async def test_invalidate_clears_in_use_flag(self, connected_connection) -> None:
+        """_invalidate must reset _in_use alongside dropping the protocol.
+
+        If an out-of-band invalidation (e.g. scheduled from a sync-side
+        timeout path) fires while _in_use=True, leaving the flag set
+        deterministically blocks the next call on this connection with
+        "another operation is in progress" — a misleading error for a
+        connection that is in fact dead and needs reconnecting.
+        """
+        conn, _, _ = connected_connection
+        conn._in_use = True
+        conn._invalidate(OperationalError(0, "synthetic"))
+        assert conn._in_use is False
+        assert conn._protocol is None
+
     async def test_invalidate_closes_transport(self, connected_connection) -> None:
         """_invalidate() should close the underlying transport to avoid socket leaks."""
         conn, mock_reader, mock_writer = connected_connection

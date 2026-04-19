@@ -349,6 +349,15 @@ class DqliteConnection:
 
         If ``cause`` is provided, it is remembered so a later caller that
         hits "Not connected" can chain it as ``__cause__`` for diagnostics.
+
+        Also clears the ``_in_use`` slot: invalidation can be invoked
+        out-of-band (e.g. scheduled from the dbapi sync-timeout path
+        via ``call_soon_threadsafe``), bypassing ``_run_protocol``'s
+        finally that normally resets the flag. An invalidated connection
+        is no longer holding a meaningful in-flight operation, so the
+        flag and the liveness state must stay consistent — otherwise
+        the next call deterministically raises "another operation is
+        in progress" on a connection that is in fact dead.
         """
         if self._protocol is not None:
             # Connection may already be broken; suppress close errors
@@ -356,6 +365,7 @@ class DqliteConnection:
                 self._protocol.close()
         self._protocol = None
         self._db_id = None
+        self._in_use = False
         if cause is not None:
             self._invalidation_cause = cause
 
