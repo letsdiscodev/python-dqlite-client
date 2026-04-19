@@ -432,6 +432,11 @@ class ConnectionPool:
         # If connection is dead, discard and create a fresh one with leader discovery.
         # Also drain other idle connections — they likely point to the same dead server.
         if not conn.is_connected:
+            logger.debug(
+                "pool.acquire: drain-idle triggered by stale conn=%r closing_idle=%d",
+                conn,
+                self._pool.qsize(),
+            )
             await self._drain_idle()
             # Release the dead reservation, reserve a new slot, then
             # do the network work outside the lock.

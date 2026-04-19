@@ -183,6 +183,44 @@ class TestConnectionPool:
 
         await pool.close()
 
+    async def test_acquire_logs_drain_idle_when_stale_conn_detected(self, caplog) -> None:  # type: ignore[no-untyped-def]
+        """A ``_drain_idle`` call triggered by a detected-stale
+        connection emits a DEBUG log so the pool-wide replacement is
+        visible to operators."""
+        import logging as _logging
+
+        pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=2)
+
+        # First connection reports healthy at initialize() time so it
+        # ends up in the idle queue. Second connection (after drain +
+        # fresh create) is the healthy replacement returned to acquire.
+        stale_conn = MagicMock()
+        stale_conn.is_connected = True
+        stale_conn.connect = AsyncMock()
+        stale_conn.close = AsyncMock()
+        stale_conn._in_transaction = False
+        fresh_conn = MagicMock()
+        fresh_conn.is_connected = True
+        fresh_conn.connect = AsyncMock()
+        fresh_conn.close = AsyncMock()
+        fresh_conn._in_transaction = False
+
+        with patch.object(pool._cluster, "connect", side_effect=[stale_conn, fresh_conn]):
+            await pool.initialize()
+
+            # Flip stale_conn to "not connected" so the next acquire
+            # observes a dead conn and triggers drain.
+            stale_conn.is_connected = False
+
+            caplog.set_level(_logging.DEBUG, logger="dqliteclient.pool")
+            async with pool.acquire():
+                pass
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "dqliteclient.pool"]
+        assert any("drain-idle triggered by stale" in m for m in messages)
+
+        await pool.close()
+
     async def test_pool_emits_debug_logs_for_lifecycle_events(self, caplog) -> None:  # type: ignore[no-untyped-def]
         """DEBUG traces the key pool state-change events so an operator
         can reconstruct pool behaviour from logs without adding
