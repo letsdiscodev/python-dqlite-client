@@ -506,6 +506,57 @@ class TestDqliteProtocol:
         with pytest.raises(DqliteConnectionError, match="timed out"):
             await protocol.exec_sql(1, "SELECT 1")
 
+    async def test_timeout_message_includes_peer_address(
+        self,
+        mock_reader: AsyncMock,
+        mock_writer: MagicMock,
+    ) -> None:
+        """When ``address`` is threaded through, transport errors must
+        embed it so an operator correlating a stall across many nodes
+        can tell which one hung without having to cross-reference with
+        higher-layer logs."""
+        import asyncio
+
+        protocol = DqliteProtocol(mock_reader, mock_writer, timeout=0.05, address="node-a:9001")
+
+        async def hang_forever(*args: object, **kwargs: object) -> bytes:
+            await asyncio.sleep(100)
+            return b""
+
+        mock_reader.read.side_effect = hang_forever
+
+        from dqliteclient.exceptions import DqliteConnectionError
+
+        with pytest.raises(DqliteConnectionError, match=r"to node-a:9001"):
+            await protocol.exec_sql(1, "SELECT 1")
+
+    async def test_timeout_message_unchanged_when_address_absent(
+        self,
+        mock_reader: AsyncMock,
+        mock_writer: MagicMock,
+    ) -> None:
+        """Without an address, the message must not include a stray
+        ``to None`` fragment — the existing format is preserved for
+        callers that don't know the peer."""
+        import asyncio
+
+        protocol = DqliteProtocol(mock_reader, mock_writer, timeout=0.05)
+
+        async def hang_forever(*args: object, **kwargs: object) -> bytes:
+            await asyncio.sleep(100)
+            return b""
+
+        mock_reader.read.side_effect = hang_forever
+
+        from dqliteclient.exceptions import DqliteConnectionError
+
+        with pytest.raises(DqliteConnectionError) as exc_info:
+            await protocol.exec_sql(1, "SELECT 1")
+        assert " to " not in str(exc_info.value), (
+            f"Address-less protocol should not inject 'to None' into the "
+            f"error message, got: {exc_info.value!s}"
+        )
+
     async def test_close(
         self,
         protocol: DqliteProtocol,

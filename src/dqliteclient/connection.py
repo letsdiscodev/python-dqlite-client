@@ -219,6 +219,7 @@ class DqliteConnection:
                 max_total_rows=self._max_total_rows,
                 max_continuation_frames=self._max_continuation_frames,
                 trust_server_heartbeat=self._trust_server_heartbeat,
+                address=self._address,
             )
 
             try:

@@ -190,6 +190,7 @@ class ClusterClient:
                 writer,
                 timeout=self._timeout,
                 trust_server_heartbeat=trust_server_heartbeat,
+                address=address,
             )
             await protocol.handshake()
             node_id, leader_addr = await protocol.get_leader()

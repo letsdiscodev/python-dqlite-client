@@ -58,6 +58,7 @@ class DqliteProtocol:
         max_total_rows: int | None = 10_000_000,
         max_continuation_frames: int | None = 100_000,
         trust_server_heartbeat: bool = False,
+        address: str | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -65,6 +66,11 @@ class DqliteProtocol:
         self._client_id = 0
         self._heartbeat_timeout = 0
         self._timeout = timeout
+        # Diagnostic-only peer address. Embedded into timeout and
+        # decode-error messages so operators can tell from the
+        # exception alone which node a hung probe / mangled frame came
+        # from; callers without the address in scope may omit it.
+        self._address = address
         # Cumulative cap across continuation frames for a single query.
         # A hostile or buggy server can drip-feed 1-row-per-frame inside
         # the per-operation deadline; without a cumulative cap, clients
@@ -329,7 +335,7 @@ class DqliteProtocol:
         try:
             await self._writer.drain()
         except (ConnectionError, OSError, RuntimeError) as e:
-            raise DqliteConnectionError(f"Write failed: {e}") from e
+            raise DqliteConnectionError(f"Write failed{self._addr_suffix()}: {e}") from e
 
     async def _read_data(self, deadline: float | None = None) -> bytes:
         """Read a chunk from the stream, bounded by a per-operation deadline.
@@ -346,19 +352,31 @@ class DqliteProtocol:
         if deadline is not None:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                raise DqliteConnectionError(f"Operation exceeded {self._timeout}s deadline")
+                raise DqliteConnectionError(
+                    f"Operation{self._addr_suffix()} exceeded {self._timeout}s deadline"
+                )
             timeout = min(remaining, self._timeout)
         else:
             timeout = self._timeout
         try:
             data = await asyncio.wait_for(self._reader.read(_READ_CHUNK_SIZE), timeout=timeout)
         except TimeoutError as e:
-            raise DqliteConnectionError(f"Server read timed out after {timeout:.1f}s") from e
+            raise DqliteConnectionError(
+                f"Server read{self._addr_suffix()} timed out after {timeout:.1f}s"
+            ) from e
         except (ConnectionError, OSError, RuntimeError) as e:
-            raise DqliteConnectionError(f"Read failed: {e}") from e
+            raise DqliteConnectionError(f"Read failed{self._addr_suffix()}: {e}") from e
         if not data:
-            raise DqliteConnectionError("Connection closed by server")
+            raise DqliteConnectionError(f"Connection closed by server{self._addr_suffix()}")
         return data
+
+    def _addr_suffix(self) -> str:
+        """Render the peer address as a trailing ``" to <addr>"`` fragment.
+
+        Returns an empty string when the address is unknown — keeping
+        error messages clean for callers that don't thread it in.
+        """
+        return f" to {self._address}" if self._address else ""
 
     def _operation_deadline(self) -> float:
         """Deadline (monotonic seconds) for a single protocol operation."""
@@ -381,7 +399,7 @@ class DqliteProtocol:
                 data = await self._read_data(deadline=deadline)
                 self._decoder.feed(data)
         except _WireProtocolError as e:
-            raise ProtocolError(f"Wire decode failed: {e}") from e
+            raise ProtocolError(f"Wire decode failed{self._addr_suffix()}: {e}") from e
 
     async def _read_response(self, deadline: float | None = None) -> Message:
         """Read and decode the next response message.
@@ -400,10 +418,10 @@ class DqliteProtocol:
 
             message = self._decoder.decode()
         except _WireProtocolError as e:
-            raise ProtocolError(f"Wire decode failed: {e}") from e
+            raise ProtocolError(f"Wire decode failed{self._addr_suffix()}: {e}") from e
 
         if message is None:
-            raise ProtocolError("Failed to decode message")
+            raise ProtocolError(f"Failed to decode message{self._addr_suffix()}")
 
         return message
 
