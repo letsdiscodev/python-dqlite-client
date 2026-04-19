@@ -69,6 +69,31 @@ class TestDqliteProtocol:
             await protocol._read_data()
         assert exc_info.value.__cause__ is err
 
+    async def test_read_timeout_preserves_cause(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """A per-read timeout must surface as DqliteConnectionError with
+        __cause__ set to the underlying TimeoutError, so traceback
+        chains distinguish a genuine server timeout from a synthesised
+        one.
+        """
+        import asyncio
+
+        from dqliteclient.exceptions import DqliteConnectionError
+
+        protocol._timeout = 0.05
+
+        async def hang(_n: int) -> bytes:
+            await asyncio.sleep(10)
+            return b""
+
+        mock_reader.read.side_effect = hang
+        with pytest.raises(DqliteConnectionError, match="Server read timed out") as exc_info:
+            await protocol._read_data()
+        assert isinstance(exc_info.value.__cause__, TimeoutError)
+
     async def test_read_response_enforces_operation_deadline(
         self,
         protocol: DqliteProtocol,

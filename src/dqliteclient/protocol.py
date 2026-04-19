@@ -352,8 +352,8 @@ class DqliteProtocol:
             timeout = self._timeout
         try:
             data = await asyncio.wait_for(self._reader.read(_READ_CHUNK_SIZE), timeout=timeout)
-        except TimeoutError:
-            raise DqliteConnectionError(f"Server read timed out after {timeout:.1f}s") from None
+        except TimeoutError as e:
+            raise DqliteConnectionError(f"Server read timed out after {timeout:.1f}s") from e
         except (ConnectionError, OSError, RuntimeError) as e:
             raise DqliteConnectionError(f"Read failed: {e}") from e
         if not data:
