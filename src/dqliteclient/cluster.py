@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable
 from dqliteclient.connection import DqliteConnection, _parse_address
 from dqliteclient.exceptions import (
     ClusterError,
+    ClusterPolicyError,
     DqliteConnectionError,
     OperationalError,
     ProtocolError,
@@ -89,7 +90,7 @@ class ClusterClient:
         if self._redirect_policy is None:
             return
         if not self._redirect_policy(address):
-            raise ClusterError(f"Leader redirect to {address!r} rejected by redirect_policy")
+            raise ClusterPolicyError(f"Leader redirect to {address!r} rejected by redirect_policy")
 
     async def find_leader(self, *, trust_server_heartbeat: bool = False) -> str:
         """Find the current cluster leader.
@@ -290,7 +291,10 @@ class ClusterClient:
         # codes are reclassified into DqliteConnectionError inside
         # DqliteConnection.connect(), so we no longer need OperationalError
         # in the retry set — that avoids amplifying a schema/SQL error
-        # into 5 × N_nodes RTTs before propagating.
+        # into 5 × N_nodes RTTs before propagating. ClusterPolicyError
+        # reflects a deterministic configuration mismatch (redirect
+        # blocked) and is excluded: retrying would just reproduce it and
+        # multiply the wall-clock cost.
         return await retry_with_backoff(
             try_connect,
             max_attempts=attempts_cap,
@@ -300,6 +304,7 @@ class ClusterClient:
                 OSError,
                 TimeoutError,
             ),
+            excluded_exceptions=(ClusterPolicyError,),
         )
 
     async def update_nodes(self, nodes: list[NodeInfo]) -> None:

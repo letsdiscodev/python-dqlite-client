@@ -33,6 +33,20 @@ class ClusterError(DqliteError):
     """Cluster-related error (leader not found, etc)."""
 
 
+class ClusterPolicyError(ClusterError):
+    """Leader redirect rejected by a configured redirect_policy.
+
+    Subclass of :class:`ClusterError` so callers already writing
+    ``except ClusterError`` continue to work. Raised by
+    ``ClusterClient._check_redirect`` when the operator-supplied policy
+    rejects a redirect target; the rejection is deterministic (it
+    reflects a configuration mismatch, not a transient failure) and
+    therefore must bypass the connect-time retry loop — retrying would
+    simply re-invoke the same policy against the same store and
+    multiply the wall-clock cost.
+    """
+
+
 class DataError(DqliteError):
     """Client-side parameter-encoding error.
 

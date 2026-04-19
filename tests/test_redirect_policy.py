@@ -86,6 +86,45 @@ class TestRedirectPolicy:
         with patch.object(cc, "_query_leader", new=AsyncMock(return_value="10.0.0.2:9001")):
             assert asyncio.run(cc.find_leader()) == "10.0.0.2:9001"
 
+    def test_policy_rejection_short_circuits_connect_retry(self) -> None:
+        """A deterministic redirect-policy rejection must not be
+        retried. Before the ClusterPolicyError split it was caught as
+        a plain ClusterError by retry_with_backoff's retryable tuple
+        and re-attempted ``max_attempts`` times, multiplying the
+        wall-clock cost with no chance of recovery.
+        """
+        from unittest.mock import patch
+
+        from dqliteclient.exceptions import ClusterPolicyError
+
+        store = MemoryNodeStore(["10.0.0.1:9001"])
+        cc = ClusterClient(
+            store,
+            timeout=5.0,
+            redirect_policy=allowlist_policy(["10.0.0.1:9001"]),
+        )
+
+        call_count = 0
+
+        async def probe(address: str, **kw: object) -> str | None:
+            nonlocal call_count
+            call_count += 1
+            return "attacker.com:9001"
+
+        with (
+            patch.object(cc, "_query_leader", side_effect=probe),
+            pytest.raises(ClusterPolicyError, match="rejected"),
+        ):
+            asyncio.run(cc.connect())
+
+        # One find_leader call → one rejection. Without the exclusion,
+        # retry_with_backoff (max_attempts=3 by default) would invoke
+        # find_leader three times.
+        assert call_count == 1, (
+            f"Policy rejection must short-circuit retry; got {call_count} "
+            f"probe attempts (expected 1)."
+        )
+
     def test_self_leader_bypasses_policy(self) -> None:
         """If the queried node is the leader (returns its own address),
         the redirect policy doesn't apply — the address is already in the

@@ -25,6 +25,7 @@ async def retry_with_backoff[T](
     max_delay: float = 10.0,
     jitter: float = 0.1,
     retryable_exceptions: tuple[type[BaseException], ...] = _DEFAULT_RETRYABLE,
+    excluded_exceptions: tuple[type[BaseException], ...] = (),
 ) -> T:
     """Retry an async function with exponential backoff.
 
@@ -35,6 +36,11 @@ async def retry_with_backoff[T](
         max_delay: Maximum delay between retries
         jitter: Random jitter factor (0-1)
         retryable_exceptions: Exception types to retry on
+        excluded_exceptions: Subclasses of ``retryable_exceptions`` that
+            must NOT be retried — useful when a deterministic,
+            non-recoverable error (e.g. a policy rejection) is a subtype
+            of an otherwise-retryable family. Matched before the
+            retryable check so the exception re-raises immediately.
 
     Returns:
         Result of the function
@@ -51,6 +57,10 @@ async def retry_with_backoff[T](
     for attempt in range(max_attempts):
         try:
             return await func()
+        except excluded_exceptions:
+            # Deterministic-failure subclass of a retryable family —
+            # retrying would just reproduce it. Re-raise immediately.
+            raise
         except retryable_exceptions as e:
             last_error = e
 
