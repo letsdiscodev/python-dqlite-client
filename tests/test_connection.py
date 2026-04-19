@@ -347,6 +347,31 @@ class TestDqliteConnection:
 
         assert not conn.is_connected
 
+    async def test_connect_closes_transport_on_protocol_construction_failure(
+        self, mock_reader, mock_writer
+    ) -> None:
+        """If constructing DqliteProtocol raises after open_connection
+        has already returned a reader/writer pair, the writer must be
+        closed so the socket is not leaked. ``_abort_protocol`` is
+        gated on ``self._protocol is not None`` and therefore does
+        nothing in this window — an explicit close on the transport
+        is required.
+        """
+        from unittest.mock import patch
+
+        conn = DqliteConnection("localhost:9001")
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            patch(
+                "dqliteclient.connection.DqliteProtocol",
+                side_effect=RuntimeError("synthetic construction failure"),
+            ),
+            pytest.raises(RuntimeError, match="synthetic construction failure"),
+        ):
+            await conn.connect()
+
+        mock_writer.close.assert_called()
+
     async def test_invalidate_clears_in_use_flag(self, connected_connection) -> None:
         """_invalidate must reset _in_use alongside dropping the protocol.
 

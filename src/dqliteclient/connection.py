@@ -212,15 +212,27 @@ class DqliteConnection:
             except OSError as e:
                 raise DqliteConnectionError(f"Failed to connect to {self._address}: {e}") from e
 
-            self._protocol = DqliteProtocol(
-                reader,
-                writer,
-                timeout=self._timeout,
-                max_total_rows=self._max_total_rows,
-                max_continuation_frames=self._max_continuation_frames,
-                trust_server_heartbeat=self._trust_server_heartbeat,
-                address=self._address,
-            )
+            try:
+                self._protocol = DqliteProtocol(
+                    reader,
+                    writer,
+                    timeout=self._timeout,
+                    max_total_rows=self._max_total_rows,
+                    max_continuation_frames=self._max_continuation_frames,
+                    trust_server_heartbeat=self._trust_server_heartbeat,
+                    address=self._address,
+                )
+            except BaseException:
+                # Protocol construction is currently limited to argument
+                # validation, which ``DqliteConnection.__init__`` already
+                # enforces — but if it ever raises (now or through future
+                # refactors), ``_abort_protocol`` is a no-op until
+                # ``self._protocol`` is assigned, so reader/writer would
+                # be leaked. Close the transport defensively.
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(writer.wait_closed(), timeout=0.5)
+                raise
 
             try:
                 await self._protocol.handshake()
