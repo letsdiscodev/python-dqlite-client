@@ -90,6 +90,12 @@ class ClusterClient:
         if self._redirect_policy is None:
             return
         if not self._redirect_policy(address):
+            # Security-adjacent event: an operator-supplied policy
+            # just rejected a server-advised leader target. Surface
+            # at DEBUG so SSRF-style attempts or policy
+            # misconfigurations are traceable from logs alone,
+            # not only through an exception stack.
+            logger.debug("cluster: redirect rejected by policy to=%s", address)
             raise ClusterPolicyError(f"Leader redirect to {address!r} rejected by redirect_policy")
 
     async def find_leader(self, *, trust_server_heartbeat: bool = False) -> str:

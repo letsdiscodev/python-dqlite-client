@@ -140,3 +140,27 @@ class TestRedirectPolicy:
         with patch.object(cc, "_query_leader", new=AsyncMock(return_value="10.0.0.1:9001")):
             result = asyncio.run(cc.find_leader())
         assert result == "10.0.0.1:9001"
+
+    def test_redirect_rejection_emits_debug_log(self, caplog) -> None:  # type: ignore[no-untyped-def]
+        """Policy rejection must emit a DEBUG log so an SSRF-style
+        attempt or a policy misconfiguration is visible from logs
+        alone — not only through the exception stack."""
+        import logging as _logging
+
+        from dqliteclient.exceptions import ClusterPolicyError
+
+        store = MemoryNodeStore(["10.0.0.1:9001"])
+        cc = ClusterClient(
+            store,
+            timeout=5.0,
+            redirect_policy=lambda _a: False,
+        )
+
+        caplog.set_level(_logging.DEBUG, logger="dqliteclient.cluster")
+        with pytest.raises(ClusterPolicyError):
+            cc._check_redirect("attacker.com:9001")
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "dqliteclient.cluster"]
+        assert any(
+            "redirect rejected by policy" in m and "attacker.com:9001" in m for m in messages
+        )
