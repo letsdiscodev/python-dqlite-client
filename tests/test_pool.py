@@ -133,6 +133,56 @@ class TestConnectionPool:
 
         await pool.close()
 
+    async def test_acquire_cancels_first_task_if_second_create_task_raises(self) -> None:
+        """If ``asyncio.create_task`` raises between the two task
+        creations in ``acquire()`` (e.g. an outer ``CancelledError``
+        firing on a coroutine switch), the first task must not be
+        orphaned. The BaseException handler must cancel any task it
+        managed to create.
+        """
+        import contextlib as _contextlib
+
+        pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=1)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
+        mock_conn._in_transaction = False
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+        # Hold the single slot so acquire enters the queue-wait branch.
+        async with pool.acquire():
+            real_create_task = asyncio.create_task
+            call_count = 0
+
+            def flaky_create_task(coro, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 2:
+                    # Close the coroutine we won't schedule so we don't
+                    # leak a "coroutine was never awaited" warning.
+                    coro.close()
+                    raise asyncio.CancelledError("synthetic interleave cancel")
+                return real_create_task(coro, **kwargs)
+
+            with (
+                patch("dqliteclient.pool.asyncio.create_task", side_effect=flaky_create_task),
+                pytest.raises(asyncio.CancelledError, match="synthetic interleave cancel"),
+            ):
+                async with asyncio.timeout(0.5):
+                    async with pool.acquire():
+                        pass
+
+        # Give the loop a tick for any orphaned task to surface warnings.
+        with _contextlib.suppress(asyncio.TimeoutError):
+            async with asyncio.timeout(0.05):
+                await asyncio.sleep(1)
+
+        await pool.close()
+
     async def test_initialize_size_resets_if_put_raises(self) -> None:
         """``_size`` must stay consistent with the actual pool membership
         even if a non-_POOL_CLEANUP_EXCEPTIONS error escapes during the

@@ -367,9 +367,15 @@ class ConnectionPool:
                 if self._closed:
                     raise DqliteConnectionError("Pool is closed")
                 closed_event.clear()
-            get_task: asyncio.Task[DqliteConnection] = asyncio.create_task(self._pool.get())
-            closed_task = asyncio.create_task(closed_event.wait())
+            get_task: asyncio.Task[DqliteConnection] | None = None
+            closed_task: asyncio.Task[bool] | None = None
             try:
+                # Create both tasks inside the try so an outer
+                # ``CancelledError`` between the two ``create_task`` calls
+                # cannot orphan one of them — the finally below cancels
+                # whichever task(s) exist.
+                get_task = asyncio.create_task(self._pool.get())
+                closed_task = asyncio.create_task(closed_event.wait())
                 done, _pending = await asyncio.wait(
                     {get_task, closed_task},
                     timeout=remaining,
@@ -382,9 +388,14 @@ class ConnectionPool:
                 # MUST stop them before propagating, otherwise the
                 # abandoned get_task can win a later queue.put() and
                 # orphan a connection (silently shrinking pool capacity).
-                if not closed_task.done():
+                if closed_task is not None and not closed_task.done():
                     closed_task.cancel()
-                if get_task.done() and not get_task.cancelled() and get_task.exception() is None:
+                if (
+                    get_task is not None
+                    and get_task.done()
+                    and not get_task.cancelled()
+                    and get_task.exception() is None
+                ):
                     # Outer cancel raced with a successful get. The
                     # reservation that backed this connection is still
                     # valid; return it to the queue so the next
@@ -393,11 +404,12 @@ class ConnectionPool:
                     conn_won = get_task.result()
                     with contextlib.suppress(asyncio.QueueFull):
                         self._pool.put_nowait(conn_won)
-                elif not get_task.done():
+                elif get_task is not None and not get_task.done():
                     get_task.cancel()
                     with contextlib.suppress(BaseException):
                         await get_task
                 raise
+            assert get_task is not None and closed_task is not None
             if not closed_task.done():
                 closed_task.cancel()
             if get_task in done:
