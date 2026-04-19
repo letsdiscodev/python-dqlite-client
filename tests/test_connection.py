@@ -87,6 +87,58 @@ class TestParseAddress:
 
         assert _parse_address("host:1") == ("host", 1)
 
+    def test_hostname_lowercased(self) -> None:
+        """DNS hostnames are case-insensitive per RFC 1035. Canonicalise
+        to lowercase so allowlist callables receive a stable key.
+        """
+        from dqliteclient.connection import _parse_address
+
+        assert _parse_address("Example.COM:9001") == ("example.com", 9001)
+
+    def test_ipv6_canonicalised(self) -> None:
+        """IPv6 literals have multiple textual forms (``0:0:0:0:0:0:0:1``
+        vs ``::1``). Canonicalise via ipaddress.ip_address so the
+        allowlist path sees one form.
+        """
+        from dqliteclient.connection import _parse_address
+
+        assert _parse_address("[0:0:0:0:0:0:0:1]:9001") == ("::1", 9001)
+
+    def test_credentials_in_host_rejected(self) -> None:
+        """A server-controlled redirect target must not smuggle an
+        '@' past the parser (e.g., a misread that reinterprets
+        ``user:pass@evil.com:9001`` as host-with-credentials).
+        """
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="invalid|not a valid"):
+            _parse_address("user:pass@evil.example.com:9001")
+
+    def test_crlf_in_host_rejected(self) -> None:
+        """Whitespace or CRLF in the host portion is a log-injection
+        or header-injection vector; reject rather than hand to
+        getaddrinfo.
+        """
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="invalid|not a valid"):
+            _parse_address("evil.com\r\n:9001")
+
+    def test_whitespace_in_host_rejected(self) -> None:
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="invalid|not a valid"):
+            _parse_address("bad host:9001")
+
+    def test_idn_hostname_rejected(self) -> None:
+        """Non-ASCII hostnames are rejected (ASCII-only). dqlite's
+        wire format does not carry punycode correctly either.
+        """
+        from dqliteclient.connection import _parse_address
+
+        with pytest.raises(ValueError, match="invalid|not a valid|non-ASCII"):
+            _parse_address("\u00e9vil.com:9001")
+
 
 class TestDqliteConnection:
     def test_zero_timeout_raises(self) -> None:

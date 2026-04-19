@@ -2,8 +2,10 @@
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import math
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
@@ -26,8 +28,58 @@ from dqlitewire.exceptions import EncodeError as _WireEncodeError
 logger = logging.getLogger(__name__)
 
 
+# RFC 1035 hostname labels are ASCII letters, digits, and hyphen. We
+# accept a dotted sequence of labels up to 253 chars total. Single
+# labels (e.g. "localhost") are also accepted.
+_HOSTNAME_LABEL_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)"
+    r"(?:\.(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?))*$"
+)
+
+
+def _canonicalize_host(host: str, address: str) -> str:
+    """Validate and canonicalize a host portion of an address.
+
+    Accepts IPv4 literals, IPv6 literals (already unwrapped from
+    brackets), and ASCII hostnames. Returns the canonical form:
+    ``ipaddress.ip_address(h)`` for IP literals, lowercase for
+    hostnames. Rejects credentials-like '@', whitespace/CRLF, and
+    non-ASCII (IDN) hosts so a server-controlled redirect target
+    cannot smuggle log-injection or DNS-rebinding vectors past the
+    parser.
+    """
+    if not host:
+        raise ValueError(f"Invalid address format: empty hostname in {address!r}")
+    # Try IP literal first — IPv6 shorthand (``::1``) must canonicalize
+    # so allowlists see one form regardless of how the peer wrote it.
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    # ASCII-only: reject IDN outright. dqlite's wire does not round-
+    # trip punycode reliably, and non-ASCII hostnames are a common
+    # homograph-attack vector.
+    try:
+        host.encode("ascii")
+    except UnicodeEncodeError as e:
+        raise ValueError(
+            f"Invalid host in address {address!r}: non-ASCII hostnames are not supported"
+        ) from e
+    if not _HOSTNAME_LABEL_RE.match(host):
+        raise ValueError(
+            f"Invalid host in address {address!r}: {host!r} is not a valid hostname or IP literal"
+        )
+    return host.lower()
+
+
 def _parse_address(address: str) -> tuple[str, int]:
-    """Parse a host:port address string, handling IPv6 brackets."""
+    """Parse a host:port address string, handling IPv6 brackets.
+
+    Returns ``(canonical_host, port)``. IP literals are returned in
+    ``ipaddress.ip_address``'s canonical form; hostnames are
+    lowercased. Invalid hosts (credentials-like '@', whitespace/CRLF,
+    non-ASCII, empty) raise ``ValueError``.
+    """
     if address.startswith("["):
         # Bracketed IPv6: [host]:port
         if "]:" not in address:
@@ -51,13 +103,12 @@ def _parse_address(address: str) -> tuple[str, int]:
 
     if not (1 <= port <= 65535):
         raise ValueError(f"Invalid port in address {address!r}: {port} is not in range 1-65535")
-    if not host:
-        raise ValueError(f"Invalid address format: empty hostname in {address!r}")
     if host.count(":") > 1 and not address.startswith("["):
         raise ValueError(
             f"IPv6 addresses must be bracketed: use '[{host}]:{port}' instead of {address!r}"
         )
 
+    host = _canonicalize_host(host, address)
     return host, port
 
 
