@@ -174,6 +174,51 @@ class TestDqliteProtocol:
         # The read timeout should be capped, not set to 10000 seconds
         assert protocol._timeout <= 300.0
 
+    async def test_handshake_emits_debug_when_trust_widens_timeout(
+        self,
+        mock_reader: AsyncMock,
+        mock_writer: MagicMock,
+        caplog,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """``trust_server_heartbeat=True`` with a server heartbeat that
+        actually widens the per-read deadline emits a DEBUG log so an
+        operator can confirm the security-opt-in took effect."""
+        import logging as _logging
+
+        from dqlitewire.messages import WelcomeResponse
+
+        mock_reader.read.return_value = WelcomeResponse(heartbeat_timeout=30_000).encode()
+        protocol = DqliteProtocol(
+            mock_reader, mock_writer, timeout=5.0, trust_server_heartbeat=True
+        )
+        caplog.set_level(_logging.DEBUG, logger="dqliteclient.protocol")
+        await protocol.handshake()
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "dqliteclient.protocol"]
+        assert any("widened per-read timeout" in m for m in messages)
+
+    async def test_handshake_silent_when_trust_disabled(
+        self,
+        mock_reader: AsyncMock,
+        mock_writer: MagicMock,
+        caplog,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """Default (``trust_server_heartbeat=False``) path must not log
+        at all for the server-advertised heartbeat — even when the
+        server sends a useful value. DEBUG should stay quiet in the
+        common case to avoid noisy diagnostics in production."""
+        import logging as _logging
+
+        from dqlitewire.messages import WelcomeResponse
+
+        mock_reader.read.return_value = WelcomeResponse(heartbeat_timeout=30_000).encode()
+        protocol = DqliteProtocol(mock_reader, mock_writer, timeout=5.0)
+        caplog.set_level(_logging.DEBUG, logger="dqliteclient.protocol")
+        await protocol.handshake()
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "dqliteclient.protocol"]
+        assert not any("widened" in m for m in messages)
+
     async def test_handshake_failure(
         self,
         protocol: DqliteProtocol,

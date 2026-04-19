@@ -1,6 +1,7 @@
 """Low-level protocol handler for dqlite."""
 
 import asyncio
+import logging
 import secrets
 from collections.abc import Sequence
 from typing import Any
@@ -26,6 +27,8 @@ from dqlitewire.messages import (
     WelcomeResponse,
 )
 from dqlitewire.messages.base import Message
+
+logger = logging.getLogger(__name__)
 
 # Socket read buffer size. 4 KiB balances syscall overhead for typical
 # request/response payloads against latency for small wire messages.
@@ -134,7 +137,18 @@ class DqliteProtocol:
         if self._trust_server_heartbeat and response.heartbeat_timeout > 0:
             heartbeat_seconds = response.heartbeat_timeout / 1000.0
             # Cap to prevent a malicious/buggy server from disabling timeouts
-            self._timeout = max(self._timeout, min(heartbeat_seconds, 300.0))
+            new_timeout = max(self._timeout, min(heartbeat_seconds, 300.0))
+            if new_timeout != self._timeout:
+                # Security-relevant opt-in: surface the actual widening
+                # at DEBUG so an operator who flipped the knob can
+                # confirm it took effect.
+                logger.debug(
+                    "handshake: widened per-read timeout %.2fs -> %.2fs (server heartbeat=%.2fs)",
+                    self._timeout,
+                    new_timeout,
+                    heartbeat_seconds,
+                )
+                self._timeout = new_timeout
         return response.heartbeat_timeout
 
     async def get_leader(self) -> tuple[int, str]:
