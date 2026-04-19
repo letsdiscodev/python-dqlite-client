@@ -372,6 +372,26 @@ class TestDqliteConnection:
 
         mock_writer.close.assert_called()
 
+    async def test_connect_emits_debug_logs_on_handshake_and_open(
+        self, caplog, mock_reader, mock_writer, welcome_response, db_response
+    ) -> None:  # type: ignore[no-untyped-def]
+        """DEBUG traces the happy-path connect sequence so an operator
+        can see which address actually landed through the log alone.
+        """
+        import logging as _logging
+        from unittest.mock import patch
+
+        mock_reader.read.side_effect = [welcome_response, db_response]
+        conn = DqliteConnection("localhost:9001")
+
+        caplog.set_level(_logging.DEBUG, logger="dqliteclient.connection")
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            await conn.connect()
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "dqliteclient.connection"]
+        assert any("handshake ok" in m and "localhost:9001" in m for m in messages)
+        assert any("db opened" in m and "localhost:9001" in m for m in messages)
+
     async def test_invalidate_clears_in_use_flag(self, connected_connection) -> None:
         """_invalidate must reset _in_use alongside dropping the protocol.
 

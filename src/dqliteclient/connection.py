@@ -236,7 +236,18 @@ class DqliteConnection:
 
             try:
                 await self._protocol.handshake()
+                logger.debug(
+                    "connect: handshake ok address=%s client_id=%d",
+                    self._address,
+                    self._protocol._client_id,
+                )
                 self._db_id = await self._protocol.open_database(self._database)
+                logger.debug(
+                    "connect: db opened address=%s db_id=%d database=%r",
+                    self._address,
+                    self._db_id,
+                    self._database,
+                )
             except OperationalError as e:
                 await self._abort_protocol()
                 if e.code in _LEADER_ERROR_CODES:
