@@ -194,6 +194,7 @@ class ConnectionPool:
             if self._initialized:
                 return
             if self._min_size > 0:
+                logger.debug("pool.initialize: requesting %d connections", self._min_size)
                 self._size += self._min_size
                 reservation_committed = False
                 try:
@@ -223,6 +224,7 @@ class ConnectionPool:
                     for conn in successes:
                         await self._pool.put(conn)
                     reservation_committed = True
+                    logger.debug("pool.initialize: %d connections ready", self._min_size)
                 finally:
                     if not reservation_committed:
                         # Any exit path that did not commit the reservation
@@ -367,6 +369,11 @@ class ConnectionPool:
                 if self._closed:
                     raise DqliteConnectionError("Pool is closed")
                 closed_event.clear()
+                logger.debug(
+                    "pool.acquire: at capacity size=%d max=%d, waiting",
+                    self._size,
+                    self._max_size,
+                )
             get_task: asyncio.Task[DqliteConnection] | None = None
             closed_task: asyncio.Task[bool] | None = None
             try:
@@ -616,6 +623,11 @@ class ConnectionPool:
         exits). To ensure all connections are closed, cancel or await
         in-flight tasks before calling close().
         """
+        logger.debug(
+            "pool.close: draining idle=%d in_flight=%d",
+            self._pool.qsize(),
+            max(self._size - self._pool.qsize(), 0),
+        )
         self._closed = True
         if self._closed_event is not None:
             self._closed_event.set()

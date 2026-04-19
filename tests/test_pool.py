@@ -183,6 +183,48 @@ class TestConnectionPool:
 
         await pool.close()
 
+    async def test_pool_emits_debug_logs_for_lifecycle_events(self, caplog) -> None:  # type: ignore[no-untyped-def]
+        """DEBUG traces the key pool state-change events so an operator
+        can reconstruct pool behaviour from logs without adding
+        bespoke instrumentation. Covers initialize start/end, the
+        at-capacity park entry in acquire(), and close.
+        """
+        import logging as _logging
+
+        pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=1)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
+        mock_conn._in_transaction = False
+
+        caplog.set_level(_logging.DEBUG, logger="dqliteclient.pool")
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+            # Drive at-capacity wait: hold the single slot, queue a second
+            # acquire that will time out, observe the capacity-wait log.
+            async with pool.acquire():
+                waiter = asyncio.create_task(
+                    pool.acquire().__aenter__()  # type: ignore[func-returns-value]
+                )
+                # Give the waiter a chance to reach the at-capacity park.
+                for _ in range(10):
+                    await asyncio.sleep(0)
+                waiter.cancel()
+                with contextlib.suppress(asyncio.CancelledError, BaseException):
+                    await waiter
+
+        await pool.close()
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "dqliteclient.pool"]
+        assert any("pool.initialize: requesting" in m for m in messages)
+        assert any("pool.initialize:" in m and "ready" in m for m in messages)
+        assert any("pool.acquire: at capacity" in m for m in messages)
+        assert any("pool.close: draining" in m for m in messages)
+
     async def test_initialize_size_resets_if_put_raises(self) -> None:
         """``_size`` must stay consistent with the actual pool membership
         even if a non-_POOL_CLEANUP_EXCEPTIONS error escapes during the
