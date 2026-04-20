@@ -132,6 +132,7 @@ class DqliteConnection:
         max_total_rows: int | None = 10_000_000,
         max_continuation_frames: int | None = 100_000,
         trust_server_heartbeat: bool = False,
+        close_timeout: float = 0.5,
     ) -> None:
         """Initialize connection (does not connect yet).
 
@@ -152,12 +153,21 @@ class DqliteConnection:
                 deadline to the server-advertised heartbeat (subject
                 to a 300 s hard cap). When False (default), ``timeout``
                 is authoritative — the server value cannot amplify it.
+            close_timeout: Budget in seconds for the transport-drain
+                half of ``close()``. After ``writer.close()`` the
+                local side of the socket is gone; ``wait_closed``
+                is best-effort cleanup. An unresponsive peer must not
+                stall ``engine.dispose()`` or SIGTERM shutdown, so
+                the drain is bounded by this value.
         """
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a positive finite number, got {timeout}")
+        if not math.isfinite(close_timeout) or close_timeout <= 0:
+            raise ValueError(f"close_timeout must be a positive finite number, got {close_timeout}")
         self._address = address
         self._database = database
         self._timeout = timeout
+        self._close_timeout = close_timeout
         self._max_total_rows = _validate_positive_int_or_none(max_total_rows, "max_total_rows")
         self._max_continuation_frames = _validate_positive_int_or_none(
             max_continuation_frames, "max_continuation_frames"
@@ -268,8 +278,17 @@ class DqliteConnection:
         """Close the connection.
 
         Idempotent: safe to call on an already-closed or pool-released
-        connection. Null ``_protocol`` before awaiting ``wait_closed`` so
-        a concurrent second close cannot re-enter the socket-close path.
+        connection. Null ``_protocol`` before awaiting ``wait_closed``
+        so a concurrent second close cannot re-enter the socket-close
+        path.
+
+        The transport drain (``wait_closed``) is bounded by
+        ``close_timeout``. ``close()`` is the hot path on every pool
+        release and on ``engine.dispose()`` / SIGTERM shutdown; an
+        unresponsive peer must not be able to stall shutdown by
+        refusing to acknowledge a FIN. The local side of the socket
+        is already closed after ``writer.close()`` — the remaining
+        wait is best-effort cleanup, not correctness-critical.
         """
         # Pool-released or already-closed: nothing to do.
         if self._pool_released or self._protocol is None:
@@ -279,18 +298,32 @@ class DqliteConnection:
         self._protocol = None
         self._db_id = None
         protocol.close()
-        await protocol.wait_closed()
+        # Narrow the suppression: a bounded wait on the transport
+        # drain can legitimately raise TimeoutError (slow peer) or
+        # OSError (already-closed writer). Anything else — especially
+        # CancelledError from an outer ``asyncio.timeout`` scope — must
+        # propagate so structured-concurrency cancellation semantics
+        # remain intact. DEBUG-log unexpected Exceptions for
+        # diagnostics; do not swallow.
+        try:
+            await asyncio.wait_for(protocol.wait_closed(), timeout=self._close_timeout)
+        except (TimeoutError, OSError):
+            pass
+        except Exception:
+            logger.debug(
+                "close: unexpected drain error for %s",
+                self._address,
+                exc_info=True,
+            )
 
     async def _abort_protocol(self) -> None:
         """Tear down a half-open protocol during a connect failure path.
 
-        Close the writer, then give ``wait_closed`` a bounded budget so
-        the transport drains under normal conditions but never hangs on
-        an unresponsive peer. The leader-query finally block rejects an
-        unbounded ``wait_closed`` because leader-query is a discovery
-        path that runs against arbitrary nodes; connect is a retry-loop
-        path that benefits from draining, so the two sites take
-        different decisions.
+        Close the writer, then give ``wait_closed`` the same bounded
+        drain budget ``close()`` uses. Both sites share the same
+        reasoning: the socket is already closed on our side, and the
+        best-effort drain must not stall when the peer is
+        unresponsive.
         """
         protocol = self._protocol
         if protocol is None:
@@ -305,7 +338,7 @@ class DqliteConnection:
         # remain intact. DEBUG-log an unexpected Exception for
         # diagnostics; do not swallow.
         try:
-            await asyncio.wait_for(protocol.wait_closed(), timeout=0.5)
+            await asyncio.wait_for(protocol.wait_closed(), timeout=self._close_timeout)
         except (TimeoutError, OSError):
             pass
         except Exception:
