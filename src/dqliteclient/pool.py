@@ -214,9 +214,22 @@ class ConnectionPool:
                     if failures:
                         # Close the connections that did succeed — they
                         # are unowned now that initialize is aborting.
+                        logger.debug(
+                            "pool.initialize: aborting after %d/%d creates succeeded; "
+                            "closing %d survivors (first failure: %r)",
+                            len(successes),
+                            self._min_size,
+                            len(successes),
+                            failures[0],
+                        )
                         for conn in successes:
-                            with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
+                            try:
                                 await conn.close()
+                            except _POOL_CLEANUP_EXCEPTIONS as exc:
+                                logger.debug(
+                                    "pool.initialize: partial-cleanup close error: %r",
+                                    exc,
+                                )
                         # Re-raise the first observed failure as the
                         # root cause; the finally releases the
                         # reservation before the raise propagates.
