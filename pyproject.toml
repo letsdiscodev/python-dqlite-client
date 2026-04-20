@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Database :: Database Engines/Servers",
     "Typing :: Typed",
 ]
-dependencies = ["dqlite-wire>=0.1.0"]
+dependencies = ["dqlite-wire>=0.1.3"]
 
 [tool.uv.sources]
 dqlite-wire = { path = "../python-dqlite-wire", editable = true }
