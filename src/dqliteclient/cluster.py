@@ -17,6 +17,7 @@ from dqliteclient.exceptions import (
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
 from dqliteclient.protocol import DqliteProtocol
 from dqliteclient.retry import retry_with_backoff
+from dqlitewire import NodeRole
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ class ClusterClient:
         # an explicit stampede-avoidance mechanism elsewhere.
         nodes = list(nodes)
         random.shuffle(nodes)
-        nodes.sort(key=lambda n: 0 if n.role == 0 else 1)
+        nodes.sort(key=lambda n: 0 if n.role == NodeRole.VOTER else 1)
 
         errors: list[str] = []
         last_exc: BaseException | None = None
