@@ -208,6 +208,17 @@ class ClusterClient:
             # so the only wire-legal shapes are ``(0, "")`` and
             # ``(nonzero, nonempty)``.
             if node_id != 0 and not leader_addr:
+                # Observability: an operator tailing logs during a
+                # leader-discovery stall needs the breadcrumb at the
+                # point of detection, not only via the raised
+                # ProtocolError surfaced upstream. Parity with
+                # ISSUE-219's per-node find_leader DEBUG convention.
+                logger.debug(
+                    "query_leader: %s returned malformed redirect (node_id=%s, address=%r)",
+                    address,
+                    node_id,
+                    leader_addr,
+                )
                 raise ProtocolError(
                     f"server {address} returned node_id={node_id} with empty "
                     f"leader address; expected both or neither"

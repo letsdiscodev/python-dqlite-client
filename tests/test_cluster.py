@@ -638,6 +638,54 @@ class TestQueryLeaderRejectsUnreachableCombo:
         ):
             await client._query_leader("localhost:9001")
 
+    async def test_malformed_redirect_is_debug_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Parity with ISSUE-219: the point-of-detection DEBUG breadcrumb
+        must include the queried address AND the bad (node_id, address)
+        pair so an operator can correlate the discovery stall in logs
+        alone, not only via the surfaced ProtocolError.
+        """
+        import logging
+
+        from dqliteclient.exceptions import ProtocolError
+
+        store = MemoryNodeStore(["node-3:9000"])
+        client = ClusterClient(store, timeout=1.0)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        class FakeProto:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            async def handshake(self) -> None:
+                pass
+
+            async def get_leader(self) -> tuple[int, str]:
+                return (5, "")
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            patch("dqliteclient.cluster.DqliteProtocol", FakeProto),
+            caplog.at_level(logging.DEBUG, logger="dqliteclient.cluster"),
+            pytest.raises(ProtocolError),
+        ):
+            await client._query_leader("node-3:9000")
+
+        matching = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and "malformed redirect" in r.getMessage()
+            and "node-3:9000" in r.getMessage()
+        ]
+        assert matching, f"expected DEBUG 'malformed redirect' with address; got {caplog.records!r}"
+
     async def test_zero_id_empty_address_returns_none(self) -> None:
         store = MemoryNodeStore(["localhost:9001"])
         client = ClusterClient(store, timeout=1.0)
