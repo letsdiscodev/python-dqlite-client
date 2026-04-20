@@ -308,8 +308,12 @@ class DqliteConnection:
             await asyncio.wait_for(protocol.wait_closed(), timeout=0.5)
         except (TimeoutError, OSError):
             pass
-        except Exception:  # pragma: no cover
-            logger.debug("_abort_protocol: unexpected drain error", exc_info=True)
+        except Exception:
+            logger.debug(
+                "_abort_protocol: unexpected drain error for %s",
+                self._address,
+                exc_info=True,
+            )
 
     async def __aenter__(self) -> "DqliteConnection":
         await self.connect()
