@@ -422,8 +422,22 @@ class ConnectionPool:
                     # acquirer can use it instead of closing and
                     # releasing (which would shrink _size).
                     conn_won = get_task.result()
-                    with contextlib.suppress(asyncio.QueueFull):
+                    try:
                         self._pool.put_nowait(conn_won)
+                    except asyncio.QueueFull:
+                        # Invariant violation: reservations should track
+                        # queue capacity exactly, so a full queue on
+                        # return is "impossible." If it happens anyway,
+                        # silently dropping the reference would leak a
+                        # live reader task and a socket. Close
+                        # explicitly and adjust the reservation count
+                        # so the pool shrinks cleanly instead of
+                        # leaking. Suppression of close's own errors is
+                        # narrow — OSError on an already-dead writer is
+                        # expected; anything else propagates.
+                        with contextlib.suppress(OSError):
+                            await conn_won.close()
+                        self._size -= 1
                 elif get_task is not None and not get_task.done():
                     get_task.cancel()
                     with contextlib.suppress(BaseException):
