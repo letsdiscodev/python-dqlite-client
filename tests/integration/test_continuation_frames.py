@@ -84,6 +84,7 @@ class TestContinuationFrames:
             # class intact for other tests.
             response = initial
             all_rows = list(initial.rows)
+            all_row_types: list[list[int]] = [[int(t) for t in rt] for rt in initial.row_types]
             frames = 1
             while response.has_more:
                 next_response = await self._read_continuation(deadline=deadline)
@@ -91,9 +92,10 @@ class TestContinuationFrames:
                 if not next_response.rows and next_response.has_more:
                     break  # defer to original's error handling
                 all_rows.extend(next_response.rows)
+                all_row_types.extend([int(t) for t in rt] for rt in next_response.row_types)
                 response = next_response
             frames_seen.append(frames)
-            return all_rows
+            return all_rows, all_row_types
 
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_cont_spy")

@@ -53,7 +53,7 @@ class TestMaxTotalRowsEnforcement:
 
         p._read_continuation = AsyncMock(return_value=at_cap)  # type: ignore[method-assign]
 
-        rows = asyncio.run(p._drain_continuations(initial, deadline=999999.0))
+        rows, _ = asyncio.run(p._drain_continuations(initial, deadline=999999.0))
         assert len(rows) == 5
 
     def test_none_disables_cap(self) -> None:
@@ -67,7 +67,7 @@ class TestMaxTotalRowsEnforcement:
 
         p._read_continuation = AsyncMock(return_value=big)  # type: ignore[method-assign]
 
-        rows = asyncio.run(p._drain_continuations(initial, deadline=999999.0))
+        rows, _ = asyncio.run(p._drain_continuations(initial, deadline=999999.0))
         assert len(rows) == 10_000
 
 
@@ -118,7 +118,7 @@ class TestMaxContinuationFramesEnforcement:
         last = _make_rows_response([[2], [3]], has_more=False)
 
         p._read_continuation = AsyncMock(return_value=last)  # type: ignore[method-assign]
-        rows = asyncio.run(p._drain_continuations(initial, deadline=999999.0))
+        rows, _ = asyncio.run(p._drain_continuations(initial, deadline=999999.0))
         assert len(rows) == 3
 
     def test_none_disables_frame_cap(self) -> None:
@@ -134,7 +134,7 @@ class TestMaxContinuationFramesEnforcement:
         last = _make_rows_response([[2]], has_more=False)
 
         p._read_continuation = AsyncMock(return_value=last)  # type: ignore[method-assign]
-        rows = asyncio.run(p._drain_continuations(initial, deadline=999999.0))
+        rows, _ = asyncio.run(p._drain_continuations(initial, deadline=999999.0))
         assert len(rows) == 2
 
 

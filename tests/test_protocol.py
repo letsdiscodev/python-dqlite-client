@@ -400,8 +400,10 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """query_sql_typed returns the wire ValueType ints alongside names+rows,
-        so DBAPI cursors can populate cursor.description[i][1] (type_code).
+        """query_sql_typed returns wire ValueType ints (column + per-row)
+        alongside names+rows, so DBAPI cursors can populate
+        cursor.description[i][1] (type_code) and per-row converters
+        can dispatch on each row's actual wire types.
         """
         from dqlitewire.constants import ValueType
         from dqlitewire.messages import RowsResponse
@@ -409,14 +411,16 @@ class TestDqliteProtocol:
         response = RowsResponse(
             column_names=["a", "b"],
             column_types=[ValueType.INTEGER, ValueType.TEXT],
+            row_types=[[ValueType.INTEGER, ValueType.TEXT]],
             rows=[[1, "x"]],
             has_more=False,
         )
         mock_reader.read.return_value = response.encode()
 
-        names, types, rows = await protocol.query_sql_typed(1, "SELECT a, b FROM t")
+        names, types, row_types, rows = await protocol.query_sql_typed(1, "SELECT a, b FROM t")
         assert names == ["a", "b"]
         assert types == [int(ValueType.INTEGER), int(ValueType.TEXT)]
+        assert row_types == [[int(ValueType.INTEGER), int(ValueType.TEXT)]]
         assert rows == [[1, "x"]]
 
     async def test_query_sql(

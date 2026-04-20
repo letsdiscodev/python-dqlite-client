@@ -268,15 +268,21 @@ class DqliteProtocol:
 
     async def _drain_continuations(
         self, initial: "RowsResponse", deadline: float
-    ) -> list[list[Any]]:
+    ) -> tuple[list[list[Any]], list[list[int]]]:
         """Drain all continuation frames, enforcing the progress + total-row caps.
 
-        Returns the full list of rows (initial frame first). A
-        continuation claiming more rows with zero delivered, or a
+        Returns ``(rows, row_types)`` — a flat list of all row values
+        (initial frame first) and a parallel list of per-row wire
+        ``ValueType`` tags. SQLite is dynamically typed, so row types
+        can vary per row; callers that apply result-side converters
+        need the per-row list rather than a collapsed first-row view.
+
+        A continuation claiming more rows with zero delivered, or a
         cumulative row count exceeding ``max_total_rows``, raises
         ProtocolError.
         """
         all_rows = list(initial.rows)
+        all_row_types: list[list[int]] = [[int(t) for t in rt] for rt in initial.row_types]
         response = initial
         frames = 1  # the initial frame counts
         while response.has_more:
@@ -304,17 +310,22 @@ class DqliteProtocol:
                     f"reduce result size or raise the cap on the connection/pool."
                 )
             all_rows.extend(next_response.rows)
+            all_row_types.extend([int(t) for t in rt] for rt in next_response.row_types)
             response = next_response
-        return all_rows
+        return all_rows, all_row_types
 
     async def query_sql_typed(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
-    ) -> tuple[list[str], list[int], list[list[Any]]]:
-        """Execute a query and return (column_names, column_types, rows).
+    ) -> tuple[list[str], list[int], list[list[int]], list[list[Any]]]:
+        """Execute a query and return (column_names, column_types, row_types, rows).
 
-        column_types are the wire-level ``ValueType`` integer tags from the
-        first response frame — what DBAPI cursor.description maps into
-        ``type_code``.
+        ``column_types`` are the wire-level ``ValueType`` integer tags
+        from the first response frame — what DBAPI cursor.description
+        maps into ``type_code``. ``row_types`` carries one list per
+        row so callers can apply result-side converters per-row (SQLite
+        is dynamically typed; two rows in the same column can carry
+        different wire types under UNION, ``CASE``, ``COALESCE``, or
+        ``typeof()``).
 
         Atomicity: a mid-stream server failure or an unexpected message
         type raises before any rows are returned to the caller; the
@@ -324,8 +335,8 @@ class DqliteProtocol:
         response, deadline = await self._send_query(db_id, sql, params)
         column_names = list(response.column_names)
         column_types = [int(t) for t in response.column_types]
-        all_rows = await self._drain_continuations(response, deadline)
-        return column_names, column_types, all_rows
+        all_rows, all_row_types = await self._drain_continuations(response, deadline)
+        return column_names, column_types, all_row_types, all_rows
 
     async def query_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
@@ -340,7 +351,7 @@ class DqliteProtocol:
         """
         response, deadline = await self._send_query(db_id, sql, params)
         column_names = response.column_names
-        all_rows = await self._drain_continuations(response, deadline)
+        all_rows, _ = await self._drain_continuations(response, deadline)
 
         return column_names, all_rows
 

@@ -463,14 +463,19 @@ class DqliteConnection:
 
     async def query_raw_typed(
         self, sql: str, params: Sequence[Any] | None = None
-    ) -> tuple[list[str], list[int], list[list[Any]]]:
-        """Execute a query and return (column_names, column_types, rows).
+    ) -> tuple[list[str], list[int], list[list[int]], list[list[Any]]]:
+        """Execute a query and return (column_names, column_types, row_types, rows).
 
         ``column_types`` are per-column wire ``ValueType`` integer tags
         from the first response frame — suitable for populating DBAPI
-        ``cursor.description[i][1]`` (``type_code``). See
-        ``dqlitewire.ValueType`` for the full enum. Use ``query_raw``
-        when type codes are not needed.
+        ``cursor.description[i][1]`` (``type_code``). ``row_types`` is
+        one list of wire tags per decoded row; SQLite is dynamically
+        typed, so different rows in the same column can carry
+        different wire types (under UNION, ``CASE``, ``COALESCE``,
+        ``typeof()``), and callers applying result-side converters
+        need the per-row list rather than a collapsed first-row view.
+        See ``dqlitewire.ValueType`` for the full enum. Use
+        ``query_raw`` when type codes are not needed.
         """
         return await self._run_protocol(lambda p, db: p.query_sql_typed(db, sql, params))
 
