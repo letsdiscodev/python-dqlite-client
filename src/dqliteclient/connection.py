@@ -454,6 +454,9 @@ class DqliteConnection:
         Unlike fetch() which returns dicts, this returns the raw tuple
         of (column_names, rows) from the wire protocol. Intended for
         DBAPI cursor implementations that need column names separately.
+
+        See ``query_raw_typed`` when per-column wire ``ValueType`` codes
+        are also needed (used by ``cursor.description``).
         """
         self._validate_params(params)
         return await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
@@ -465,7 +468,9 @@ class DqliteConnection:
 
         ``column_types`` are per-column wire ``ValueType`` integer tags
         from the first response frame — suitable for populating DBAPI
-        ``cursor.description[i][1]`` (``type_code``).
+        ``cursor.description[i][1]`` (``type_code``). See
+        ``dqlitewire.ValueType`` for the full enum. Use ``query_raw``
+        when type codes are not needed.
         """
         return await self._run_protocol(lambda p, db: p.query_sql_typed(db, sql, params))
 
