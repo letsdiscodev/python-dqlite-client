@@ -638,6 +638,52 @@ class TestQueryLeaderRejectsUnreachableCombo:
         ):
             await client._query_leader("localhost:9001")
 
+    async def test_find_leader_multi_node_all_no_leader_known(self) -> None:
+        """Parity with the single-node case in
+        ``test_find_leader_no_leader_known``: when every node in a
+        multi-node store returns ``None`` from the leader probe, the
+        retry loop must exhaust and raise ``ClusterError`` rather than
+        hang or return ``None``. Pin the exhaustion path so a future
+        refactor of the loop cannot regress into a silent-succeed.
+        """
+        store = MemoryNodeStore(["node-a:9001", "node-b:9002", "node-c:9003"])
+        client = ClusterClient(store, timeout=0.2)
+
+        call_count = 0
+
+        async def no_leader(address: str, **_kw: Any) -> str | None:
+            nonlocal call_count
+            call_count += 1
+            return None
+
+        with (
+            patch.object(client, "_query_leader", side_effect=no_leader),
+            pytest.raises(ClusterError, match="Could not find leader"),
+        ):
+            await client.find_leader()
+
+        # Every node must have been probed — if the loop short-circuited
+        # on the first ``None`` it would only hit one.
+        assert call_count == 3
+
+    async def test_find_leader_mixed_no_leader_and_failure(self) -> None:
+        """Mix a no-leader-known response with a transport failure. Both
+        error paths are exhausted before the final ClusterError raises.
+        """
+        store = MemoryNodeStore(["node-a:9001", "node-b:9002"])
+        client = ClusterClient(store, timeout=0.2)
+
+        async def mixed(address: str, **_kw: Any) -> str | None:
+            if "node-a" in address:
+                return None  # no-leader-known
+            raise DqliteConnectionError("probe refused")
+
+        with (
+            patch.object(client, "_query_leader", side_effect=mixed),
+            pytest.raises(ClusterError, match="Could not find leader"),
+        ):
+            await client.find_leader()
+
     async def test_malformed_redirect_is_debug_logged(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
