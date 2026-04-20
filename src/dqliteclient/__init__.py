@@ -22,6 +22,7 @@ from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
 from dqliteclient.pool import ConnectionPool
 
 __all__ = [
+    "__version__",
     "connect",
     "create_pool",
     "DqliteConnection",
