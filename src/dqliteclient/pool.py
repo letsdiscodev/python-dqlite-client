@@ -323,7 +323,13 @@ class ConnectionPool:
                     exc,
                 )
             finally:
-                await self._release_reservation()
+                # Shield the reservation decrement against outer cancel:
+                # an ``asyncio.timeout`` around ``pool.close()`` can fire
+                # during ``_release_reservation``'s lock acquire; without
+                # the shield, _size drifts above actual capacity. Sibling
+                # to the exception-path shield at ``acquire()``.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(self._release_reservation())
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
@@ -593,18 +599,26 @@ class ConnectionPool:
         ``_pool_released=True``, so close MUST run before the flag is
         set — otherwise the transport leaks (a bug that affects every
         branch that closes a pool-owned connection).
+
+        Every ``_release_reservation`` call here is wrapped in
+        ``asyncio.shield`` so an outer ``asyncio.timeout`` that fires
+        during close/ROLLBACK cannot leave ``_size`` permanently
+        incremented. Symmetric with the exception-path shield in
+        ``acquire()``.
         """
         if self._closed:
             await conn.close()
             conn._pool_released = True
-            await self._release_reservation()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(self._release_reservation())
             return
 
         if not await self._reset_connection(conn):
             with contextlib.suppress(Exception):
                 await conn.close()
             conn._pool_released = True
-            await self._release_reservation()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(self._release_reservation())
             return
 
         # Healthy connection returning to queue: no close; just flip
@@ -615,7 +629,8 @@ class ConnectionPool:
         except asyncio.QueueFull:
             await conn.close()
             conn._pool_released = True
-            await self._release_reservation()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(self._release_reservation())
         else:
             conn._pool_released = True
 
