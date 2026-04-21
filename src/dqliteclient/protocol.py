@@ -8,7 +8,12 @@ from typing import Any
 
 from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
 from dqlitewire import MessageDecoder, MessageEncoder
-from dqlitewire.exceptions import ProtocolError as _WireProtocolError
+from dqlitewire.exceptions import (
+    ProtocolError as _WireProtocolError,
+)
+from dqlitewire.exceptions import (
+    ServerFailure as _WireServerFailure,
+)
 from dqlitewire.messages import (
     ClientRequest,
     DbResponse,
@@ -423,6 +428,11 @@ class DqliteProtocol:
                     return result
                 data = await self._read_data(deadline=deadline)
                 self._decoder.feed(data)
+        except _WireServerFailure as e:
+            # Server-authored failure mid-stream: surface the SQLite code
+            # so sqlalchemy's is_disconnect and dbapi's code-to-exception
+            # map can classify correctly (leader flip, constraint, etc.).
+            raise OperationalError(e.code, e.message) from e
         except _WireProtocolError as e:
             raise ProtocolError(f"Wire decode failed{self._addr_suffix()}: {e}") from e
 
