@@ -263,8 +263,12 @@ class DqliteProtocol:
 
         # Drain: swallow any trailing continuation frames, break when
         # EmptyResponse arrives. Bound by the single operation deadline
-        # so a non-responsive server cannot stall this forever.
+        # so a non-responsive server cannot stall this forever, and by
+        # the max_continuation_frames cap so a slow-dripping server
+        # cannot pin the client on per-frame decode work inside that
+        # deadline window (same rationale as _drain_continuations).
         deadline = self._operation_deadline()
+        frames = 0
         while True:
             response = await self._read_response(deadline=deadline)
             if isinstance(response, EmptyResponse):
@@ -278,6 +282,13 @@ class DqliteProtocol:
                 raise ProtocolError(
                     f"Expected EmptyResponse after Interrupt, got "
                     f"{type(response).__name__}{self._addr_suffix()}"
+                )
+            frames += 1
+            if self._max_continuation_frames is not None and frames > self._max_continuation_frames:
+                raise ProtocolError(
+                    f"Interrupt drain exceeded max_continuation_frames cap "
+                    f"({self._max_continuation_frames}); server may be "
+                    f"slow-dripping rows{self._addr_suffix()}."
                 )
             # If the RowsResponse signals more frames, keep draining.
             if not response.has_more:

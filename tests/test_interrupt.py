@@ -75,6 +75,76 @@ class TestInterrupt:
             await protocol.interrupt(db_id=1)
         assert exc_info.value.code == 5
 
+    async def test_interrupt_drain_respects_max_continuation_frames(self) -> None:
+        """The drain loop must honour the same max_continuation_frames
+        cap that _drain_continuations uses on the query path.
+        Otherwise a slow-dripping server answering an INTERRUPT with
+        many small RowsResponse frames can pin a client within a
+        single operation deadline.
+        """
+        reader = AsyncMock()
+        writer = MagicMock()
+        writer.drain = AsyncMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
+        proto = DqliteProtocol(
+            reader,
+            writer,
+            timeout=10.0,
+            address="test:9001",
+            max_continuation_frames=3,
+        )
+        proto._handshake_done = True
+
+        # Four in-flight frames arrive before EmptyResponse; cap = 3
+        # trips on frame 4. RowsResponse with has_more=False is the
+        # canonical "done marker" shape the drain loop already swallows.
+        rows_frame = RowsResponse(
+            column_names=["x"],
+            column_types=[ValueType.INTEGER],
+            rows=[(1,)],
+            row_types=[(ValueType.INTEGER,)],
+            has_more=False,
+        ).encode()
+        empty = EmptyResponse().encode()
+        proto._reader.read = AsyncMock(  # type: ignore[attr-defined]
+            side_effect=[rows_frame * 4 + empty, b""]
+        )
+        with pytest.raises(ProtocolError, match="max_continuation_frames"):
+            await proto.interrupt(db_id=1)
+
+    async def test_interrupt_drain_no_cap_when_governor_unset(self) -> None:
+        """max_continuation_frames=None restores the existing behaviour
+        (bound only by the operation deadline). Regression guard for
+        callers that opt out of the cap."""
+        reader = AsyncMock()
+        writer = MagicMock()
+        writer.drain = AsyncMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
+        proto = DqliteProtocol(
+            reader,
+            writer,
+            timeout=10.0,
+            address="test:9001",
+            max_continuation_frames=None,
+        )
+        proto._handshake_done = True
+
+        rows_frame = RowsResponse(
+            column_names=["x"],
+            column_types=[ValueType.INTEGER],
+            rows=[(1,)],
+            row_types=[(ValueType.INTEGER,)],
+            has_more=False,
+        ).encode()
+        empty = EmptyResponse().encode()
+        proto._reader.read = AsyncMock(  # type: ignore[attr-defined]
+            side_effect=[rows_frame * 10 + empty, b""]
+        )
+        # No raise: deadline-only behaviour preserved.
+        await proto.interrupt(db_id=1)
+
     async def test_interrupt_raises_protocol_error_on_unexpected_message(
         self, protocol: DqliteProtocol
     ) -> None:
