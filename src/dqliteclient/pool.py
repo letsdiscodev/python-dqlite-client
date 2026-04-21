@@ -174,6 +174,20 @@ class ConnectionPool:
         self._closed_event: asyncio.Event | None = None
         self._initialized = False
 
+    def __repr__(self) -> str:
+        state = "closed" if self._closed else "open"
+        # Address list is part of the public configuration (no secrets
+        # on dqlite's wire today); show the first few addresses with a
+        # count hint so the repr stays short for large clusters.
+        addrs = self._addresses[:3]
+        suffix = f"+{len(self._addresses) - 3}" if len(self._addresses) > 3 else ""
+        addrs_repr = f"{addrs!r}{suffix}"
+        return (
+            f"ConnectionPool(addresses={addrs_repr}, "
+            f"size={self._size}, min_size={self._min_size}, "
+            f"max_size={self._max_size}, {state})"
+        )
+
     async def initialize(self) -> None:
         """Initialize the pool with minimum connections.
 

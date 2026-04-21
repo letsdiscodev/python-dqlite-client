@@ -65,7 +65,7 @@ class ClusterClient:
                 redirects are accepted — this preserves backward
                 compatibility but permits a compromised peer to redirect
                 clients to arbitrary hosts (SSRF-style). Supply a
-                callable or the ``only_nodes_in_store`` helper to
+                callable or the :func:`allowlist_policy` helper to
                 constrain where redirects can go.
         """
         if timeout <= 0:

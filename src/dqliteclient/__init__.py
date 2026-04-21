@@ -6,7 +6,7 @@ other threads, use ``asyncio.run_coroutine_threadsafe()``. Free-threaded
 Python (no-GIL) is not supported.
 """
 
-from dqliteclient.cluster import ClusterClient
+from dqliteclient.cluster import ClusterClient, RedirectPolicy, allowlist_policy
 from dqliteclient.connection import DqliteConnection
 from dqliteclient.exceptions import (
     ClusterError,
@@ -23,22 +23,24 @@ from dqliteclient.pool import ConnectionPool
 
 __all__ = [
     "__version__",
+    "allowlist_policy",
     "connect",
     "create_pool",
-    "DqliteConnection",
-    "ConnectionPool",
     "ClusterClient",
-    "NodeStore",
-    "NodeInfo",
-    "MemoryNodeStore",
-    "DqliteError",
-    "DqliteConnectionError",
-    "InterfaceError",
-    "ProtocolError",
     "ClusterError",
     "ClusterPolicyError",
-    "OperationalError",
+    "ConnectionPool",
     "DataError",
+    "DqliteConnection",
+    "DqliteConnectionError",
+    "DqliteError",
+    "InterfaceError",
+    "MemoryNodeStore",
+    "NodeInfo",
+    "NodeStore",
+    "OperationalError",
+    "ProtocolError",
+    "RedirectPolicy",
 ]
 
 __version__ = "0.1.3"
