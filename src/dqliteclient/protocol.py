@@ -128,7 +128,9 @@ class DqliteProtocol:
             raise ProtocolError(f"Handshake failed: {response.message}")
 
         if not isinstance(response, WelcomeResponse):
-            raise ProtocolError(f"Expected WelcomeResponse, got {type(response).__name__}")
+            raise ProtocolError(
+                f"Expected WelcomeResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
 
         self._client_id = client_id
         self._heartbeat_timeout = response.heartbeat_timeout
@@ -168,10 +170,12 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message)
+            raise OperationalError(response.code, response.message + self._addr_suffix())
 
         if not isinstance(response, LeaderResponse):
-            raise ProtocolError(f"Expected LeaderResponse, got {type(response).__name__}")
+            raise ProtocolError(
+                f"Expected LeaderResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
 
         return response.node_id, response.address
 
@@ -187,10 +191,12 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message)
+            raise OperationalError(response.code, response.message + self._addr_suffix())
 
         if not isinstance(response, DbResponse):
-            raise ProtocolError(f"Expected DbResponse, got {type(response).__name__}")
+            raise ProtocolError(
+                f"Expected DbResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
 
         return response.db_id
 
@@ -206,10 +212,12 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message)
+            raise OperationalError(response.code, response.message + self._addr_suffix())
 
         if not isinstance(response, StmtResponse):
-            raise ProtocolError(f"Expected StmtResponse, got {type(response).__name__}")
+            raise ProtocolError(
+                f"Expected StmtResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
 
         return response.stmt_id, response.num_params
 
@@ -222,10 +230,12 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message)
+            raise OperationalError(response.code, response.message + self._addr_suffix())
 
         if not isinstance(response, EmptyResponse):
-            raise ProtocolError(f"Expected EmptyResponse, got {type(response).__name__}")
+            raise ProtocolError(
+                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
 
     async def exec_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
@@ -244,10 +254,12 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message)
+            raise OperationalError(response.code, response.message + self._addr_suffix())
 
         if not isinstance(response, ResultResponse):
-            raise ProtocolError(f"Expected ResultResponse, got {type(response).__name__}")
+            raise ProtocolError(
+                f"Expected ResultResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
 
         return response.last_insert_id, response.rows_affected
 
@@ -266,9 +278,11 @@ class DqliteProtocol:
         deadline = self._operation_deadline()
         response = await self._read_response(deadline=deadline)
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message)
+            raise OperationalError(response.code, response.message + self._addr_suffix())
         if not isinstance(response, RowsResponse):
-            raise ProtocolError(f"Expected RowsResponse, got {type(response).__name__}")
+            raise ProtocolError(
+                f"Expected RowsResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
         return response, deadline
 
     async def _drain_continuations(

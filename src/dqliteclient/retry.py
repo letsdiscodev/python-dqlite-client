@@ -9,8 +9,16 @@ from dqliteclient.exceptions import DqliteError
 # Default retry set: transport- and cluster-level errors that a caller
 # could reasonably want auto-retried. Leaves programming bugs
 # (TypeError, AttributeError, KeyError, …) to propagate on first call
-# so debugging is not buried under exponential-backoff pauses. Callers
-# that genuinely want "retry anything" can pass their own tuple.
+# so debugging is not buried under exponential-backoff pauses.
+#
+# IMPORTANT: ``DqliteError`` is the parent of ``OperationalError`` and
+# ``IntegrityError``, which surface permanent server failures
+# (constraint violations, syntax errors, etc.). A caller that uses
+# this default will retry such permanent errors through the full
+# ``max_attempts`` window. Callers that want the narrower
+# "transport only" behaviour should pass an explicit tuple such as
+# ``(OSError, TimeoutError, DqliteConnectionError, ClusterError)``.
+# The in-tree caller ``ClusterClient.connect`` does exactly that.
 _DEFAULT_RETRYABLE: tuple[type[BaseException], ...] = (
     OSError,
     TimeoutError,
@@ -35,7 +43,11 @@ async def retry_with_backoff[T](
         base_delay: Initial delay between retries in seconds
         max_delay: Maximum delay between retries
         jitter: Random jitter factor (0-1)
-        retryable_exceptions: Exception types to retry on
+        retryable_exceptions: Exception types to retry on. The default
+            includes ``DqliteError``, which is the parent of
+            ``OperationalError`` / ``IntegrityError`` — permanent server
+            failures would be retried. Callers that want strictly
+            transient errors should pass their own tuple.
         excluded_exceptions: Subclasses of ``retryable_exceptions`` that
             must NOT be retried — useful when a deterministic,
             non-recoverable error (e.g. a policy rejection) is a subtype

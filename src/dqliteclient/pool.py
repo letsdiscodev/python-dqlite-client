@@ -466,6 +466,12 @@ class ConnectionPool:
             assert get_task is not None and closed_task is not None
             if not closed_task.done():
                 closed_task.cancel()
+                # Await the cancelled task so the CancelledError doesn't
+                # sit on the task object until GC. asyncio.Event.wait()
+                # exits cleanly on cancel so this returns promptly.
+                # Symmetric with the get_task-cancel branch below.
+                with contextlib.suppress(BaseException):
+                    await closed_task
             if get_task in done:
                 conn = get_task.result()
             else:

@@ -719,7 +719,7 @@ class TestQueryLeaderRejectsUnreachableCombo:
             patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
             patch("dqliteclient.cluster.DqliteProtocol", FakeProto),
             caplog.at_level(logging.DEBUG, logger="dqliteclient.cluster"),
-            pytest.raises(ProtocolError),
+            pytest.raises(ProtocolError, match="empty leader address"),
         ):
             await client._query_leader("node-3:9000")
 
