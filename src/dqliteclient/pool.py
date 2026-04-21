@@ -210,7 +210,15 @@ class ConnectionPool:
             if self._min_size > 0:
                 logger.debug("pool.initialize: requesting %d connections", self._min_size)
                 self._size += self._min_size
-                reservation_committed = False
+                # Count reservations that still need to be released. Each
+                # successful put into the pool queue "commits" one slot
+                # (the connection stays and must remain counted in
+                # _size), so unqueued shrinks per iteration. On any
+                # abort the finally below releases exactly ``unqueued``
+                # slots — the ones that never made it to the queue —
+                # and closes the unqueued survivors.
+                unqueued = self._min_size
+                unqueued_survivors: list[DqliteConnection] = []
                 try:
                     # Create min_size connections concurrently so startup
                     # latency doesn't scale with min_size × per-connect RTT.
@@ -248,19 +256,40 @@ class ConnectionPool:
                         # root cause; the finally releases the
                         # reservation before the raise propagates.
                         raise failures[0]
+                    # Track which successes are still unqueued so a
+                    # cancellation mid put-loop can close them precisely
+                    # rather than leaking their transports.
+                    unqueued_survivors = list(successes)
                     for conn in successes:
                         await self._pool.put(conn)
-                    reservation_committed = True
+                        # put() succeeded: the slot is now committed —
+                        # the connection stays in _size accounting and
+                        # belongs to the queue, not to this function.
+                        unqueued -= 1
+                        unqueued_survivors.pop(0)
                     logger.debug("pool.initialize: %d connections ready", self._min_size)
                 finally:
-                    if not reservation_committed:
-                        # Any exit path that did not commit the reservation
-                        # — failed gather, raise from _pool.put, outer
-                        # CancelledError — must return _size to reality so
-                        # a subsequent initialize()/acquire() is not stuck
-                        # against a stale counter climbing toward _max_size.
-                        self._size -= self._min_size
+                    if unqueued > 0:
+                        # Any exit path with uncommitted reservations —
+                        # failed gather, raise from _pool.put, outer
+                        # CancelledError mid put-loop — must return the
+                        # unqueued slots to _size so a subsequent
+                        # initialize()/acquire() is not blocked against
+                        # a stale counter climbing toward _max_size.
+                        self._size -= unqueued
                         self._signal_state_change()
+                    # Close any connection that made it past the gather
+                    # but never into the queue. Under a clean success
+                    # this list is empty; on partial put-loop cancel it
+                    # holds the unqueued tail.
+                    for conn in unqueued_survivors:
+                        try:
+                            await conn.close()
+                        except _POOL_CLEANUP_EXCEPTIONS as exc:
+                            logger.debug(
+                                "pool.initialize: unqueued-survivor close error: %r",
+                                exc,
+                            )
             self._initialized = True
 
     async def _create_connection(self) -> DqliteConnection:
