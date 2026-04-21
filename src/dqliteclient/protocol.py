@@ -21,6 +21,7 @@ from dqlitewire.messages import (
     ExecSqlRequest,
     FailureResponse,
     FinalizeRequest,
+    InterruptRequest,
     LeaderRequest,
     LeaderResponse,
     OpenRequest,
@@ -236,6 +237,54 @@ class DqliteProtocol:
             raise ProtocolError(
                 f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
             )
+
+    async def interrupt(self, db_id: int) -> None:
+        """Ask the server to stop producing further rows for this db_id.
+
+        Sent by the dbapi cursor when a streaming query is closed early
+        (e.g. ``cursor.close()`` after reading only one page). Without
+        this request, the server continues to read and buffer rows
+        even though the client has no use for them — mirrors the Go
+        and C clients' ``Rows.Close`` / ``clientSendInterrupt`` paths.
+
+        Drains the stream by consuming messages until an
+        ``EmptyResponse`` arrives. The server may have continuation
+        ``RowsResponse`` frames in flight at the moment we call this;
+        the drain loop swallows them and returns when the final
+        ``EmptyResponse`` acknowledges the interrupt.
+
+        ``FailureResponse`` mid-drain is raised as
+        ``OperationalError`` — the interrupt itself may have been
+        refused. Other unexpected message types are ``ProtocolError``.
+        """
+        request = InterruptRequest(db_id=db_id)
+        self._writer.write(request.encode())
+        await self._send()
+
+        # Drain: swallow any trailing continuation frames, break when
+        # EmptyResponse arrives. Bound by the single operation deadline
+        # so a non-responsive server cannot stall this forever.
+        deadline = self._operation_deadline()
+        while True:
+            response = await self._read_response(deadline=deadline)
+            if isinstance(response, EmptyResponse):
+                return
+            if isinstance(response, FailureResponse):
+                raise OperationalError(response.code, response.message + self._addr_suffix())
+            # RowsResponse mid-drain is expected: the server's in-flight
+            # continuation may land before the interrupt takes effect.
+            # Other message types indicate stream desync.
+            if not isinstance(response, RowsResponse):
+                raise ProtocolError(
+                    f"Expected EmptyResponse after Interrupt, got "
+                    f"{type(response).__name__}{self._addr_suffix()}"
+                )
+            # If the RowsResponse signals more frames, keep draining.
+            if not response.has_more:
+                # DONE marker arrived: some servers emit the final
+                # RowsResponse with has_more=False first, then the
+                # EmptyResponse. Keep looping.
+                continue
 
     async def exec_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
