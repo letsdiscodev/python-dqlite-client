@@ -361,9 +361,19 @@ class DqliteProtocol:
         return column_names, all_rows
 
     async def _send(self) -> None:
-        """Drain the writer, wrapping transport errors as DqliteConnectionError."""
+        """Drain the writer, wrapping transport errors as DqliteConnectionError.
+
+        A peer that accepts the TCP connection but stops reading can stall
+        ``drain()`` indefinitely on the high-water-mark future. Bound the
+        drain by ``self._timeout`` so the caller-configured timeout is
+        authoritative for sends just as it is for reads.
+        """
         try:
-            await self._writer.drain()
+            await asyncio.wait_for(self._writer.drain(), timeout=self._timeout)
+        except TimeoutError as e:
+            raise DqliteConnectionError(
+                f"Write timeout{self._addr_suffix()} after {self._timeout}s"
+            ) from e
         except (ConnectionError, OSError, RuntimeError) as e:
             raise DqliteConnectionError(f"Write failed{self._addr_suffix()}: {e}") from e
 
