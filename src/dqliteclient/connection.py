@@ -290,10 +290,21 @@ class DqliteConnection:
         is already closed after ``writer.close()`` — the remaining
         wait is best-effort cleanup, not correctness-critical.
         """
-        # Pool-released or already-closed: nothing to do.
-        if self._pool_released or self._protocol is None:
+        # Pool-released connections are never in_use for close(); their
+        # close path has already run under pool ownership.
+        if self._pool_released:
             return
+        # Run the in-use guard BEFORE the ``_protocol is None``
+        # early-return so a concurrent ``connect()`` racing with
+        # ``close()`` surfaces as ``InterfaceError`` instead of a silent
+        # no-op. Without this, close() returning while connect() is
+        # suspended in ``asyncio.open_connection`` would leak the
+        # eventual socket — connect() publishes _protocol only on
+        # success, so at the race moment _protocol is None and
+        # close() would silently return.
         self._check_in_use()
+        if self._protocol is None:
+            return
         protocol = self._protocol
         self._protocol = None
         self._db_id = None
