@@ -265,6 +265,17 @@ class ConnectionPool:
                     # rather than leaking their transports.
                     unqueued_survivors = list(successes)
                     for conn in successes:
+                        # Re-check _closed every iteration: close() does
+                        # not acquire _lock, so a concurrent close()
+                        # landing while gather was suspended would
+                        # otherwise let us commit connections into a
+                        # pool whose _closed flag is True. In that case
+                        # acquire() refuses them (they are invisible to
+                        # the user) and the transports leak. Route the
+                        # tail through the existing unqueued_survivors
+                        # cleanup path instead.
+                        if self._closed:
+                            break
                         await self._pool.put(conn)
                         # put() succeeded: the slot is now committed —
                         # the connection stays in _size accounting and
@@ -294,7 +305,11 @@ class ConnectionPool:
                                 "pool.initialize: unqueued-survivor close error: %r",
                                 exc,
                             )
-            self._initialized = True
+            # Do not mark initialized if close() landed during the
+            # put-loop and we broke out early — otherwise a subsequent
+            # initialize() call on a (re-opened) pool short-circuits.
+            if not self._closed:
+                self._initialized = True
 
     async def _create_connection(self) -> DqliteConnection:
         """Create a new connection to the leader.
