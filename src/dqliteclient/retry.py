@@ -11,17 +11,23 @@ from dqliteclient.exceptions import DqliteError
 # (TypeError, AttributeError, KeyError, …) to propagate on first call
 # so debugging is not buried under exponential-backoff pauses.
 #
+# ``OSError`` subsumes ``TimeoutError``, ``BrokenPipeError``,
+# ``ConnectionError``, and ``ConnectionResetError`` since Python
+# 3.10, so a single ``OSError`` entry covers every stdlib
+# transport-error shape (mirrors the classification in
+# ``sqlalchemy-dqlite/src/sqlalchemydqlite/base.py``'s
+# ``is_disconnect``). The package requires Python 3.13+.
+#
 # IMPORTANT: ``DqliteError`` is the parent of ``OperationalError`` and
 # ``IntegrityError``, which surface permanent server failures
 # (constraint violations, syntax errors, etc.). A caller that uses
 # this default will retry such permanent errors through the full
 # ``max_attempts`` window. Callers that want the narrower
 # "transport only" behaviour should pass an explicit tuple such as
-# ``(OSError, TimeoutError, DqliteConnectionError, ClusterError)``.
+# ``(OSError, DqliteConnectionError, ClusterError)``.
 # The in-tree caller ``ClusterClient.connect`` does exactly that.
 _DEFAULT_RETRYABLE: tuple[type[BaseException], ...] = (
     OSError,
-    TimeoutError,
     DqliteError,
 )
 

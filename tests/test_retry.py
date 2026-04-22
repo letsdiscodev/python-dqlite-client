@@ -192,6 +192,26 @@ class TestRetryDefaults:
         assert result == "ok"
         assert call_count == 2
 
+    async def test_default_retries_timeout_error_via_oserror(self) -> None:
+        """``_DEFAULT_RETRYABLE`` only lists ``OSError`` explicitly;
+        ``TimeoutError`` is an ``OSError`` subclass since Python 3.10,
+        so the default retry set covers it without a separate entry.
+        Regression guard for the ``TimeoutError`` removal from the
+        default tuple.
+        """
+        call_count = 0
+
+        async def fail_once() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise TimeoutError("connect timed out")
+            return "ok"
+
+        result = await retry_with_backoff(fail_once, base_delay=0.01)
+        assert result == "ok"
+        assert call_count == 2
+
     async def test_default_does_not_retry_programming_errors(self) -> None:
         import pytest as _pytest
 

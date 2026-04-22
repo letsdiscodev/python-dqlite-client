@@ -25,9 +25,13 @@ from dqliteclient.protocol import _validate_positive_int_or_none
 # ``TypeError``, ``RuntimeError``) — must propagate so structured
 # concurrency and refactor bugs are observable. Mirrors the narrowing
 # in ``AsyncAdaptedConnection.close`` and ``DqliteConnection.transaction``.
+# ``OSError`` subsumes ``TimeoutError`` / ``BrokenPipeError`` /
+# ``ConnectionError`` / ``ConnectionResetError`` since Python 3.10;
+# the package requires Python 3.13+. A single ``OSError`` entry
+# covers every stdlib transport-error shape — mirrors the
+# classification in ``sqlalchemy-dqlite``'s ``is_disconnect``.
 _POOL_CLEANUP_EXCEPTIONS = (
     OSError,
-    TimeoutError,
     DqliteConnectionError,
     ProtocolError,
     OperationalError,
@@ -584,7 +588,7 @@ class ConnectionPool:
                         logger.debug("pool.acquire cleanup: _drain_idle failed: %r", exc)
                     try:
                         await conn.close()
-                    except (OSError, TimeoutError, DqliteConnectionError) as exc:
+                    except (OSError, DqliteConnectionError) as exc:
                         logger.debug(
                             "pool.acquire cleanup: conn.close(%r) failed: %r",
                             getattr(conn, "_address", "?"),

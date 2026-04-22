@@ -121,6 +121,34 @@ async def test_cleanup_logs_oserror_from_close(caplog: pytest.LogCaptureFixture)
 
 
 @pytest.mark.asyncio
+async def test_cleanup_logs_timeout_error_from_close(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """TimeoutError is an OSError subclass; the cleanup suppression
+    must catch it via the single OSError entry in the except tuple.
+    Regression guard for the narrowing done in the sibling cleanup
+    that removed a redundant explicit ``TimeoutError`` entry.
+    """
+    broken = _BrokenConn(close_side_effect=TimeoutError("read timed out"))
+    pool = _make_pool_with_broken_conn(broken)
+    _stub_drain_idle(pool)
+
+    caplog.set_level(logging.DEBUG, logger="dqliteclient.pool")
+    with pytest.raises(RuntimeError, match="user code failure"):
+        async with pool.acquire() as conn:
+            conn.is_connected = False
+            raise RuntimeError("user code failure")
+
+    assert broken.close_calls == 1
+    assert any(
+        "pool.acquire cleanup: conn.close" in record.getMessage()
+        and "read timed out" in record.getMessage()
+        for record in caplog.records
+    ), f"expected cleanup DEBUG log, got {[r.getMessage() for r in caplog.records]}"
+    assert pool._size == 0
+
+
+@pytest.mark.asyncio
 async def test_cleanup_preserves_original_exception_when_close_silent() -> None:
     broken = _BrokenConn(close_side_effect=None)
     pool = _make_pool_with_broken_conn(broken)

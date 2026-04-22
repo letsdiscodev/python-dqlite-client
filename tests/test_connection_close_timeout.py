@@ -97,6 +97,48 @@ async def test_close_oserror_during_drain_is_swallowed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_close_timeout_error_during_drain_is_swallowed() -> None:
+    """``TimeoutError`` raised by the protocol's ``wait_closed`` (slow
+    peer that never ACKs the FIN beyond the ``asyncio.wait_for``
+    budget) is caught via the single ``OSError`` entry in the except
+    clause — regression guard for the tuple narrowing.
+    """
+    conn = DqliteConnection("localhost:9001")
+
+    class _TimeoutProtocol:
+        def __init__(self) -> None:
+            self.close = MagicMock()
+
+        async def wait_closed(self) -> None:
+            raise TimeoutError("slow peer")
+
+    conn._protocol = _TimeoutProtocol()  # type: ignore[assignment]
+    conn._bound_loop = asyncio.get_running_loop()
+
+    await conn.close()  # Must not raise.
+
+
+@pytest.mark.asyncio
+async def test_abort_protocol_timeout_error_during_drain_is_swallowed() -> None:
+    """Mirror of the close() TimeoutError pin for the _abort_protocol
+    path — both share the OSError-narrowed except clause.
+    """
+    conn = DqliteConnection("localhost:9001", close_timeout=0.1)
+
+    class _TimeoutProtocol:
+        def __init__(self) -> None:
+            self.close = MagicMock()
+
+        async def wait_closed(self) -> None:
+            raise TimeoutError("slow peer")
+
+    conn._protocol = _TimeoutProtocol()  # type: ignore[assignment]
+    conn._bound_loop = asyncio.get_running_loop()
+
+    await conn._abort_protocol()  # Must not raise.
+
+
+@pytest.mark.asyncio
 async def test_close_cancellederror_escapes() -> None:
     """Cancellation from an outer ``asyncio.timeout`` / task cancel
     must propagate out of close() — structured concurrency requires

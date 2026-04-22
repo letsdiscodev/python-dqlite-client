@@ -41,6 +41,25 @@ class TestClusterClient:
         ):
             await client.find_leader()
 
+    async def test_find_leader_all_unreachable_via_timeout_error(self) -> None:
+        """TimeoutError is an OSError subclass (Python 3.10+). The
+        ``_query_leader`` open-connection except clause is narrowed to
+        a single OSError entry; pin that a TimeoutError from
+        ``asyncio.wait_for(asyncio.open_connection(...))`` is still
+        caught and surfaces as "node unreachable" rather than leaking.
+        """
+        store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
+        client = ClusterClient(store, timeout=0.1)
+
+        with (
+            patch(
+                "asyncio.open_connection",
+                side_effect=TimeoutError("connect timed out"),
+            ),
+            pytest.raises(ClusterError, match="Could not find leader"),
+        ):
+            await client.find_leader()
+
     async def test_find_leader_success(self) -> None:
         store = MemoryNodeStore(["localhost:9001"])
         client = ClusterClient(store)
