@@ -181,6 +181,10 @@ class DqliteConnection:
         self._tx_owner: asyncio.Task[Any] | None = None
         self._pool_released = False
         self._invalidation_cause: BaseException | None = None
+        # Tracks the bounded ``wait_closed`` drain scheduled by
+        # ``_invalidate`` so a subsequent ``close()`` can await it and
+        # keep the reader task from outliving the connection.
+        self._pending_drain: asyncio.Task[None] | None = None
 
     @property
     def address(self) -> str:
@@ -304,6 +308,15 @@ class DqliteConnection:
         # close() would silently return.
         self._check_in_use()
         if self._protocol is None:
+            # ``_invalidate`` may have scheduled a bounded drain task
+            # on the writer it just closed. Await it so the reader
+            # task exits cleanly; otherwise Python logs "Task was
+            # destroyed but it is pending" at interpreter shutdown.
+            pending = getattr(self, "_pending_drain", None)
+            if pending is not None and not pending.done():
+                with contextlib.suppress(Exception):
+                    await pending
+                self._pending_drain = None
             return
         protocol = self._protocol
         self._protocol = None
@@ -435,11 +448,39 @@ class DqliteConnection:
         flag and the liveness state must stay consistent — otherwise
         the next call deterministically raises "another operation is
         in progress" on a connection that is in fact dead.
+
+        Synchronous writer-close + async bounded drain: ``protocol.close()``
+        is synchronous (writer.close()), but ``wait_closed()`` is a
+        coroutine. Without a drain, a subsequent ``close()`` early-
+        returns on ``_protocol is None`` and the reader task that
+        ``asyncio.open_connection`` spawned stays pending until GC,
+        producing the familiar ``"Task was destroyed but it is pending"``
+        noise on interpreter exit. Schedule a bounded drain task and
+        remember it on ``self`` so ``close()`` can await it.
         """
         if self._protocol is not None:
+            proto = self._protocol
             # Connection may already be broken; suppress close errors
             with contextlib.suppress(Exception):
-                self._protocol.close()
+                proto.close()
+            # Schedule a bounded drain so close() can observe and await
+            # the reader task's teardown even though _protocol is about
+            # to be nulled below. Only scheduled when a running loop is
+            # available — some callers (tests, inline error paths) run
+            # _invalidate outside a loop; the drain is best-effort.
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+
+                async def _bounded_drain() -> None:
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(proto.wait_closed(), timeout=self._close_timeout)
+
+                # Strong-ref on self so the task is not GC'd before
+                # close() awaits it.
+                self._pending_drain = loop.create_task(_bounded_drain())
         self._protocol = None
         self._db_id = None
         self._in_use = False
