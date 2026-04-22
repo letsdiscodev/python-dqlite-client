@@ -46,7 +46,25 @@ def _truncate_error(message: str) -> str:
 
 
 class ClusterClient:
-    """Client with automatic leader detection and failover."""
+    """Client that discovers the current dqlite leader.
+
+    Probes configured peer addresses in order to locate the current
+    leader:
+
+    - :meth:`find_leader` is **single-shot** — probes each node once
+      in order, returns the first successful leader address, raises
+      ``ClusterError`` if every node fails. Appropriate for callers
+      that want the raw failure surface of a specific probe cycle.
+
+    - :meth:`connect` wraps leader discovery + connection in
+      :func:`dqliteclient.retry.retry_with_backoff` (bounded
+      exponential backoff). Use this when the caller wants the
+      client to retry on transient failures.
+
+    ``ClusterClient`` holds no long-lived resources — each probe
+    opens a short-lived socket — so there is nothing to ``close``.
+    The caller owns the :class:`NodeStore` lifetime.
+    """
 
     def __init__(
         self,
@@ -216,8 +234,9 @@ class ClusterClient:
                 # Observability: an operator tailing logs during a
                 # leader-discovery stall needs the breadcrumb at the
                 # point of detection, not only via the raised
-                # ProtocolError surfaced upstream. Parity with
-                # ISSUE-219's per-node find_leader DEBUG convention.
+                # ProtocolError surfaced upstream. Log at DEBUG so the
+                # WARN/ERROR paths stay uncluttered during healthy
+                # per-node probes.
                 logger.debug(
                     "query_leader: %s returned malformed redirect (node_id=%s, address=%r)",
                     address,

@@ -139,9 +139,10 @@ class DqliteProtocol:
         # trusted. Previously we always widened ``self._timeout`` up
         # to 300 s based on the server value, which let a hostile
         # server amplify the operator's configured timeout up to 30×.
-        # Default is now opt-out: the server value is
-        # recorded for diagnostics but does not change the per-read
-        # deadline.
+        # Default is opt-in (``trust_server_heartbeat=False``): the
+        # per-read-deadline widening is DISABLED unless the caller
+        # explicitly enables it. The server-advertised value is still
+        # read here for diagnostics but has no effect on the deadline.
         if self._trust_server_heartbeat and response.heartbeat_timeout > 0:
             heartbeat_seconds = response.heartbeat_timeout / 1000.0
             # Cap to prevent a malicious/buggy server from disabling timeouts

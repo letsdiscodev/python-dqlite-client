@@ -170,7 +170,10 @@ async def test_cleanup_logs_drain_idle_failure(caplog: pytest.LogCaptureFixture)
     pool = _make_pool_with_broken_conn(broken)
 
     async def explode() -> None:
-        raise RuntimeError("drain-idle internal failure")
+        # OSError is in _POOL_CLEANUP_EXCEPTIONS — the narrow catch
+        # absorbs transport-class failures and DEBUG-logs them, but
+        # programmer bugs (TypeError / AttributeError) still propagate.
+        raise OSError("drain-idle transport failure")
 
     pool._drain_idle = explode  # type: ignore[method-assign]
 
@@ -182,7 +185,7 @@ async def test_cleanup_logs_drain_idle_failure(caplog: pytest.LogCaptureFixture)
 
     assert any(
         "pool.acquire cleanup: _drain_idle failed" in record.getMessage()
-        and "drain-idle internal failure" in record.getMessage()
+        and "drain-idle transport failure" in record.getMessage()
         for record in caplog.records
     ), f"expected drain-idle DEBUG log, got {[r.getMessage() for r in caplog.records]}"
     assert pool._size == 0

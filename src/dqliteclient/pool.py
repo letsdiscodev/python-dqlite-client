@@ -108,10 +108,10 @@ class ConnectionPool:
                 cache, etc.) across databases or tenants.
 
                 Ownership: the pool does NOT take ownership of this
-                cluster. The caller is responsible for eventually calling
-                ``cluster.close()`` and MUST NOT close the cluster while
-                any pool is still in use. ``pool.close()`` does not close
-                the cluster — it only drains pool-owned connections.
+                cluster. ``ClusterClient`` holds no long-lived resources
+                (each probe opens a short-lived socket), so there is
+                nothing to close on it. ``pool.close()`` drains pool-
+                owned connections only.
 
                 Sharing: one ClusterClient may back multiple pools
                 concurrently. Direct use of the cluster (e.g.,
@@ -340,11 +340,17 @@ class ConnectionPool:
         self._signal_state_change()
 
     def _get_closed_event(self) -> asyncio.Event:
-        """Lazily create the closed Event bound to the running loop."""
+        """Lazily create the closed Event bound to the running loop.
+
+        Every caller (``acquire`` at line ~434, ``_signal_state_change``
+        for the non-None-event path) is gated by an ``if self._closed:
+        raise`` check above, so entering this method with
+        ``self._closed == True`` is not a reachable production state.
+        ``close()`` sets the event directly when it exists rather than
+        going through this path.
+        """
         if self._closed_event is None:
             self._closed_event = asyncio.Event()
-            if self._closed:
-                self._closed_event.set()
         return self._closed_event
 
     def _signal_state_change(self) -> None:
@@ -602,15 +608,15 @@ class ConnectionPool:
                     # handlers). Drain other idle connections — they likely
                     # point to the same dead server.
                     #
-                    # Cleanup narrowing (matches ISSUE-139 / 148 / 157
-                    # precedent): these ``suppress`` blocks used to catch
-                    # ``BaseException``, which silently ate cancellation and
-                    # interpreter-exit signals delivered mid-cleanup.
-                    # ``_drain_idle`` already narrows internally; the outer
-                    # catch stays for defence against a regression there.
+                    # Narrow the outer catch to the legitimate transport-
+                    # failure set (_POOL_CLEANUP_EXCEPTIONS) so cancellation
+                    # and interpreter-exit signals propagate, and any
+                    # programmer-bug inside _drain_idle (AttributeError /
+                    # TypeError) surfaces instead of being DEBUG-logged into
+                    # silence.
                     try:
                         await self._drain_idle()
-                    except Exception as exc:
+                    except _POOL_CLEANUP_EXCEPTIONS as exc:
                         logger.debug("pool.acquire cleanup: _drain_idle failed: %r", exc)
                     try:
                         await conn.close()
