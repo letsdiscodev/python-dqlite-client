@@ -649,39 +649,44 @@ class ConnectionPool:
         set — otherwise the transport leaks (a bug that affects every
         branch that closes a pool-owned connection).
 
-        Every ``_release_reservation`` call here is wrapped in
-        ``asyncio.shield`` so an outer ``asyncio.timeout`` that fires
-        during close/ROLLBACK cannot leave ``_size`` permanently
-        incremented. Symmetric with the exception-path shield in
-        ``acquire()``.
+        The reservation release lives in an outer ``finally`` so it
+        runs even when ``CancelledError`` is delivered during the
+        preceding ``_reset_connection`` (the ROLLBACK await) or the
+        inline ``conn.close()`` calls — a per-branch shield could only
+        protect the decrement once reached, not the I/O that has to
+        complete first. Symmetric with the exception-path
+        ``returned_to_queue`` flag in ``acquire()``.
         """
-        if self._closed:
-            await conn.close()
-            conn._pool_released = True
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.shield(self._release_reservation())
-            return
-
-        if not await self._reset_connection(conn):
-            with contextlib.suppress(Exception):
-                await conn.close()
-            conn._pool_released = True
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.shield(self._release_reservation())
-            return
-
-        # Healthy connection returning to queue: no close; just flip
-        # the flag and enqueue. If the queue is full we must close
-        # before setting the flag.
+        returned_to_queue = False
         try:
-            self._pool.put_nowait(conn)
-        except asyncio.QueueFull:
-            await conn.close()
-            conn._pool_released = True
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.shield(self._release_reservation())
-        else:
-            conn._pool_released = True
+            if self._closed:
+                await conn.close()
+                conn._pool_released = True
+                return
+
+            if not await self._reset_connection(conn):
+                with contextlib.suppress(Exception):
+                    await conn.close()
+                conn._pool_released = True
+                return
+
+            # Healthy connection returning to queue: no close; just flip
+            # the flag and enqueue. If the queue is full we must close
+            # before setting the flag.
+            try:
+                self._pool.put_nowait(conn)
+            except asyncio.QueueFull:
+                await conn.close()
+                conn._pool_released = True
+            else:
+                conn._pool_released = True
+                # Reservation transfers to the queued connection's
+                # lifetime; do not decrement.
+                returned_to_queue = True
+        finally:
+            if not returned_to_queue:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(self._release_reservation())
 
     async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
         """Execute a SQL statement using a pooled connection."""

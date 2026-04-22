@@ -1540,3 +1540,130 @@ class TestAcquireCancellationPreservesCapacity:
                 assert pool._size == 1
 
         await pool.close()
+
+
+class TestReleaseCancellationPreservesReservation:
+    """``ConnectionPool._release`` must release the reservation even if
+    ``CancelledError`` is delivered during ``_reset_connection`` (the
+    ROLLBACK await) or during the inline ``conn.close()`` calls.
+
+    The earlier per-branch ``asyncio.shield`` only protected the
+    reservation-release call itself; cancellation arriving DURING the
+    preceding I/O bypassed every subsequent line, including the shield,
+    leaving ``_size`` permanently incremented.
+    """
+
+    async def test_cancel_during_reset_does_not_leak_reservation(self) -> None:
+        """Path B (production-likely): the success branch of
+        ``acquire()`` calls ``_release`` → ``_reset_connection`` →
+        ``conn.execute("ROLLBACK")``. If an outer cancellation arrives
+        at the ROLLBACK await, the reservation must still be released.
+        """
+        pool = ConnectionPool(["localhost:9001"], max_size=1)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
+        mock_conn._in_transaction = False
+        mock_conn._in_use = False
+        mock_conn._bound_loop = None
+        mock_conn._check_in_use = MagicMock()
+        mock_conn._pool_released = False
+
+        async def slow_rollback(sql: str, params=None) -> tuple[int, int]:
+            if "ROLLBACK" in sql:
+                # Suspend long enough for the outer timeout to fire.
+                await asyncio.sleep(10)
+            return (0, 0)
+
+        mock_conn.execute = slow_rollback
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+        starting_size = pool._size
+
+        with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+            async with asyncio.timeout(0.05):
+                async with pool.acquire() as conn:
+                    conn._in_transaction = True
+
+        # The reservation MUST have been released even though
+        # CancelledError fired during _reset_connection's ROLLBACK.
+        assert pool._size == starting_size - 1, (
+            f"reservation leaked: expected {starting_size - 1}, got {pool._size}"
+        )
+        # _pool_released is intentionally NOT asserted: cancellation
+        # arriving mid-close leaves the conn an orphan with the flag
+        # still False, so a holder of the ref can still close it via
+        # ``DqliteConnection.close()``. The pool's only obligation is
+        # the reservation count.
+
+        await pool.close()
+
+    async def test_cancel_during_pool_closed_close_does_not_leak(self) -> None:
+        """Path A: pool already closed; ``conn.close()`` is awaited.
+        If the close suspends and an outer cancel fires, the
+        reservation must still be released.
+        """
+        pool = ConnectionPool(["localhost:9001"], max_size=1)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn._in_transaction = False
+        mock_conn._in_use = False
+        mock_conn._bound_loop = None
+        mock_conn._check_in_use = MagicMock()
+        mock_conn._pool_released = False
+
+        async def slow_close() -> None:
+            await asyncio.sleep(10)
+
+        mock_conn.close = slow_close
+
+        # Pre-mark pool as closed so _release takes path A.
+        pool._closed = True
+        pool._size = 1
+
+        with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+            async with asyncio.timeout(0.05):
+                await pool._release(mock_conn)
+
+        assert pool._size == 0, f"reservation leaked on closed-pool path: got {pool._size}"
+
+    async def test_cancel_during_queuefull_close_does_not_leak(self) -> None:
+        """Path C: queue full; the connection must close. If the
+        close suspends and an outer cancel fires, the reservation must
+        still be released.
+        """
+        pool = ConnectionPool(["localhost:9001"], max_size=1)
+
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn._in_transaction = False
+        mock_conn._in_use = False
+        mock_conn._bound_loop = None
+        mock_conn._check_in_use = MagicMock()
+        mock_conn._pool_released = False
+
+        async def slow_close() -> None:
+            await asyncio.sleep(10)
+
+        mock_conn.close = slow_close
+
+        # Reservation reflects two inflight connections; queue is full
+        # with one already so _release will hit QueueFull.
+        filler = MagicMock()
+        await pool._pool.put(filler)
+        pool._size = 2
+
+        with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+            async with asyncio.timeout(0.05):
+                await pool._release(mock_conn)
+
+        # The mock_conn's reservation must have been released; the
+        # filler stays queued.
+        assert pool._size == 1, f"reservation leaked on QueueFull path: got {pool._size}"
