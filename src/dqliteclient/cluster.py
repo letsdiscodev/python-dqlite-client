@@ -274,6 +274,7 @@ class ClusterClient:
         max_total_rows: int | None = 10_000_000,
         max_continuation_frames: int | None = 100_000,
         trust_server_heartbeat: bool = False,
+        close_timeout: float = 0.5,
         max_attempts: int | None = None,
     ) -> DqliteConnection:
         """Connect to the cluster leader.
@@ -313,6 +314,7 @@ class ClusterClient:
                     max_total_rows=max_total_rows,
                     max_continuation_frames=max_continuation_frames,
                     trust_server_heartbeat=trust_server_heartbeat,
+                    close_timeout=close_timeout,
                 )
                 await conn.connect()
                 return conn

@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import math
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
@@ -93,6 +94,7 @@ class ConnectionPool:
         max_total_rows: int | None = 10_000_000,
         max_continuation_frames: int | None = 100_000,
         trust_server_heartbeat: bool = False,
+        close_timeout: float = 0.5,
     ) -> None:
         """Initialize connection pool.
 
@@ -149,6 +151,8 @@ class ConnectionPool:
             raise ValueError(f"min_size ({min_size}) must not exceed max_size ({max_size})")
         if timeout <= 0:
             raise ValueError(f"timeout must be positive, got {timeout}")
+        if not math.isfinite(close_timeout) or close_timeout <= 0:
+            raise ValueError(f"close_timeout must be a positive finite number, got {close_timeout}")
         if cluster is not None and node_store is not None:
             raise ValueError("pass only one of cluster= or node_store=")
         if cluster is None and node_store is None and not addresses:
@@ -164,6 +168,7 @@ class ConnectionPool:
             max_continuation_frames, "max_continuation_frames"
         )
         self._trust_server_heartbeat = trust_server_heartbeat
+        self._close_timeout = close_timeout
 
         if cluster is not None:
             self._cluster = cluster
@@ -326,6 +331,7 @@ class ConnectionPool:
             max_total_rows=self._max_total_rows,
             max_continuation_frames=self._max_continuation_frames,
             trust_server_heartbeat=self._trust_server_heartbeat,
+            close_timeout=self._close_timeout,
         )
 
     async def _release_reservation(self) -> None:
