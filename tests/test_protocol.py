@@ -19,6 +19,7 @@ class TestDqliteProtocol:
     @pytest.mark.parametrize(
         "err",
         [
+            ConnectionError("bare connection error"),
             ConnectionResetError("peer reset"),
             BrokenPipeError("pipe gone"),
             OSError("generic os error"),
@@ -44,9 +45,26 @@ class TestDqliteProtocol:
             await protocol.handshake()
         assert exc_info.value.__cause__ is err
 
+    async def test_writer_drain_unrelated_exception_propagates_unwrapped(
+        self,
+        protocol: DqliteProtocol,
+        mock_writer: MagicMock,
+    ) -> None:
+        """Exceptions outside the transport-error tuple must propagate
+        unchanged, so a future over-collapse (e.g. catching Exception)
+        would fail this pin. Mirror of _read_data unrelated-exception pin.
+        """
+        err = ValueError("unrelated")
+        mock_writer.drain = AsyncMock(side_effect=err)
+
+        with pytest.raises(ValueError) as exc_info:
+            await protocol.handshake()
+        assert exc_info.value is err
+
     @pytest.mark.parametrize(
         "err",
         [
+            ConnectionError("bare connection error mid-read"),
             ConnectionResetError("peer reset mid-read"),
             BrokenPipeError("pipe gone mid-read"),
             OSError("generic os error mid-read"),
@@ -68,6 +86,22 @@ class TestDqliteProtocol:
         with pytest.raises(DqliteConnectionError) as exc_info:
             await protocol._read_data()
         assert exc_info.value.__cause__ is err
+
+    async def test_reader_unrelated_exception_propagates_unwrapped(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """Exceptions outside the transport-error tuple must propagate
+        unchanged, so a future over-collapse (e.g. catching Exception)
+        would fail this pin.
+        """
+        err = ValueError("unrelated")
+        mock_reader.read.side_effect = err
+
+        with pytest.raises(ValueError) as exc_info:
+            await protocol._read_data()
+        assert exc_info.value is err
 
     async def test_read_timeout_preserves_cause(
         self,

@@ -448,7 +448,13 @@ class DqliteProtocol:
             raise DqliteConnectionError(
                 f"Write timeout{self._addr_suffix()} after {self._timeout}s"
             ) from e
-        except (ConnectionError, OSError, RuntimeError) as e:
+        # ConnectionError / BrokenPipeError / ConnectionResetError /
+        # ConnectionAbortedError / ConnectionRefusedError are all OSError
+        # subclasses since PEP 3151 — the bare OSError arm already catches
+        # them. See sqlalchemy-dqlite/src/sqlalchemydqlite/base.py:362-368
+        # for the project's source-of-truth on this idiom. RuntimeError is
+        # kept (not an OSError subclass) to cover "Transport is closed".
+        except (OSError, RuntimeError) as e:
             raise DqliteConnectionError(f"Write failed{self._addr_suffix()}: {e}") from e
 
     async def _read_data(self, deadline: float | None = None) -> bytes:
@@ -478,7 +484,8 @@ class DqliteProtocol:
             raise DqliteConnectionError(
                 f"Server read{self._addr_suffix()} timed out after {timeout:.1f}s"
             ) from e
-        except (ConnectionError, OSError, RuntimeError) as e:
+        # See _send for OSError-subsumption rationale.
+        except (OSError, RuntimeError) as e:
             raise DqliteConnectionError(f"Read failed{self._addr_suffix()}: {e}") from e
         if not data:
             raise DqliteConnectionError(f"Connection closed by server{self._addr_suffix()}")
