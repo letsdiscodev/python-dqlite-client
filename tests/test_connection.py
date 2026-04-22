@@ -956,10 +956,13 @@ class TestDqliteConnection:
     async def test_string_params_rejected_with_clear_error(self, connected_connection) -> None:
         """Passing a bare string as params silently splits it into N character
         parameters. Guard at the client boundary so the user gets a clear
-        TypeError instead of a confusing server-side "wrong parameter count".
+        DataError (a DqliteError subclass) instead of a confusing server-
+        side "wrong parameter count".
         """
+        from dqliteclient.exceptions import DataError
+
         conn, _, _ = connected_connection
-        with pytest.raises(TypeError, match="list or tuple"):
+        with pytest.raises(DataError, match="list or tuple"):
             await conn.execute("SELECT ?", "alice")  # type: ignore[arg-type]
 
     async def test_int64_overflow_raises_dataerror(self, connected_connection) -> None:

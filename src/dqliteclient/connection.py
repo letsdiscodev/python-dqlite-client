@@ -454,7 +454,11 @@ class DqliteConnection:
         but would silently split into N single-character parameters.
         """
         if isinstance(params, str | bytes):
-            raise TypeError("params must be a list or tuple, not str/bytes; did you mean [value]?")
+            # Use ``DataError`` (a DqliteError subclass) so the client
+            # contract "every error is a DqliteError" holds. Callers
+            # catching ``except TypeError`` previously saw a bare
+            # TypeError leak past the DqliteError hierarchy.
+            raise DataError("params must be a list or tuple, not str/bytes; did you mean [value]?")
 
     async def _run_protocol[T](self, fn: Callable[[DqliteProtocol, int], Awaitable[T]]) -> T:
         """Run a protocol operation with standard error handling.
@@ -527,6 +531,7 @@ class DqliteConnection:
         See ``dqlitewire.ValueType`` for the full enum. Use
         ``query_raw`` when type codes are not needed.
         """
+        self._validate_params(params)
         return await self._run_protocol(lambda p, db: p.query_sql_typed(db, sql, params))
 
     async def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
