@@ -121,6 +121,49 @@ class TestDqliteProtocol:
             f"_read_response must bail at the operation deadline; took {elapsed:.3f}s"
         )
 
+    async def test_read_data_deadline_already_in_past_raises_immediately(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """The fast-path branch in ``_read_data`` short-circuits when the
+        deadline has ALREADY passed before entering ``asyncio.wait_for``.
+        It exists to dodge ``wait_for(timeout=0)`` semantic drift across
+        Python versions and to avoid passing a negative timeout (which
+        raises ``ValueError`` on some builds). Test deterministically:
+        deadline 1 second in the past must raise without entering the
+        reader.
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        past_deadline = loop.time() - 1.0
+
+        with pytest.raises(DqliteConnectionError, match="exceeded.*deadline"):
+            await protocol._read_data(deadline=past_deadline)
+
+        assert not mock_reader.read.called, (
+            "_read_data must not enter the reader when deadline is already past"
+        )
+
+    async def test_read_data_deadline_in_future_still_uses_wait_for(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """Counter-test: a deadline in the future must NOT take the
+        fast-path; the reader is entered and produces data.
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        future_deadline = loop.time() + 5.0
+
+        mock_reader.read.return_value = b"\x00" * 16
+        data = await protocol._read_data(deadline=future_deadline)
+        assert data == b"\x00" * 16
+        assert mock_reader.read.called
+
     async def test_handshake_success(
         self,
         protocol: DqliteProtocol,
