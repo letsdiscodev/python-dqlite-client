@@ -549,6 +549,17 @@ class ConnectionPool:
             except BaseException:
                 await self._release_reservation()
                 raise
+            # close() may have run while _create_connection was
+            # suspended on leader discovery / TCP handshake. Without
+            # this re-check, a fresh connection would be yielded on
+            # a pool whose _closed flag is True — contract violation
+            # and a sneaky leak (user runs queries against a pool
+            # the rest of the program treats as closed).
+            if self._closed:
+                with contextlib.suppress(Exception):
+                    await conn.close()
+                await self._release_reservation()
+                raise DqliteConnectionError("Pool is closed")
 
         conn._pool_released = False
         try:
