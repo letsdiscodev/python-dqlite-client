@@ -259,7 +259,7 @@ class DqliteConnection:
                 # be leaked. Close the transport defensively.
                 writer.close()
                 with contextlib.suppress(Exception):
-                    await asyncio.wait_for(writer.wait_closed(), timeout=0.5)
+                    await asyncio.wait_for(writer.wait_closed(), timeout=self._close_timeout)
                 raise
 
             try:
