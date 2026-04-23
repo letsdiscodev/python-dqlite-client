@@ -291,12 +291,9 @@ class DqliteProtocol:
                     f"({self._max_continuation_frames}); server may be "
                     f"slow-dripping rows{self._addr_suffix()}."
                 )
-            # If the RowsResponse signals more frames, keep draining.
-            if not response.has_more:
-                # DONE marker arrived: some servers emit the final
-                # RowsResponse with has_more=False first, then the
-                # EmptyResponse. Keep looping.
-                continue
+            # Fall through: any RowsResponse (has_more=True or False)
+            # means more frames may still arrive before the
+            # terminating EmptyResponse.
 
     async def exec_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
