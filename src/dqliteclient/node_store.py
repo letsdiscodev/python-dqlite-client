@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 from dqlitewire import NodeRole
 
+__all__ = ["MemoryNodeStore", "NodeInfo", "NodeStore"]
+
 
 @dataclass(frozen=True, slots=True)
 class NodeInfo:

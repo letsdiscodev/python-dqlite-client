@@ -19,6 +19,8 @@ from dqliteclient.exceptions import (
 from dqliteclient.node_store import NodeStore
 from dqliteclient.protocol import _validate_positive_int_or_none
 
+__all__ = ["ConnectionPool"]
+
 # Exception categories a best-effort pool cleanup (ROLLBACK, close())
 # can legitimately raise on a partially-torn-down transport. Anything
 # outside this tuple — ``CancelledError``, ``KeyboardInterrupt``,

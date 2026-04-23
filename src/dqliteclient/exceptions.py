@@ -2,6 +2,17 @@
 
 from dqlitewire.exceptions import ProtocolError as _WireProtocolError
 
+__all__ = [
+    "ClusterError",
+    "ClusterPolicyError",
+    "DataError",
+    "DqliteConnectionError",
+    "DqliteError",
+    "InterfaceError",
+    "OperationalError",
+    "ProtocolError",
+]
+
 
 class DqliteError(Exception):
     """Base exception for dqlite client errors."""

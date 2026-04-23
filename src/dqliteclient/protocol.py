@@ -34,6 +34,8 @@ from dqlitewire.messages import (
 )
 from dqlitewire.messages.base import Message
 
+__all__ = ["DqliteProtocol"]
+
 logger = logging.getLogger(__name__)
 
 # Socket read buffer size. 4 KiB balances syscall overhead for typical

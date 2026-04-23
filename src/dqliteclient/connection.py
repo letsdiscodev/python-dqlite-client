@@ -25,6 +25,8 @@ from dqliteclient.protocol import (
 from dqlitewire import LEADER_ERROR_CODES as _LEADER_ERROR_CODES
 from dqlitewire.exceptions import EncodeError as _WireEncodeError
 
+__all__ = ["DqliteConnection"]
+
 logger = logging.getLogger(__name__)
 
 

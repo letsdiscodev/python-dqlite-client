@@ -19,6 +19,8 @@ from dqliteclient.protocol import DqliteProtocol
 from dqliteclient.retry import retry_with_backoff
 from dqlitewire import NodeRole
 
+__all__ = ["ClusterClient", "RedirectPolicy", "allowlist_policy"]
+
 logger = logging.getLogger(__name__)
 
 # Type alias for a redirect-target policy. Returns True if the address

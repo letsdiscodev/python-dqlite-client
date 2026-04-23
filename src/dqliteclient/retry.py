@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable
 
 from dqliteclient.exceptions import ClusterError, DqliteConnectionError
 
+__all__ = ["retry_with_backoff"]
+
 # Default retry set: transport- and cluster-level errors only.
 # Deterministic server / client errors (``OperationalError``,
 # ``DataError``, ``InterfaceError``) are NOT retried — retrying a
