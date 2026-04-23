@@ -56,7 +56,8 @@ class ClusterClient:
     - :meth:`find_leader` is **single-shot** — probes each node once
       in order, returns the first successful leader address, raises
       ``ClusterError`` if every node fails. Appropriate for callers
-      that want the raw failure surface of a specific probe cycle.
+      that want the raw failure surface of a single leader-probe
+      pass.
 
     - :meth:`connect` wraps leader discovery + connection in
       :func:`dqliteclient.retry.retry_with_backoff` (bounded
