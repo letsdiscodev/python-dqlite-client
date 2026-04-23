@@ -162,8 +162,18 @@ class DqliteConnection:
                 stall ``engine.dispose()`` or SIGTERM shutdown, so
                 the drain is bounded by this value.
         """
+        # Reject ``bool`` explicitly: ``isinstance(True, int)`` is True
+        # and ``math.isfinite(True)`` returns True, so a caller passing
+        # ``timeout=True`` would silently get a 1-second budget. Match
+        # the sibling ``_validate_positive_int_or_none`` in protocol.py.
+        if isinstance(timeout, bool):
+            raise ValueError(f"timeout must be a positive finite number, got {timeout!r} (bool)")
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a positive finite number, got {timeout}")
+        if isinstance(close_timeout, bool):
+            raise ValueError(
+                f"close_timeout must be a positive finite number, got {close_timeout!r} (bool)"
+            )
         if not math.isfinite(close_timeout) or close_timeout <= 0:
             raise ValueError(f"close_timeout must be a positive finite number, got {close_timeout}")
         # Parse at construction so a misconfigured address (typoed DSN,
