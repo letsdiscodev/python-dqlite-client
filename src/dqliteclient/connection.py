@@ -211,6 +211,20 @@ class DqliteConnection:
         if self._protocol is not None:
             return
 
+        # If a prior ``_invalidate`` scheduled a bounded drain task,
+        # retire it here before the slot gets reused. Leaving the
+        # previous task in place would let a second invalidate at
+        # line ~483 overwrite the slot without cancelling or awaiting
+        # it, breaking the "strong ref so close() can await it"
+        # discipline documented on that assignment.
+        pending = self._pending_drain
+        if pending is not None:
+            if not pending.done():
+                pending.cancel()
+                with contextlib.suppress(BaseException):
+                    await pending
+            self._pending_drain = None
+
         self._bound_loop = asyncio.get_running_loop()
         self._in_use = True
         try:
