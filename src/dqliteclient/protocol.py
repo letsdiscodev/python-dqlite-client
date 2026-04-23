@@ -360,6 +360,16 @@ class DqliteProtocol:
         cumulative row count exceeding ``max_total_rows``, raises
         ProtocolError.
         """
+        # Fire the cumulative-total cap against the initial frame first.
+        # A hostile or buggy server can pack the whole oversized result
+        # into a single frame with has_more=False and never enter the
+        # continuation loop; without this pre-check the governor would
+        # only apply to the continuation tail.
+        if self._max_total_rows is not None and len(initial.rows) > self._max_total_rows:
+            raise ProtocolError(
+                f"Query exceeded max_total_rows cap ({self._max_total_rows}); "
+                f"reduce result size or raise the cap on the connection/pool."
+            )
         all_rows = list(initial.rows)
         all_row_types: list[list[int]] = [[int(t) for t in rt] for rt in initial.row_types]
         response = initial

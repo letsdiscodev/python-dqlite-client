@@ -20,10 +20,40 @@ def _make_rows_response(rows: list[list[object]], has_more: bool) -> MagicMock:
     r.has_more = has_more
     r.column_names = ["v"]
     r.column_types = [1]  # INTEGER
+    r.row_types = [[1] for _ in rows]
     return r
 
 
 class TestMaxTotalRowsEnforcement:
+    def test_initial_frame_with_oversize_rows_raises_before_loop(self) -> None:
+        """A single-frame response whose row count already exceeds the
+        cap must raise BEFORE any row is handed back — the governor is
+        documented as cumulative-total, not continuation-tail."""
+        reader = MagicMock()
+        writer = MagicMock()
+        p = DqliteProtocol(reader, writer, timeout=5.0, max_total_rows=5)
+
+        # has_more=False so the while-loop body never runs; the cap
+        # must still fire against the initial frame alone.
+        initial = _make_rows_response([[i] for i in range(6)], has_more=False)
+
+        # Sentinel: if the fix regresses and the loop is entered by
+        # accident, _read_continuation should not be called either.
+        called: list[object] = []
+
+        async def fake_read_continuation(deadline: float) -> object:
+            called.append(deadline)
+            return initial
+
+        p._read_continuation = fake_read_continuation  # type: ignore[method-assign]
+
+        async def run() -> None:
+            await p._drain_continuations(initial, deadline=999999.0)
+
+        with pytest.raises(ProtocolError, match="max_total_rows"):
+            asyncio.run(run())
+        assert called == []
+
     def test_exceeding_cap_raises_protocol_error(self) -> None:
         """A continuation frame that pushes us past max_total_rows raises."""
         reader = MagicMock()
