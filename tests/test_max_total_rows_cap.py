@@ -179,8 +179,9 @@ class TestTrustServerHeartbeat:
         # handshake() but we bypass the socket dance for a pure
         # attribute test.
         p._heartbeat_timeout = 300_000  # 300 s in ms, far above 5 s
-        # trust_server_heartbeat defaults to False, so timeout stayed 5.
+        # trust_server_heartbeat defaults to False, so timeouts stay at 5.
         assert p._timeout == 5.0
+        assert p._read_timeout == 5.0
         assert p._trust_server_heartbeat is False
 
     def test_opt_in_respected(self) -> None:
@@ -189,11 +190,12 @@ class TestTrustServerHeartbeat:
         p = DqliteProtocol(reader, writer, timeout=5.0, trust_server_heartbeat=True)
         assert p._trust_server_heartbeat is True
 
-    def test_opt_in_amplifies_timeout_via_handshake(self) -> None:
+    def test_opt_in_amplifies_read_timeout_via_handshake(self) -> None:
         """With trust_server_heartbeat=True, a handshake reply with a
         larger-than-local heartbeat widens the per-read deadline (up to
-        the 300 s hard cap). Exercises the actual handshake code path
-        rather than just checking the flag is set."""
+        the 300 s hard cap). The write-path self._timeout stays pinned
+        to the operator's configured value so a server cannot stretch
+        writer.drain budgets via a long heartbeat advertisement."""
         from dqlitewire.messages import WelcomeResponse
 
         reader = AsyncMock()
@@ -206,14 +208,17 @@ class TestTrustServerHeartbeat:
         ]
         p = DqliteProtocol(reader, writer, timeout=5.0, trust_server_heartbeat=True)
         asyncio.run(p.handshake())
-        assert p._timeout == 60.0, (
-            f"trust_server_heartbeat=True should widen timeout to 60s, got {p._timeout}"
+        assert p._read_timeout == 60.0, (
+            f"trust_server_heartbeat=True should widen read_timeout to 60s, got {p._read_timeout}"
+        )
+        assert p._timeout == 5.0, (
+            f"write-path timeout must stay pinned to the operator value, got {p._timeout}"
         )
 
     def test_default_ignores_handshake_heartbeat(self) -> None:
         """With trust_server_heartbeat=False (default), a handshake
         reply with a larger heartbeat is recorded but does NOT widen
-        the per-read deadline."""
+        either the per-read or write-path deadline."""
         from dqlitewire.messages import WelcomeResponse
 
         reader = AsyncMock()
@@ -225,9 +230,10 @@ class TestTrustServerHeartbeat:
         ]
         p = DqliteProtocol(reader, writer, timeout=5.0)  # default = False
         asyncio.run(p.handshake())
-        # Server value recorded for diagnostics, but timeout unchanged.
+        # Server value recorded for diagnostics, but both timeouts unchanged.
         assert p._heartbeat_timeout == 300_000
-        assert p._timeout == 5.0, f"default should not widen timeout, got {p._timeout}"
+        assert p._timeout == 5.0
+        assert p._read_timeout == 5.0
 
     def test_opt_in_respects_hard_300s_cap(self) -> None:
         """Even with trust_server_heartbeat=True, a server sending an
@@ -244,4 +250,5 @@ class TestTrustServerHeartbeat:
         ]
         p = DqliteProtocol(reader, writer, timeout=5.0, trust_server_heartbeat=True)
         asyncio.run(p.handshake())
-        assert p._timeout == 300.0
+        assert p._read_timeout == 300.0
+        assert p._timeout == 5.0

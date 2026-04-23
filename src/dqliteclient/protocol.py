@@ -77,6 +77,13 @@ class DqliteProtocol:
         self._client_id = 0
         self._heartbeat_timeout = 0
         self._timeout = timeout
+        # Per-read deadline, initially equal to the operator-configured
+        # write/drain budget. When ``trust_server_heartbeat=True`` the
+        # handshake may widen this (up to 300 s) based on the server's
+        # advertised heartbeat; the write-path ``self._timeout`` never
+        # changes so a hostile server cannot stretch the operator's
+        # write SLO by advertising a long heartbeat.
+        self._read_timeout = timeout
         # Diagnostic-only peer address. Embedded into timeout and
         # decode-error messages so operators can tell from the
         # exception alone which node a hung probe / mangled frame came
@@ -147,19 +154,23 @@ class DqliteProtocol:
         # read here for diagnostics but has no effect on the deadline.
         if self._trust_server_heartbeat and response.heartbeat_timeout > 0:
             heartbeat_seconds = response.heartbeat_timeout / 1000.0
-            # Cap to prevent a malicious/buggy server from disabling timeouts
-            new_timeout = max(self._timeout, min(heartbeat_seconds, 300.0))
-            if new_timeout != self._timeout:
+            # Cap to prevent a malicious/buggy server from disabling timeouts.
+            # Only widen the READ deadline — the write-path self._timeout
+            # stays pinned to the operator-configured value so a hostile
+            # server cannot advertise a long heartbeat to stretch every
+            # writer.drain() beyond the operator's SLO.
+            new_read_timeout = max(self._read_timeout, min(heartbeat_seconds, 300.0))
+            if new_read_timeout != self._read_timeout:
                 # Security-relevant opt-in: surface the actual widening
                 # at DEBUG so an operator who flipped the knob can
                 # confirm it took effect.
                 logger.debug(
                     "handshake: widened per-read timeout %.2fs -> %.2fs (server heartbeat=%.2fs)",
-                    self._timeout,
-                    new_timeout,
+                    self._read_timeout,
+                    new_read_timeout,
                     heartbeat_seconds,
                 )
-                self._timeout = new_timeout
+                self._read_timeout = new_read_timeout
         return response.heartbeat_timeout
 
     async def get_leader(self) -> tuple[int, str]:
@@ -493,11 +504,11 @@ class DqliteProtocol:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 raise DqliteConnectionError(
-                    f"Operation{self._addr_suffix()} exceeded {self._timeout}s deadline"
+                    f"Operation{self._addr_suffix()} exceeded {self._read_timeout}s deadline"
                 )
-            timeout = min(remaining, self._timeout)
+            timeout = min(remaining, self._read_timeout)
         else:
-            timeout = self._timeout
+            timeout = self._read_timeout
         try:
             data = await asyncio.wait_for(self._reader.read(_READ_CHUNK_SIZE), timeout=timeout)
         except TimeoutError as e:
