@@ -309,6 +309,16 @@ class ClusterClient:
         attempted leader address and the error, so operators can
         enable debug logging to diagnose cluster churn instead of
         seeing only the final exception.
+
+        Args:
+            close_timeout: Budget (seconds) for the transport-drain
+                during ``close()``. After ``writer.close()`` the
+                local side of the socket is gone; ``wait_closed`` is
+                best-effort cleanup. The 0.5s default is sized for
+                LAN; increase for WAN deployments where FIN/ACK
+                round-trip is slower, or decrease to tighten
+                SIGTERM-shutdown budgets. See
+                ``DqliteConnection.__init__`` for full rationale.
         """
         attempts_cap = max_attempts if max_attempts is not None else _DEFAULT_CONNECT_MAX_ATTEMPTS
         if attempts_cap < 1:

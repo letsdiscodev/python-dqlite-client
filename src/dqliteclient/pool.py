@@ -144,6 +144,14 @@ class ConnectionPool:
                 heartbeat (up to a 300 s hard cap). Default False —
                 operator-configured ``timeout`` is authoritative and
                 the server cannot amplify it.
+            close_timeout: Budget (seconds) for the transport-drain
+                during ``close()``. After ``writer.close()`` the
+                local side of the socket is gone; ``wait_closed`` is
+                best-effort cleanup. The 0.5s default is sized for
+                LAN; increase for WAN deployments where FIN/ACK
+                round-trip is slower, or decrease to tighten
+                SIGTERM-shutdown budgets. See
+                ``DqliteConnection.__init__`` for full rationale.
         """
         if min_size < 0:
             raise ValueError(f"min_size must be non-negative, got {min_size}")

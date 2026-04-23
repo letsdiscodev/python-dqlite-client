@@ -69,6 +69,13 @@ async def connect(
             Forwarded to the underlying DqliteConnection.
         trust_server_heartbeat: Let the server-advertised heartbeat
             widen the per-read deadline. Default False.
+        close_timeout: Budget (seconds) for the transport-drain during
+            ``close()``. After ``writer.close()`` the local side of
+            the socket is gone; ``wait_closed`` is best-effort cleanup.
+            The 0.5s default is sized for LAN; increase for WAN
+            deployments where FIN/ACK round-trip is slower, or
+            decrease to tighten SIGTERM-shutdown budgets. See
+            ``DqliteConnection.__init__`` for full rationale.
 
     Returns:
         A connected DqliteConnection
@@ -119,6 +126,13 @@ async def create_pool(
             Forwarded to the underlying ConnectionPool.
         trust_server_heartbeat: Let the server-advertised heartbeat
             widen the per-read deadline. Default False.
+        close_timeout: Budget (seconds) for the transport-drain during
+            ``close()``. After ``writer.close()`` the local side of
+            the socket is gone; ``wait_closed`` is best-effort cleanup.
+            The 0.5s default is sized for LAN; increase for WAN
+            deployments where FIN/ACK round-trip is slower, or
+            decrease to tighten SIGTERM-shutdown budgets. See
+            ``DqliteConnection.__init__`` for full rationale.
 
     Returns:
         An initialized ConnectionPool
