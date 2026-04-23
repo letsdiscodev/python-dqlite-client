@@ -1,6 +1,12 @@
 # dqlite-client
 
-Async Python client for [dqlite](https://dqlite.io/), following asyncpg patterns.
+Async Python client for [dqlite](https://dqlite.io/). The API shape
+(explicit `connect()` / `create_pool()`, `fetch` / `fetchall` /
+`fetchval`, context-manager-driven transactions) is inspired by
+asyncpg's ergonomics, but the data model is simpler: `fetch` returns
+`list[dict]`, `fetchall` returns `list[list]`, `fetchval` returns a
+scalar. There is no Record type — callers who need the asyncpg
+Record surface should wrap the rows explicitly.
 
 ## Installation
 
