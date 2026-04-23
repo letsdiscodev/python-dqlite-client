@@ -164,6 +164,12 @@ class DqliteConnection:
             raise ValueError(f"timeout must be a positive finite number, got {timeout}")
         if not math.isfinite(close_timeout) or close_timeout <= 0:
             raise ValueError(f"close_timeout must be a positive finite number, got {close_timeout}")
+        # Parse at construction so a misconfigured address (typoed DSN,
+        # invalid port, unbracketed IPv6) raises ValueError at the
+        # operator's config-load site rather than inside connect(),
+        # where SA's is_disconnect substring scan would mis-classify
+        # it as a retryable transport failure and loop.
+        self._host, self._port = _parse_address(address)
         self._address = address
         self._database = database
         self._timeout = timeout
@@ -228,11 +234,9 @@ class DqliteConnection:
         self._bound_loop = asyncio.get_running_loop()
         self._in_use = True
         try:
-            host, port = _parse_address(self._address)
-
             try:
                 reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(host, port),
+                    asyncio.open_connection(self._host, self._port),
                     timeout=self._timeout,
                 )
             except TimeoutError as e:
