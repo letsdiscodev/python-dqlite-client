@@ -394,7 +394,16 @@ class ConnectionPool:
             except asyncio.QueueEmpty:
                 break
             try:
-                await conn.close()
+                # Shield each per-connection close against an outer
+                # ``asyncio.timeout(pool.close())``. Without the shield,
+                # a cancel that lands mid-``wait_closed`` propagates out
+                # of the drain and orphans every subsequent queued
+                # connection (its reader task + transport leak until GC
+                # prints ``"Task was destroyed but it is pending"`` at
+                # interpreter exit). The outer cancel still aborts the
+                # drain loop — but every connection that was STARTED on
+                # the close path finishes cleanly.
+                await asyncio.shield(conn.close())
             except Exception:
                 # Transport-level failures (BrokenPipeError, OSError, our
                 # own DqliteConnectionError) are absorbed so drain can

@@ -1382,6 +1382,13 @@ class TestDrainIdleCancellation:
         """An async close() raising ``CancelledError`` must escape ``_drain_idle``.
         Previously the helper's ``except BaseException: pass`` swallowed it,
         breaking structured concurrency (``asyncio.timeout`` / ``TaskGroup``).
+
+        Note: per-connection close is now shielded so the original
+        cancel's message is lost through the Task boundary — asyncio
+        repackages any CancelledError the shielded task raises into a
+        fresh CancelledError with no args. The semantic we pin here is
+        that CancelledError still propagates out of the drain (i.e. is
+        not swallowed).
         """
         pool = ConnectionPool(["localhost:9001"])
 
@@ -1394,7 +1401,7 @@ class TestDrainIdleCancellation:
         await pool._pool.put(bad_conn)
         pool._size = 1
 
-        with pytest.raises(asyncio.CancelledError, match="outer timeout"):
+        with pytest.raises(asyncio.CancelledError):
             await pool._drain_idle()
 
         # Reservation must still be released on the cancellation path so
