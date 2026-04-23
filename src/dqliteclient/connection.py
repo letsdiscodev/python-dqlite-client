@@ -6,7 +6,7 @@ import ipaddress
 import logging
 import math
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any
@@ -519,17 +519,48 @@ class DqliteConnection:
 
     @staticmethod
     def _validate_params(params: Sequence[Any] | None) -> None:
-        """Reject bare str/bytes params to catch the ``execute("?", "x")`` footgun.
+        """Reject non-sequence / scalar-iterable param containers.
 
-        ``str`` and ``bytes`` are both ``Sequence[Any]``, so they type-check
-        but would silently split into N single-character parameters.
+        The qmark paramstyle wants an ordered sequence of positional
+        binds. Five shapes are actively dangerous if allowed through
+        (``execute("?", <shape>)``):
+
+        * ``str`` / ``bytes`` — iterate as single chars/bytes, silently
+          binding N scalars where the caller meant one value.
+        * ``bytearray`` / ``memoryview`` — same shape as ``bytes`` but
+          writable; same single-byte-per-bind footgun.
+        * ``Mapping`` — insertion-ordered in CPython 3.7+, but the
+          qmark paramstyle is positional, not named.
+        * ``set`` / ``frozenset`` — iterate in unordered fashion, so
+          bindings vary across Python runs.
+
+        Previously this validator only rejected ``str | bytes``,
+        letting the three remaining shapes silently scramble bindings
+        at the bind layer. Match the richer dbapi-layer check
+        (``_reject_non_sequence_params``) so callers going direct to
+        the client layer get the same safety net.
         """
-        if isinstance(params, str | bytes):
-            # Use ``DataError`` (a DqliteError subclass) so the client
-            # contract "every error is a DqliteError" holds. Callers
-            # catching ``except TypeError`` previously saw a bare
-            # TypeError leak past the DqliteError hierarchy.
-            raise DataError("params must be a list or tuple, not str/bytes; did you mean [value]?")
+        if params is None:
+            return
+        # Use ``DataError`` (a DqliteError subclass) so the client
+        # contract "every error is a DqliteError" holds. Callers
+        # catching ``except TypeError`` previously saw a bare
+        # TypeError leak past the DqliteError hierarchy.
+        if isinstance(params, (str, bytes, bytearray, memoryview)):
+            raise DataError(
+                f"params must be a list or tuple, not {type(params).__name__!r}; "
+                f"did you mean [value]?"
+            )
+        if isinstance(params, Mapping):
+            raise DataError(
+                "qmark paramstyle requires a sequence; got a mapping. "
+                "Use a list or tuple positionally matching the ? placeholders."
+            )
+        if isinstance(params, (set, frozenset)):
+            raise DataError(
+                "qmark paramstyle requires an ordered sequence; got a set — "
+                "iteration order is non-deterministic across runs."
+            )
 
     async def _run_protocol[T](self, fn: Callable[[DqliteProtocol, int], Awaitable[T]]) -> T:
         """Run a protocol operation with standard error handling.
