@@ -14,7 +14,7 @@ from dqliteclient.exceptions import (
     OperationalError,
     ProtocolError,
 )
-from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
+from dqliteclient.node_store import MemoryNodeStore, NodeStore
 from dqliteclient.protocol import DqliteProtocol
 from dqliteclient.retry import retry_with_backoff
 from dqlitewire import NodeRole
@@ -357,10 +357,6 @@ class ClusterClient:
             ),
             excluded_exceptions=(ClusterPolicyError,),
         )
-
-    async def update_nodes(self, nodes: list[NodeInfo]) -> None:
-        """Update the node store with new node information."""
-        await self._node_store.set_nodes(nodes)
 
 
 def allowlist_policy(addresses: Iterable[str]) -> RedirectPolicy:

@@ -483,19 +483,6 @@ class TestClusterClient:
             f"SQL-level OperationalError must not be retried, got {call_count} attempts"
         )
 
-    async def test_update_nodes(self) -> None:
-        store = MemoryNodeStore()
-        client = ClusterClient(store)
-
-        nodes = [
-            NodeInfo(node_id=1, address="node1:9001", role=1),
-            NodeInfo(node_id=2, address="node2:9002", role=2),
-        ]
-        await client.update_nodes(nodes)
-
-        stored = await store.get_nodes()
-        assert len(stored) == 2
-
 
 class TestConnectMaxAttempts:
     """connect() exposes a max_attempts parameter.
