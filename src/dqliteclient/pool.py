@@ -517,7 +517,14 @@ class ConnectionPool:
                         # expected; anything else propagates.
                         with contextlib.suppress(OSError):
                             await conn_won.close()
-                        self._size -= 1
+                        # Route through the helper so the counter
+                        # stays lock-protected and sibling acquirers
+                        # parked on ``closed_event.wait()`` get
+                        # woken via ``_signal_state_change``. Shield
+                        # so a nested cancel cannot leave ``_size``
+                        # inconsistent.
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.shield(self._release_reservation())
                 elif get_task is not None and not get_task.done():
                     get_task.cancel()
                     with contextlib.suppress(BaseException):
