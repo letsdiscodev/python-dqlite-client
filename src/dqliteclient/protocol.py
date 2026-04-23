@@ -63,7 +63,7 @@ class DqliteProtocol:
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
-        timeout: float = 15.0,
+        timeout: float = 10.0,
         max_total_rows: int | None = 10_000_000,
         max_continuation_frames: int | None = 100_000,
         trust_server_heartbeat: bool = False,
