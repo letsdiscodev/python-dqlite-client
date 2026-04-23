@@ -244,12 +244,6 @@ class DqliteProtocol:
     async def interrupt(self, db_id: int) -> None:
         """Ask the server to stop producing further rows for this db_id.
 
-        Sent by the dbapi cursor when a streaming query is closed early
-        (e.g. ``cursor.close()`` after reading only one page). Without
-        this request, the server continues to read and buffer rows
-        even though the client has no use for them — mirrors the Go
-        and C clients' ``Rows.Close`` / ``clientSendInterrupt`` paths.
-
         Drains the stream by consuming messages until an
         ``EmptyResponse`` arrives. The server may have continuation
         ``RowsResponse`` frames in flight at the moment we call this;
@@ -259,6 +253,22 @@ class DqliteProtocol:
         ``FailureResponse`` mid-drain is raised as
         ``OperationalError`` — the interrupt itself may have been
         refused. Other unexpected message types are ``ProtocolError``.
+
+        .. note::
+
+            **Currently unused by in-tree code paths.** On
+            ``asyncio.CancelledError`` mid-query, ``DqliteConnection``
+            invalidates the local connection but does NOT send
+            INTERRUPT — the server continues the query until its own
+            completion path, which on large result sets can amplify
+            cluster resource use. This mirrors the Go / C clients'
+            ``Rows.Close`` / ``clientSendInterrupt`` paths in wire
+            shape only; wiring them into cursor-cancel / task-cancel
+            is a future-streaming-support feature that is deliberately
+            out of scope for the current synchronous-drain client.
+            External callers building directly on this protocol layer
+            may invoke ``interrupt`` themselves after cancelling their
+            outer task.
         """
         request = InterruptRequest(db_id=db_id)
         self._writer.write(request.encode())
