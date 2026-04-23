@@ -19,8 +19,24 @@ class NodeInfo:
     """
 
     node_id: int
+    """Dqlite raft node id. Typically 1-based, assigned by the
+    cluster when the node joined. In the
+    ``MemoryNodeStore.__init__(addresses=[...])`` seeding path the id
+    is synthesised (``i + 1``) and does NOT correspond to the
+    cluster-side id — it's a placeholder used for ordering and
+    dedup. Callers that need the authoritative id should populate
+    the store from a control-plane source that knows it."""
+
     address: str
+    """``host:port`` string. IPv6 addresses must be bracketed
+    (``[::1]:9000``). Parsed by
+    ``dqliteclient.connection._parse_address`` — hostnames are
+    ASCII-only and lowercased, IP literals are canonicalised."""
+
     role: NodeRole
+    """Raft role: ``VOTER``, ``STANDBY``, or ``SPARE``. Standby and
+    spare nodes cannot become leader —
+    ``ClusterClient.find_leader`` sorts voters first before probing."""
 
 
 class NodeStore(ABC):
