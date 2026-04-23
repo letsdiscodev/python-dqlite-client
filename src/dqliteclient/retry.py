@@ -17,11 +17,11 @@ __all__ = ["retry_with_backoff"]
 # an explicit ``retryable_exceptions`` tuple.
 #
 # ``OSError`` subsumes ``TimeoutError``, ``BrokenPipeError``,
-# ``ConnectionError``, and ``ConnectionResetError`` since Python
-# 3.10, so a single ``OSError`` entry covers every stdlib
-# transport-error shape (mirrors the classification in
+# ``ConnectionError``, and ``ConnectionResetError``, so a single
+# ``OSError`` entry covers every stdlib transport-error shape
+# (mirrors the classification in
 # ``sqlalchemy-dqlite/src/sqlalchemydqlite/base.py``'s
-# ``is_disconnect``). The package requires Python 3.13+.
+# ``is_disconnect``).
 _DEFAULT_RETRYABLE: tuple[type[BaseException], ...] = (
     OSError,
     DqliteConnectionError,

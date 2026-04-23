@@ -210,10 +210,10 @@ class ClusterClient:
             )
         except OSError:
             # OSError subsumes TimeoutError, BrokenPipeError,
-            # ConnectionError, ConnectionRefusedError, ... since Python
-            # 3.10. Any stdlib transport-error shape here means the
-            # node is unreachable; surface "unknown leader" to the
-            # caller so it can try another node.
+            # ConnectionError, ConnectionRefusedError, and the rest
+            # of the stdlib transport-error shapes. Any one of those
+            # here means the node is unreachable; surface "unknown
+            # leader" to the caller so it can try another node.
             return None
 
         try:
@@ -279,8 +279,8 @@ class ClusterClient:
             # OS will reap the socket later. Suppress expected socket-
             # close errors; do NOT suppress CancelledError (an outer
             # cancel must propagate past this cleanup step).
-            # OSError covers TimeoutError since Python 3.10 — no need
-            # to enumerate both (mirrors base.py is_disconnect).
+            # OSError covers TimeoutError — no need to enumerate both
+            # (mirrors base.py is_disconnect).
             with contextlib.suppress(OSError):
                 await asyncio.wait_for(writer.wait_closed(), timeout=0.1)
 
@@ -352,8 +352,8 @@ class ClusterClient:
                 # AttributeError, …) which are better left un-instrumented
                 # so the traceback points at the real source. Same pattern
                 # as the _socket_looks_dead / _drain_idle narrowings.
-                # OSError subsumes TimeoutError / BrokenPipeError / ... in
-                # Python 3.10+; the package requires 3.13+.
+                # OSError subsumes TimeoutError / BrokenPipeError /
+                # ConnectionError / ConnectionResetError.
                 logger.debug(
                     "ClusterClient.connect attempt %d/%d failed (leader=%r): %s",
                     attempt,
@@ -374,9 +374,9 @@ class ClusterClient:
         return await retry_with_backoff(
             try_connect,
             max_attempts=attempts_cap,
-            # OSError subsumes TimeoutError since Python 3.10 — the
-            # package requires 3.13+ — so a single OSError entry
-            # covers every stdlib transport-error shape.
+            # OSError subsumes TimeoutError / BrokenPipeError /
+            # ConnectionError / ConnectionResetError, so a single
+            # OSError entry covers every stdlib transport-error shape.
             retryable_exceptions=(
                 DqliteConnectionError,
                 ClusterError,

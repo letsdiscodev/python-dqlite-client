@@ -29,10 +29,10 @@ __all__ = ["ConnectionPool"]
 # concurrency and refactor bugs are observable. Mirrors the narrowing
 # in ``AsyncAdaptedConnection.close`` and ``DqliteConnection.transaction``.
 # ``OSError`` subsumes ``TimeoutError`` / ``BrokenPipeError`` /
-# ``ConnectionError`` / ``ConnectionResetError`` since Python 3.10;
-# the package requires Python 3.13+. A single ``OSError`` entry
-# covers every stdlib transport-error shape — mirrors the
-# classification in ``sqlalchemy-dqlite``'s ``is_disconnect``.
+# ``ConnectionError`` / ``ConnectionResetError``. A single
+# ``OSError`` entry covers every stdlib transport-error shape —
+# mirrors the classification in ``sqlalchemy-dqlite``'s
+# ``is_disconnect``.
 _POOL_CLEANUP_EXCEPTIONS = (
     OSError,
     DqliteConnectionError,

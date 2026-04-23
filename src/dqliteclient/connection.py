@@ -352,9 +352,9 @@ class DqliteConnection:
         try:
             await asyncio.wait_for(protocol.wait_closed(), timeout=self._close_timeout)
         except OSError:
-            # OSError subsumes TimeoutError since Python 3.10 — the
-            # package requires 3.13+ — so the single OSError entry
-            # covers the slow-peer / already-closed-writer cases.
+            # OSError subsumes TimeoutError, so the single OSError
+            # entry covers the slow-peer / already-closed-writer
+            # cases.
             pass
         except Exception:
             logger.debug(
@@ -387,9 +387,9 @@ class DqliteConnection:
         try:
             await asyncio.wait_for(protocol.wait_closed(), timeout=self._close_timeout)
         except OSError:
-            # OSError subsumes TimeoutError since Python 3.10 — the
-            # package requires 3.13+ — so the single OSError entry
-            # covers the slow-peer / already-closed-writer cases.
+            # OSError subsumes TimeoutError, so the single OSError
+            # entry covers the slow-peer / already-closed-writer
+            # cases.
             pass
         except Exception:
             logger.debug(
