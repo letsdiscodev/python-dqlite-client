@@ -710,12 +710,13 @@ class ConnectionPool:
         returned_to_queue = False
         try:
             if self._closed:
-                await conn.close()
+                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
+                    await conn.close()
                 conn._pool_released = True
                 return
 
             if not await self._reset_connection(conn):
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
                     await conn.close()
                 conn._pool_released = True
                 return
@@ -726,7 +727,8 @@ class ConnectionPool:
             try:
                 self._pool.put_nowait(conn)
             except asyncio.QueueFull:
-                await conn.close()
+                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
+                    await conn.close()
                 conn._pool_released = True
             else:
                 conn._pool_released = True
