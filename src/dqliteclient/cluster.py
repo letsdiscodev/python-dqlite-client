@@ -247,6 +247,21 @@ class ClusterClient:
                     f"server {address} returned node_id={node_id} with empty "
                     f"leader address; expected both or neither"
                 )
+            if node_id == 0 and leader_addr:
+                # Mirror arm: the inverse illegal shape. Upstream
+                # ``raft_leader`` never writes a non-empty address with
+                # id=0, so a peer returning this is either confused or
+                # hostile. Reject symmetrically so the redirect target
+                # is not trusted without a matching id.
+                logger.debug(
+                    "query_leader: %s returned malformed redirect (node_id=0, address=%r)",
+                    address,
+                    leader_addr,
+                )
+                raise ProtocolError(
+                    f"server {address} returned address {leader_addr!r} with "
+                    f"node_id=0; expected both or neither"
+                )
             if leader_addr:
                 return leader_addr
             # node_id=0 and empty address: no leader known
