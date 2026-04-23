@@ -70,3 +70,38 @@ class TestOperationalErrorFormatting:
         # Exact repr shape is not pinned; just ensure nothing is lost.
         assert "5" in r
         assert "boom" in r
+
+
+class TestOperationalErrorMessageTruncation:
+    """Large ``FailureResponse.message`` values must not inflate every
+    traceback / log line. The wire caps at 64 KiB; ``OperationalError``
+    truncates to ~1 KiB for display while keeping the full payload on
+    ``.raw_message`` for forensic access.
+    """
+
+    def test_long_message_is_truncated_for_display(self) -> None:
+        payload = "x" * 63000
+        e = OperationalError(5, payload)
+        assert len(e.message) < 1200, "display message must be truncated to avoid log amplification"
+        assert "truncated" in e.message
+
+    def test_raw_message_retained_for_forensics(self) -> None:
+        payload = "x" * 63000
+        e = OperationalError(5, payload)
+        assert e.raw_message == payload
+        assert len(e.raw_message) == 63000
+
+    def test_short_message_is_not_touched(self) -> None:
+        e = OperationalError(5, "ordinary error")
+        assert e.message == "ordinary error"
+        assert e.raw_message == "ordinary error"
+        assert "truncated" not in e.message
+
+    def test_pickle_roundtrip_is_lossless(self) -> None:
+        payload = "y" * 5000
+        original = OperationalError(19, payload)
+        restored = pickle.loads(pickle.dumps(original))
+        assert restored.raw_message == payload
+        # After round-trip the display truncation is re-applied.
+        assert len(restored.message) < 1200
+        assert "truncated" in restored.message

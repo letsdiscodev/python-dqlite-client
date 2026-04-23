@@ -57,18 +57,39 @@ class DataError(DqliteError):
 
 
 class OperationalError(DqliteError):
-    """Database operation error."""
+    """Database operation error.
+
+    ``FailureResponse.message`` from the wire can be up to 64 KiB
+    (sanitised but unbounded otherwise). Embedding that verbatim in
+    every ``OperationalError`` inflates log lines, traceback renders,
+    and any ``str(exc)`` consumer (e.g. SQLAlchemy's ``is_disconnect``
+    substring scan) — a mild log-amplification vector for a hostile
+    peer. Truncate to ~1 KiB on ``self.message`` for display; keep the
+    untruncated string on ``self.raw_message`` for callers that need
+    forensic access. Pickle / ``copy.deepcopy`` stay lossless because
+    ``super().__init__`` keeps the raw payload on ``self.args``.
+    """
+
+    _MAX_DISPLAY_MESSAGE = 1024
 
     code: int
     message: str
+    raw_message: str
 
     def __init__(self, code: int, message: str) -> None:
         self.code = code
-        self.message = message
-        # Pass ``code`` and ``message`` through as separate args so
-        # ``self.args == (code, message)``; otherwise ``pickle`` /
-        # ``copy.deepcopy`` reconstruct via ``OperationalError(*args)``
-        # with a single positional argument and raise ``TypeError``.
+        self.raw_message = message
+        if len(message) > self._MAX_DISPLAY_MESSAGE:
+            overflow = len(message) - self._MAX_DISPLAY_MESSAGE
+            self.message = (
+                f"{message[: self._MAX_DISPLAY_MESSAGE]}... [truncated, {overflow} bytes]"
+            )
+        else:
+            self.message = message
+        # Pass ``code`` and the RAW message through as separate args so
+        # ``self.args == (code, raw_message)``; pickle / deepcopy
+        # reconstruct via ``OperationalError(*args)`` and re-run the
+        # truncation, preserving both fields losslessly.
         super().__init__(code, message)
 
     def __str__(self) -> str:
