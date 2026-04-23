@@ -1425,7 +1425,12 @@ class TestDrainIdleCancellation:
 
         c2.close.assert_awaited_once()
         assert pool._size == 0
-        assert any("boom" in rec.getMessage() for rec in caplog.records)
+        # The cleanup-path log uses exc_info=True so the exception
+        # message lives on the record's exception tuple, not in the
+        # plain message.
+        assert any(
+            rec.exc_info is not None and "boom" in str(rec.exc_info[1]) for rec in caplog.records
+        )
 
 
 class TestAcquireCancellationPreservesCapacity:

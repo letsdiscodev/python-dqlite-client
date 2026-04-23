@@ -114,9 +114,10 @@ async def test_cleanup_logs_oserror_from_close(caplog: pytest.LogCaptureFixture)
     assert broken.close_calls == 1
     assert any(
         "pool.acquire cleanup: conn.close" in record.getMessage()
-        and "ECONNRESET" in record.getMessage()
+        and record.exc_info is not None
+        and "ECONNRESET" in str(record.exc_info[1])
         for record in caplog.records
-    ), f"expected cleanup DEBUG log, got {[r.getMessage() for r in caplog.records]}"
+    ), f"expected cleanup DEBUG log with exc_info, got {[r.getMessage() for r in caplog.records]}"
     assert pool._size == 0
 
 
@@ -142,9 +143,10 @@ async def test_cleanup_logs_timeout_error_from_close(
     assert broken.close_calls == 1
     assert any(
         "pool.acquire cleanup: conn.close" in record.getMessage()
-        and "read timed out" in record.getMessage()
+        and record.exc_info is not None
+        and "read timed out" in str(record.exc_info[1])
         for record in caplog.records
-    ), f"expected cleanup DEBUG log, got {[r.getMessage() for r in caplog.records]}"
+    ), f"expected cleanup DEBUG log with exc_info, got {[r.getMessage() for r in caplog.records]}"
     assert pool._size == 0
 
 
@@ -185,7 +187,11 @@ async def test_cleanup_logs_drain_idle_failure(caplog: pytest.LogCaptureFixture)
 
     assert any(
         "pool.acquire cleanup: _drain_idle failed" in record.getMessage()
-        and "drain-idle transport failure" in record.getMessage()
+        and record.exc_info is not None
+        and "drain-idle transport failure" in str(record.exc_info[1])
         for record in caplog.records
-    ), f"expected drain-idle DEBUG log, got {[r.getMessage() for r in caplog.records]}"
+    ), (
+        "expected drain-idle DEBUG log with exc_info, "
+        f"got {[r.getMessage() for r in caplog.records]}"
+    )
     assert pool._size == 0

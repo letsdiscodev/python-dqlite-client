@@ -267,10 +267,10 @@ class ConnectionPool:
                         for conn in successes:
                             try:
                                 await conn.close()
-                            except _POOL_CLEANUP_EXCEPTIONS as exc:
+                            except _POOL_CLEANUP_EXCEPTIONS:
                                 logger.debug(
-                                    "pool.initialize: partial-cleanup close error: %r",
-                                    exc,
+                                    "pool.initialize: partial-cleanup close error",
+                                    exc_info=True,
                                 )
                         # Re-raise the first observed failure as the
                         # root cause; the finally releases the
@@ -316,10 +316,10 @@ class ConnectionPool:
                     for conn in unqueued_survivors:
                         try:
                             await conn.close()
-                        except _POOL_CLEANUP_EXCEPTIONS as exc:
+                        except _POOL_CLEANUP_EXCEPTIONS:
                             logger.debug(
-                                "pool.initialize: unqueued-survivor close error: %r",
-                                exc,
+                                "pool.initialize: unqueued-survivor close error",
+                                exc_info=True,
                             )
             # Do not mark initialized if close() landed during the
             # put-loop and we broke out early — otherwise a subsequent
@@ -395,7 +395,7 @@ class ConnectionPool:
                 break
             try:
                 await conn.close()
-            except Exception as exc:
+            except Exception:
                 # Transport-level failures (BrokenPipeError, OSError, our
                 # own DqliteConnectionError) are absorbed so drain can
                 # finish the remaining connections. CancelledError /
@@ -403,9 +403,9 @@ class ConnectionPool:
                 # them used to break structured concurrency (``asyncio.
                 # timeout`` around ``pool.close()`` would silently hang).
                 logger.debug(
-                    "pool: close() on idle connection %r failed: %r",
+                    "pool: close() on idle connection %r failed",
                     getattr(conn, "_address", "?"),
-                    exc,
+                    exc_info=True,
                 )
             finally:
                 # Shield the reservation decrement against outer cancel:
@@ -640,15 +640,18 @@ class ConnectionPool:
                     # silence.
                     try:
                         await self._drain_idle()
-                    except _POOL_CLEANUP_EXCEPTIONS as exc:
-                        logger.debug("pool.acquire cleanup: _drain_idle failed: %r", exc)
+                    except _POOL_CLEANUP_EXCEPTIONS:
+                        logger.debug(
+                            "pool.acquire cleanup: _drain_idle failed",
+                            exc_info=True,
+                        )
                     try:
                         await conn.close()
-                    except (OSError, DqliteConnectionError) as exc:
+                    except (OSError, DqliteConnectionError):
                         logger.debug(
-                            "pool.acquire cleanup: conn.close(%r) failed: %r",
+                            "pool.acquire cleanup: conn.close(%r) failed",
                             getattr(conn, "_address", "?"),
-                            exc,
+                            exc_info=True,
                         )
                     conn._pool_released = True
             finally:
