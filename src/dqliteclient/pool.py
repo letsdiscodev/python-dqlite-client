@@ -181,6 +181,7 @@ class ConnectionPool:
         self._lock = asyncio.Lock()
         self._closed = False
         self._closed_event: asyncio.Event | None = None
+        self._close_done: asyncio.Event | None = None
         self._initialized = False
 
     def __repr__(self) -> str:
@@ -772,16 +773,28 @@ class ConnectionPool:
         closed when they are returned (when the acquire() context manager
         exits). To ensure all connections are closed, cancel or await
         in-flight tasks before calling close().
+
+        Idempotent and concurrent-caller-safe: a second caller (or a
+        re-entry after completion) waits on the first caller's drain
+        via ``_close_done`` rather than racing ``_drain_idle``.
         """
-        logger.debug(
-            "pool.close: draining idle=%d in_flight=%d",
-            self._pool.qsize(),
-            max(self._size - self._pool.qsize(), 0),
-        )
+        if self._closed:
+            if self._close_done is not None:
+                await self._close_done.wait()
+            return
         self._closed = True
-        if self._closed_event is not None:
-            self._closed_event.set()
-        await self._drain_idle()
+        self._close_done = asyncio.Event()
+        try:
+            logger.debug(
+                "pool.close: draining idle=%d in_flight=%d",
+                self._pool.qsize(),
+                max(self._size - self._pool.qsize(), 0),
+            )
+            if self._closed_event is not None:
+                self._closed_event.set()
+            await self._drain_idle()
+        finally:
+            self._close_done.set()
 
         # In-use connections are closed by acquire()'s cleanup when they
         # return — the else branch checks _closed and closes instead of
