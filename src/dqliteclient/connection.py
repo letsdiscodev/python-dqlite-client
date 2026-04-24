@@ -116,20 +116,36 @@ def _parse_address(address: str) -> tuple[str, int]:
         if ":" not in address:
             raise ValueError(f"Invalid address format: expected 'host:port', got {address!r}")
         host, port_str = address.rsplit(":", 1)
+        # Diagnose unbracketed IPv6 BEFORE attempting to parse the
+        # port: ``"::1:abc"`` splits to host="::1", port_str="abc",
+        # and the ``int()`` failure would surface as "invalid port"
+        # when the real error is the missing brackets. Require the
+        # host to contain ``:`` and NOT contain ``@`` — the latter
+        # indicates a credentials-smuggle shape (rejected by
+        # ``_canonicalize_host`` below with a more specific message).
+        if ":" in host and "@" not in host:
+            raise ValueError(
+                f"IPv6 addresses must be bracketed: got {address!r}, expected '[host]:port'"
+            )
 
-    try:
+    # Strict port parse: stdlib ``int()`` accepts whitespace, unary
+    # ``+``, PEP 515 underscores, leading zeros, and Unicode digits.
+    # An ``allowlist_policy`` comparing against a configured address
+    # set would then fail to match when the peer redirects to a
+    # non-canonical form (``"host: 9000 "``, ``"host:+9000"``,
+    # ``"host:9_000"``) even though it's semantically the same port.
+    # Restrict to plain ASCII digits (with an optional leading ``-``
+    # so negative ports surface the "not in range" diagnostic rather
+    # than a confusing "not a number" one).
+    if port_str.startswith("-") and port_str[1:].isascii() and port_str[1:].isdigit():
+        port = int(port_str)  # negative — fails the range check below
+    elif port_str.isascii() and port_str.isdigit():
         port = int(port_str)
-    except ValueError as e:
-        raise ValueError(
-            f"Invalid port in address {address!r}: {port_str!r} is not a number"
-        ) from e
+    else:
+        raise ValueError(f"Invalid port in address {address!r}: {port_str!r} is not a number")
 
     if not (1 <= port <= 65535):
         raise ValueError(f"Invalid port in address {address!r}: {port} is not in range 1-65535")
-    if host.count(":") > 1 and not address.startswith("["):
-        raise ValueError(
-            f"IPv6 addresses must be bracketed: use '[{host}]:{port}' instead of {address!r}"
-        )
 
     host = _canonicalize_host(host, address)
     return host, port
