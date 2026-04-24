@@ -21,6 +21,8 @@ from dqliteclient.exceptions import (
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
 from dqliteclient.pool import ConnectionPool
 
+__version__ = "0.1.3"
+
 __all__ = [
     "__version__",
     "allowlist_policy",
@@ -42,8 +44,6 @@ __all__ = [
     "ProtocolError",
     "RedirectPolicy",
 ]
-
-__version__ = "0.1.3"
 
 
 async def connect(
