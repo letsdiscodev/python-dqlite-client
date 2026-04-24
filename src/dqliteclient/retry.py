@@ -1,6 +1,7 @@
 """Retry utilities with exponential backoff."""
 
 import asyncio
+import math
 import random
 from collections.abc import Awaitable, Callable
 
@@ -66,8 +67,25 @@ async def retry_with_backoff[T](
         The last exception if all attempts fail, or immediately
         for non-retryable exceptions
     """
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
+        raise TypeError(f"max_attempts must be an int, got {type(max_attempts).__name__}")
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
+    # Validate the float knobs: a negative or non-finite base_delay /
+    # max_delay would later be handed to ``asyncio.sleep`` which rejects
+    # negative values with its own ValueError — surface the misuse at
+    # the retry helper's entry point instead, with a clearer message.
+    # ``jitter > 1`` is the same class of bug: ``1 + uniform(-j, j)``
+    # with ``j > 1`` can go negative and produce a negative sleep.
+    for name, value in (("base_delay", base_delay), ("max_delay", max_delay)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{name} must be a number, got {type(value).__name__}")
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be a non-negative finite number, got {value}")
+    if isinstance(jitter, bool) or not isinstance(jitter, (int, float)):
+        raise TypeError(f"jitter must be a number, got {type(jitter).__name__}")
+    if not math.isfinite(jitter) or not (0 <= jitter <= 1):
+        raise ValueError(f"jitter must be in [0, 1], got {jitter}")
 
     last_error: BaseException | None = None
 
