@@ -786,6 +786,20 @@ class ConnectionPool:
                 returned_to_queue = True
         finally:
             if not returned_to_queue:
+                # On CancelledError during ``_reset_connection`` (the
+                # ROLLBACK await) or during one of the inline
+                # ``conn.close()`` awaits above, we fall into this
+                # branch with ``_pool_released`` still False. The
+                # client-side ``_run_protocol`` already invalidated
+                # the transport on cancel, so the socket is not
+                # leaking — but the DqliteConnection bookkeeping
+                # expects ``_pool_released=True`` for every conn that
+                # has passed through ``_release``. Mark it here so a
+                # stale reference later observing ``conn.close()``
+                # takes the early-return path instead of running a
+                # redundant close against a protocol that's already
+                # None.
+                conn._pool_released = True
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.shield(self._release_reservation())
 
