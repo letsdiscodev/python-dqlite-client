@@ -578,11 +578,10 @@ class ConnectionPool:
                 self._pool.qsize(),
             )
             await self._drain_idle()
-            # Release the dead reservation, reserve a new slot, then
-            # do the network work outside the lock.
-            async with self._lock:
-                self._size -= 1  # dead conn's reservation
-                self._size += 1  # fresh reservation
+            # The dead conn's reservation is re-used for the fresh
+            # connection; no counter adjustment needed. (The earlier
+            # ``-= 1; += 1`` under the lock was a no-op — kept only
+            # because the intent was unclear.)
             try:
                 conn = await self._create_connection()
             except BaseException:
