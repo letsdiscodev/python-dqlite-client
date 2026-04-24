@@ -349,16 +349,20 @@ class DqliteConnection:
         # success, so at the race moment _protocol is None and
         # close() would silently return.
         self._check_in_use()
+        # ``_invalidate`` may have scheduled a bounded drain task on
+        # the writer it just closed. Await it so the reader task exits
+        # cleanly; otherwise Python logs "Task was destroyed but it is
+        # pending" at interpreter shutdown. Drop the slot either way
+        # so a subsequent close/connect cycle starts fresh — clearing
+        # only inside the ``_protocol is None`` branch left a done-task
+        # reference on the happy path indefinitely, inconsistent with
+        # ``connect()``'s own ``_pending_drain = None`` symmetry.
+        pending = self._pending_drain
+        self._pending_drain = None
+        if pending is not None and not pending.done():
+            with contextlib.suppress(Exception):
+                await pending
         if self._protocol is None:
-            # ``_invalidate`` may have scheduled a bounded drain task
-            # on the writer it just closed. Await it so the reader
-            # task exits cleanly; otherwise Python logs "Task was
-            # destroyed but it is pending" at interpreter shutdown.
-            pending = getattr(self, "_pending_drain", None)
-            if pending is not None and not pending.done():
-                with contextlib.suppress(Exception):
-                    await pending
-                self._pending_drain = None
             return
         protocol = self._protocol
         self._protocol = None
