@@ -513,7 +513,10 @@ class DqliteConnection:
                 raise InterfaceError(
                     "Cannot perform operation: connection is in a transaction owned "
                     "by another task. Each task should use its own connection from "
-                    "the pool."
+                    "the pool. Note: wrapping a connection call in "
+                    "``asyncio.shield(conn.execute(...))`` creates a new task and "
+                    "trips this check — shield the entire "
+                    "``async with conn.transaction():`` block instead."
                 )
 
     def _invalidate(self, cause: BaseException | None = None) -> None:
@@ -741,6 +744,14 @@ class DqliteConnection:
         invalidated so the pool discards it instead of reusing a
         Python-side "_in_transaction=False" connection with live
         server-side transaction state.
+
+        Shielding caveat: ``asyncio.shield(conn.execute(...))`` inside
+        the body creates a new task whose ``current_task()`` is not
+        ``_tx_owner``. ``_check_in_use`` rejects the shielded call
+        with ``InterfaceError("owned by another task")``. Shield the
+        **entire** ``async with conn.transaction():`` block if you
+        need defensive-rollback semantics against outer cancellation
+        — not individual operations inside it.
         """
         if self._in_transaction:
             raise InterfaceError("Nested transactions are not supported; use SAVEPOINT directly")
