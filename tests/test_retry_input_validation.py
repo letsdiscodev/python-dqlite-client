@@ -65,3 +65,50 @@ async def test_jitter_bool_rejected() -> None:
 async def test_valid_inputs_still_work() -> None:
     result = await retry_with_backoff(_ok, max_attempts=1, base_delay=0.0)
     assert result == 42
+
+
+@pytest.mark.asyncio
+async def test_max_elapsed_seconds_caps_retry_budget() -> None:
+    """``max_elapsed_seconds`` aborts the retry loop once the cumulative
+    elapsed time exceeds the budget, re-raising the last observed
+    exception. Complements ``max_attempts`` for scenarios where a
+    single attempt consumes significant wall-clock.
+    """
+    import asyncio
+    import time
+
+    calls = 0
+
+    async def _slow_fail() -> int:
+        nonlocal calls
+        calls += 1
+        # Each attempt sleeps ~30ms, simulating a slow per-attempt op.
+        await asyncio.sleep(0.03)
+        raise OSError("transport refused")
+
+    start = time.monotonic()
+    with pytest.raises(OSError):
+        await retry_with_backoff(
+            _slow_fail,
+            max_attempts=100,  # would take seconds without the budget
+            base_delay=0.0,
+            max_delay=0.0,
+            jitter=0.0,
+            max_elapsed_seconds=0.1,
+        )
+    elapsed = time.monotonic() - start
+    # Budget + one in-flight attempt overshoot cap.
+    assert elapsed < 0.5, f"retry loop blew past its wall-clock budget: {elapsed}s"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, -0.1, float("inf"), float("nan")])
+async def test_max_elapsed_seconds_bad_values_rejected(bad: float) -> None:
+    with pytest.raises(ValueError, match="max_elapsed_seconds"):
+        await retry_with_backoff(_ok, max_elapsed_seconds=bad)
+
+
+@pytest.mark.asyncio
+async def test_max_elapsed_seconds_bool_rejected() -> None:
+    with pytest.raises(TypeError, match="max_elapsed_seconds"):
+        await retry_with_backoff(_ok, max_elapsed_seconds=True)  # type: ignore[arg-type]

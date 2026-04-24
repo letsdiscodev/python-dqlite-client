@@ -36,6 +36,7 @@ async def retry_with_backoff[T](
     base_delay: float = 0.1,
     max_delay: float = 10.0,
     jitter: float = 0.1,
+    max_elapsed_seconds: float | None = None,
     retryable_exceptions: tuple[type[BaseException], ...] = _DEFAULT_RETRYABLE,
     excluded_exceptions: tuple[type[BaseException], ...] = (),
 ) -> T:
@@ -47,6 +48,16 @@ async def retry_with_backoff[T](
         base_delay: Initial delay between retries in seconds
         max_delay: Maximum delay between retries
         jitter: Random jitter factor (0-1)
+        max_elapsed_seconds: Optional total wall-clock cap. ``None``
+            (default) means "only ``max_attempts`` governs termination."
+            Set to a positive finite number to abort the retry loop
+            once the cumulative elapsed time crosses the budget,
+            re-raising the last observed exception. Complements
+            ``max_attempts`` for scenarios where a single attempt has
+            its own long deadline (``ClusterClient.find_leader`` with
+            N slow peers, for example): without this cap the worst-case
+            wall clock is ``max_attempts * (per-attempt deadline +
+            max_delay)``, easily exceeding a caller's outer deadline.
         retryable_exceptions: Exception types to retry on. The default
             (``OSError``, ``DqliteConnectionError``, ``ClusterError``)
             covers transport- and cluster-level failures only —
@@ -86,6 +97,21 @@ async def retry_with_backoff[T](
         raise TypeError(f"jitter must be a number, got {type(jitter).__name__}")
     if not math.isfinite(jitter) or not (0 <= jitter <= 1):
         raise ValueError(f"jitter must be in [0, 1], got {jitter}")
+    if max_elapsed_seconds is not None:
+        if isinstance(max_elapsed_seconds, bool) or not isinstance(
+            max_elapsed_seconds, (int, float)
+        ):
+            raise TypeError(
+                f"max_elapsed_seconds must be a number or None, "
+                f"got {type(max_elapsed_seconds).__name__}"
+            )
+        if not math.isfinite(max_elapsed_seconds) or max_elapsed_seconds <= 0:
+            raise ValueError(
+                f"max_elapsed_seconds must be a positive finite number, got {max_elapsed_seconds}"
+            )
+
+    loop = asyncio.get_running_loop()
+    deadline = None if max_elapsed_seconds is None else loop.time() + max_elapsed_seconds
 
     last_error: BaseException | None = None
 
@@ -101,6 +127,11 @@ async def retry_with_backoff[T](
 
             if attempt == max_attempts - 1:
                 break
+            # Budget check BEFORE scheduling the sleep: if we're out
+            # of time, re-raise the last error now rather than burn
+            # another backoff.
+            if deadline is not None and loop.time() >= deadline:
+                break
 
             # Calculate delay with exponential backoff
             delay = min(base_delay * (2**attempt), max_delay)
@@ -108,6 +139,10 @@ async def retry_with_backoff[T](
             # Add jitter, then re-clamp so max_delay stays a hard ceiling.
             if jitter > 0:
                 delay = min(delay * (1 + random.uniform(-jitter, jitter)), max_delay)
+
+            # Clamp the sleep so it never straddles the deadline.
+            if deadline is not None:
+                delay = min(delay, max(0.0, deadline - loop.time()))
 
             await asyncio.sleep(delay)
 
