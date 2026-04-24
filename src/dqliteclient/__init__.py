@@ -3,7 +3,10 @@
 Thread safety: connections and pools are NOT thread-safe. All operations
 must be performed within a single asyncio event loop. To submit work from
 other threads, use ``asyncio.run_coroutine_threadsafe()``. Free-threaded
-Python (no-GIL) is not supported.
+Python (no-GIL) is not supported — the guard lives in
+``dqlitewire.__init__`` (an unconditional transitive dependency via the
+``from dqliteclient.connection import DqliteConnection`` chain) and
+raises ``ImportError`` at import time.
 """
 
 from dqliteclient.cluster import ClusterClient, RedirectPolicy, allowlist_policy
