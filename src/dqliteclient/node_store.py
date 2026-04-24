@@ -79,11 +79,27 @@ class MemoryNodeStore(NodeStore):
     concurrent ``set_nodes()`` never produces a torn view.
     """
 
-    def __init__(self, initial_addresses: list[str] | None = None) -> None:
-        if initial_addresses:
+    def __init__(
+        self,
+        addresses: list[str] | None = None,
+        *,
+        initial_addresses: list[str] | None = None,
+    ) -> None:
+        """Seed with a list of ``host:port`` addresses.
+
+        ``addresses`` is the preferred name (matches the sibling
+        ``ClusterClient.from_addresses`` / ``ConnectionPool`` /
+        top-level ``connect`` APIs). ``initial_addresses`` is a
+        deprecated alias kept for back-compat; prefer ``addresses`` in
+        new code.
+        """
+        if addresses is not None and initial_addresses is not None:
+            raise TypeError("Pass only one of 'addresses' or 'initial_addresses'")
+        seed = addresses if addresses is not None else initial_addresses
+        if seed:
             self._nodes: tuple[NodeInfo, ...] = tuple(
                 NodeInfo(node_id=i + 1, address=addr, role=NodeRole.VOTER)
-                for i, addr in enumerate(initial_addresses)
+                for i, addr in enumerate(seed)
             )
         else:
             self._nodes = ()

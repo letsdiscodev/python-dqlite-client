@@ -94,3 +94,35 @@ class TestMemoryNodeStore:
         info = NodeInfo(node_id=1, address="h:1", role=NodeRole.STANDBY)
         assert info.role is NodeRole.STANDBY
         assert info.role == 1
+
+
+def test_memory_store_addresses_kwarg_name() -> None:
+    """``addresses=`` is the preferred kwarg — matches sibling APIs."""
+    from dqliteclient import MemoryNodeStore
+
+    store = MemoryNodeStore(addresses=["host:9001"])
+    import asyncio
+
+    nodes = asyncio.run(store.get_nodes())
+    assert len(nodes) == 1
+    assert nodes[0].address == "host:9001"
+
+
+def test_memory_store_initial_addresses_still_works() -> None:
+    """Legacy ``initial_addresses=`` kwarg still seeds the store."""
+    from dqliteclient import MemoryNodeStore
+
+    store = MemoryNodeStore(initial_addresses=["host:9001"])
+    import asyncio
+
+    nodes = asyncio.run(store.get_nodes())
+    assert len(nodes) == 1
+
+
+def test_memory_store_rejects_both_kwargs() -> None:
+    import pytest
+
+    from dqliteclient import MemoryNodeStore
+
+    with pytest.raises(TypeError, match="Pass only one"):
+        MemoryNodeStore(addresses=["a:1"], initial_addresses=["b:2"])
