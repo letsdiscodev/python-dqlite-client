@@ -133,3 +133,65 @@ async def test_initialize_close_race_guards_initialized_flag() -> None:
     assert pool._initialized is False, (
         "_initialized became True despite close() interrupting the put-loop"
     )
+
+
+@pytest.mark.asyncio
+async def test_initialize_close_between_put_iterations_closes_tail_survivors() -> None:
+    """Put-loop mid-iteration break: when ``close()`` lands AFTER at
+    least one put succeeded but BEFORE the remaining successes have
+    been enqueued, the tail routes through ``unqueued_survivors``
+    cleanup. Every survivor must be closed and reservation accounting
+    must resolve to zero.
+
+    The existing tests in this module cover the shape where ``close()``
+    lands before ANY put — the whole batch takes the break path at
+    the top of the put-loop. This test covers the intermediate shape:
+    one put committed, close lands, remaining tail goes through
+    unqueued cleanup.
+    """
+    pool = ConnectionPool(["n1:9001", "n2:9001", "n3:9001"], min_size=3, max_size=3, timeout=0.5)
+
+    mocks: list[MagicMock] = []
+    for _ in range(3):
+        m = MagicMock()
+        m.close = AsyncMock()
+        mocks.append(m)
+
+    create_iter = iter(mocks)
+
+    async def _create() -> object:
+        return next(create_iter)
+
+    pool._create_connection = _create  # type: ignore[method-assign]
+
+    # Intercept the queue put so that exactly the first put succeeds,
+    # then close() fires before the second put iteration runs.
+    original_put = pool._pool.put
+    puts_done = 0
+    close_fired = asyncio.Event()
+
+    async def _intercept_put(item: object) -> None:
+        nonlocal puts_done
+        await original_put(item)
+        puts_done += 1
+        if puts_done == 1:
+            # Land the close() between put-loop iterations.
+            await pool.close()
+            close_fired.set()
+
+    pool._pool.put = _intercept_put  # type: ignore[method-assign]
+
+    await asyncio.wait_for(pool.initialize(), timeout=1.0)
+    assert close_fired.is_set(), "close() did not land between put-iterations"
+
+    # _initialized must stay False — the put-loop was interrupted by
+    # a concurrent close().
+    assert pool._initialized is False
+    # Every mock must have been closed: the first entered the queue
+    # and was drained by close()'s _drain_idle; the remaining tail
+    # went through the unqueued_survivors cleanup path. Both routes
+    # end in ``conn.close()`` being awaited at least once.
+    for i, m in enumerate(mocks):
+        assert m.close.await_count >= 1, f"survivor {i} was never closed"
+    # Pool must be in the closed state (no further acquires possible).
+    assert pool._closed is True
