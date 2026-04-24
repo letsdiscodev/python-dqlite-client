@@ -344,6 +344,17 @@ class DqliteConnection:
                 raise
         finally:
             self._in_use = False
+            # On a never-connected failure path — ``connect()`` raised
+            # before ``_protocol`` was published — the loop binding
+            # recorded above at entry is historical noise. A retry
+            # from a different event loop (legitimate in unit-test
+            # teardown or ``asyncio.run()`` re-entry) would otherwise
+            # fail ``_check_in_use`` with "bound to a different event
+            # loop" even though no successful connection ever existed.
+            # Drop the bind on the failure path so the instance stays
+            # usable.
+            if self._protocol is None:
+                self._bound_loop = None
 
     async def close(self) -> None:
         """Close the connection.
