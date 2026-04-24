@@ -44,12 +44,30 @@ class NodeStore(ABC):
 
     @abstractmethod
     async def get_nodes(self) -> Sequence[NodeInfo]:
-        """Get list of known nodes."""
+        """Return an immutable snapshot of known nodes.
+
+        Implementations MUST return a Sequence that will not be mutated
+        after return. A ``tuple`` is preferred (``MemoryNodeStore``
+        uses one); a freshly-copied ``list`` is also acceptable as long
+        as the implementation guarantees no subsequent mutation. Callers
+        — notably ``ClusterClient.find_leader`` — iterate the returned
+        value without defensive copies, and iteration is interleaved
+        with ``await`` points. Returning a live backing collection that
+        mutates under ``set_nodes()`` would produce torn reads during
+        iteration.
+        """
         ...
 
     @abstractmethod
     async def set_nodes(self, nodes: Sequence[NodeInfo]) -> None:
-        """Update list of known nodes."""
+        """Update list of known nodes.
+
+        Implementations MUST publish the update atomically from the
+        perspective of ``get_nodes()``: a concurrent reader must see
+        either the old snapshot or the new one, never a partially
+        constructed sequence. ``MemoryNodeStore`` achieves this with a
+        tuple-reference swap.
+        """
         ...
 
 
