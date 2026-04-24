@@ -18,6 +18,7 @@ from dqliteclient.node_store import MemoryNodeStore, NodeStore
 from dqliteclient.protocol import DqliteProtocol
 from dqliteclient.retry import retry_with_backoff
 from dqlitewire import NodeRole
+from dqlitewire.messages.responses import _sanitize_server_text as _sanitize_display_text
 
 __all__ = ["ClusterClient", "RedirectPolicy", "allowlist_policy"]
 
@@ -252,8 +253,9 @@ class ClusterClient:
                     leader_addr,
                 )
                 raise ProtocolError(
-                    f"server {address} returned node_id={node_id} with empty "
-                    f"leader address; expected both or neither"
+                    f"server {_sanitize_display_text(address)} returned "
+                    f"node_id={node_id} with empty leader address; "
+                    f"expected both or neither"
                 )
             if node_id == 0 and leader_addr:
                 # Mirror arm: the inverse illegal shape. Upstream
@@ -267,7 +269,8 @@ class ClusterClient:
                     leader_addr,
                 )
                 raise ProtocolError(
-                    f"server {address} returned address {leader_addr!r} with "
+                    f"server {_sanitize_display_text(address)} returned "
+                    f"address {_sanitize_display_text(leader_addr)!r} with "
                     f"node_id=0; expected both or neither"
                 )
             if leader_addr:
