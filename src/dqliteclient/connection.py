@@ -198,6 +198,10 @@ class DqliteConnection:
         self._bound_loop: asyncio.AbstractEventLoop | None = None
         self._tx_owner: asyncio.Task[Any] | None = None
         self._pool_released = False
+        # Cause recorded by ``_invalidate(cause=...)``; only meaningful
+        # while ``_protocol is None``. ``connect()`` clears it on a
+        # successful re-handshake so later "Not connected" errors don't
+        # chain to an ancient unrelated failure.
         self._invalidation_cause: BaseException | None = None
         # Tracks the bounded ``wait_closed`` drain scheduled by
         # ``_invalidate`` so a subsequent ``close()`` can await it and
@@ -292,6 +296,14 @@ class DqliteConnection:
                     self._db_id,
                     self._database,
                 )
+                # Clear any stale cause recorded by a prior ``_invalidate``.
+                # The field is only meaningful while ``_protocol is None``;
+                # a successful reconnect supersedes it. Without this,
+                # a later silent invalidation (``_invalidate()`` with no
+                # cause) would produce "Not connected" errors whose
+                # ``__cause__`` chain points back at an unrelated historical
+                # failure — misleading operators reading logs.
+                self._invalidation_cause = None
             except OperationalError as e:
                 await self._abort_protocol()
                 if e.code in _LEADER_ERROR_CODES:
