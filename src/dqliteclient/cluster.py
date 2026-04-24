@@ -277,13 +277,21 @@ class ClusterClient:
             # churn (pool warm-up after a leader flip). Cap the wait
             # at 100 ms: a responsive peer drains FIN/ACK in microseconds
             # and a slow peer must never hold up leader discovery — the
-            # OS will reap the socket later. Suppress expected socket-
-            # close errors; do NOT suppress CancelledError (an outer
-            # cancel must propagate past this cleanup step).
-            # OSError covers TimeoutError — no need to enumerate both
-            # (mirrors base.py is_disconnect).
-            with contextlib.suppress(OSError):
-                await asyncio.wait_for(writer.wait_closed(), timeout=0.1)
+            # OS will reap the socket later.
+            #
+            # Shield the drain against an outer cancellation: a
+            # ``find_leader`` cancelled by a TaskGroup sibling failure
+            # (or any caller-level ``asyncio.timeout``) would otherwise
+            # propagate CancelledError out of the ``await`` between
+            # ``writer.close()`` (sync) and the awaited
+            # ``wait_closed``, leaving the reader task spawned by
+            # ``asyncio.open_connection`` orphaned. Under leader
+            # stampede scenarios that leaks per-probe. Shielding runs
+            # the drain to completion within its 100 ms budget even
+            # during shutdown; the outer cancel still propagates past
+            # this ``finally`` as expected.
+            with contextlib.suppress(OSError, asyncio.TimeoutError):
+                await asyncio.shield(asyncio.wait_for(writer.wait_closed(), timeout=0.1))
 
     async def connect(
         self,
