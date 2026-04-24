@@ -510,6 +510,14 @@ class ConnectionPool:
                 # orphan a connection (silently shrinking pool capacity).
                 if closed_task is not None and not closed_task.done():
                     closed_task.cancel()
+                    # Symmetric with the happy-path cleanup at line ~554:
+                    # await the cancelled task so the CancelledError
+                    # doesn't sit on the task object until GC, which
+                    # would emit "Task exception was never retrieved"
+                    # under rapid cancel churn and keep a reference to
+                    # ``closed_event`` alive via the task.
+                    with contextlib.suppress(BaseException):
+                        await closed_task
                 if (
                     get_task is not None
                     and get_task.done()
