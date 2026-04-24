@@ -521,7 +521,13 @@ class DqliteProtocol:
                 raise DqliteConnectionError(
                     f"Operation{self._addr_suffix()} exceeded {self._read_timeout}s deadline"
                 )
-            timeout = min(remaining, self._read_timeout)
+            # Clamp against drift: the loop clock can advance between
+            # the guard above and the ``wait_for`` call below. Without
+            # ``max(0.0, ...)`` a sub-microsecond drift could hand
+            # ``wait_for`` a negative timeout. 3.13 handles negative
+            # timeouts consistently (immediate TimeoutError) but the
+            # clamp documents intent.
+            timeout = max(0.0, min(remaining, self._read_timeout))
         else:
             timeout = self._read_timeout
         try:
