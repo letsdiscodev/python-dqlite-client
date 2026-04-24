@@ -6,7 +6,7 @@ import logging
 import random
 from collections.abc import Callable, Iterable
 
-from dqliteclient.connection import DqliteConnection, _parse_address
+from dqliteclient.connection import DqliteConnection, _parse_address, _validate_timeout
 from dqliteclient.exceptions import (
     ClusterError,
     ClusterPolicyError,
@@ -89,8 +89,7 @@ class ClusterClient:
                 callable or the :func:`allowlist_policy` helper to
                 constrain where redirects can go.
         """
-        if timeout <= 0:
-            raise ValueError(f"timeout must be positive, got {timeout}")
+        _validate_timeout(timeout)
         self._node_store = node_store
         self._timeout = timeout
         self._redirect_policy = redirect_policy

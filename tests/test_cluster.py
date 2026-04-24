@@ -18,7 +18,7 @@ class TestClusterClient:
 
     def test_zero_timeout_raises(self) -> None:
         store = MemoryNodeStore(["localhost:9001"])
-        with pytest.raises(ValueError, match="timeout must be positive"):
+        with pytest.raises(ValueError, match="timeout must be a positive finite number"):
             ClusterClient(store, timeout=0)
 
     async def test_find_leader_no_nodes(self) -> None:

@@ -24,8 +24,22 @@ class TestConnectionPool:
             ConnectionPool(["localhost:9001"], max_size=0)
 
     def test_zero_timeout_raises(self) -> None:
-        with pytest.raises(ValueError, match="timeout must be positive"):
+        with pytest.raises(ValueError, match="timeout must be a positive finite number"):
             ConnectionPool(["localhost:9001"], timeout=0)
+
+    @pytest.mark.parametrize("bad", [True, float("inf"), float("nan")])
+    def test_non_finite_or_bool_timeout_rejected(self, bad) -> None:
+        """Cluster and pool timeouts share the same validator as
+        ``DqliteConnection.__init__``: bool / inf / nan are rejected
+        rather than silently coerced (``True`` becoming 1.0, ``inf``
+        disabling the deadline).
+        """
+        with pytest.raises(ValueError, match="timeout must be a positive finite number"):
+            ConnectionPool(["localhost:9001"], timeout=bad)
+
+    def test_non_numeric_timeout_rejected(self) -> None:
+        with pytest.raises(TypeError, match="timeout must be a number"):
+            ConnectionPool(["localhost:9001"], timeout="10")  # type: ignore[arg-type]
 
     def test_init(self) -> None:
         pool = ConnectionPool(

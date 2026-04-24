@@ -3,14 +3,13 @@
 import asyncio
 import contextlib
 import logging
-import math
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any
 
 from dqliteclient.cluster import ClusterClient
-from dqliteclient.connection import DqliteConnection
+from dqliteclient.connection import DqliteConnection, _validate_timeout
 from dqliteclient.exceptions import (
     DqliteConnectionError,
     OperationalError,
@@ -159,10 +158,8 @@ class ConnectionPool:
             raise ValueError(f"max_size must be at least 1, got {max_size}")
         if min_size > max_size:
             raise ValueError(f"min_size ({min_size}) must not exceed max_size ({max_size})")
-        if timeout <= 0:
-            raise ValueError(f"timeout must be positive, got {timeout}")
-        if not math.isfinite(close_timeout) or close_timeout <= 0:
-            raise ValueError(f"close_timeout must be a positive finite number, got {close_timeout}")
+        _validate_timeout(timeout)
+        _validate_timeout(close_timeout, name="close_timeout")
         if cluster is not None and node_store is not None:
             raise ValueError("pass only one of cluster= or node_store=")
         if cluster is None and node_store is None and not addresses:

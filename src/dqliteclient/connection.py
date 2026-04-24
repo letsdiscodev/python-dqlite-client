@@ -74,6 +74,27 @@ def _canonicalize_host(host: str, address: str) -> str:
     return host.lower()
 
 
+def _validate_timeout(value: float, *, name: str = "timeout") -> float:
+    """Validate a user-supplied timeout: positive, finite, not ``bool``.
+
+    ``isinstance(True, int)`` is True and ``math.isfinite(True)`` is
+    True, so a bare ``<= 0`` check lets ``timeout=True`` through as
+    ``1.0``. Reject ``bool`` explicitly. Also reject ``inf`` / ``nan``
+    so a misconfigured value fails at the caller's entry point rather
+    than much later when it reaches ``asyncio.wait_for``.
+
+    Shared across ``DqliteConnection``, ``ClusterClient``, and
+    ``ConnectionPool`` so every entry point enforces the same contract.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive finite number, got {value!r} (bool)")
+    if not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a number, got {type(value).__name__}")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive finite number, got {value}")
+    return float(value)
+
+
 def _parse_address(address: str) -> tuple[str, int]:
     """Parse a host:port address string, handling IPv6 brackets.
 
@@ -162,20 +183,8 @@ class DqliteConnection:
                 stall ``engine.dispose()`` or SIGTERM shutdown, so
                 the drain is bounded by this value.
         """
-        # Reject ``bool`` explicitly: ``isinstance(True, int)`` is True
-        # and ``math.isfinite(True)`` returns True, so a caller passing
-        # ``timeout=True`` would silently get a 1-second budget. Match
-        # the sibling ``_validate_positive_int_or_none`` in protocol.py.
-        if isinstance(timeout, bool):
-            raise ValueError(f"timeout must be a positive finite number, got {timeout!r} (bool)")
-        if not math.isfinite(timeout) or timeout <= 0:
-            raise ValueError(f"timeout must be a positive finite number, got {timeout}")
-        if isinstance(close_timeout, bool):
-            raise ValueError(
-                f"close_timeout must be a positive finite number, got {close_timeout!r} (bool)"
-            )
-        if not math.isfinite(close_timeout) or close_timeout <= 0:
-            raise ValueError(f"close_timeout must be a positive finite number, got {close_timeout}")
+        _validate_timeout(timeout)
+        _validate_timeout(close_timeout, name="close_timeout")
         # Parse at construction so a misconfigured address (typoed DSN,
         # invalid port, unbracketed IPv6) raises ValueError at the
         # operator's config-load site rather than inside connect(),
