@@ -100,6 +100,16 @@ class ClusterClient:
         self._node_store = node_store
         self._timeout = timeout
         self._redirect_policy = redirect_policy
+        # Single-flight slot for ``find_leader``. Concurrent callers
+        # share the in-flight discovery task instead of each launching
+        # an independent per-node sweep — under a leader flip with N
+        # waiting acquirers, this collapses N×M handshake attempts
+        # against the failing ex-leader into M (one sweep). See
+        # ISSUE-631 for the stampede shape this closes. The slot is
+        # cleared on done-callback so a fresh probe re-runs after the
+        # current task finishes; consecutive callers do NOT share a
+        # cached failure.
+        self._find_leader_task: asyncio.Task[str] | None = None
 
     @classmethod
     def from_addresses(
@@ -133,7 +143,38 @@ class ClusterClient:
         to each probe protocol so operators who opted into a widened
         heartbeat window for the main query path get the same semantics
         during leader discovery.
+
+        Concurrent callers share an in-flight discovery task (single-
+        flight). Under a leader flip with N waiting acquirers, this
+        collapses N independent per-node sweeps into one. Failures are
+        not cached: once the current task completes, the slot clears
+        so the next caller runs a fresh probe.
         """
+        task = self._find_leader_task
+        if task is None or task.done():
+            task = asyncio.create_task(
+                self._find_leader_impl(trust_server_heartbeat=trust_server_heartbeat)
+            )
+            self._find_leader_task = task
+
+            def _clear_slot(t: asyncio.Task[str]) -> None:
+                # Clear the slot only if it still points at THIS task —
+                # a concurrent ``find_leader`` may have already
+                # supplanted us if our task finished and a new caller
+                # triggered a fresh probe before this callback ran.
+                if self._find_leader_task is t:
+                    self._find_leader_task = None
+
+            task.add_done_callback(_clear_slot)
+        # Shield so a caller's outer cancel does not kill the shared
+        # task; the cancel still propagates to the calling coroutine
+        # via ``await asyncio.shield``.
+        return await asyncio.shield(task)
+
+    async def _find_leader_impl(self, *, trust_server_heartbeat: bool) -> str:
+        """Perform the actual leader discovery sweep. See ``find_leader``
+        for the public contract — this method is the single-flight
+        backing implementation."""
         nodes = await self._node_store.get_nodes()
 
         if not nodes:
