@@ -264,6 +264,20 @@ class ConnectionPool:
                             len(successes),
                             failures[0],
                         )
+                        # Log every failure individually so operators
+                        # see the full picture before unpacking the
+                        # ExceptionGroup — partial cluster outages
+                        # frequently produce different root causes per
+                        # node (timeout / refused / no-leader) and the
+                        # single-exception surface hid the majority
+                        # signal.
+                        for i, exc in enumerate(failures):
+                            logger.warning(
+                                "pool.initialize: create_connection %d/%d failed: %r",
+                                i + 1,
+                                len(failures),
+                                exc,
+                            )
                         for conn in successes:
                             try:
                                 await conn.close()
@@ -272,10 +286,19 @@ class ConnectionPool:
                                     "pool.initialize: partial-cleanup close error",
                                     exc_info=True,
                                 )
-                        # Re-raise the first observed failure as the
-                        # root cause; the finally releases the
+                        # Preserve the single-failure narrow type so
+                        # callers doing ``except DqliteConnectionError``
+                        # continue to match. For multiple distinct
+                        # failures, raise an ExceptionGroup so every
+                        # cause is accessible via structured handling
+                        # (``except*``); the finally releases the
                         # reservation before the raise propagates.
-                        raise failures[0]
+                        if len(failures) == 1:
+                            raise failures[0]
+                        raise BaseExceptionGroup(
+                            f"pool.initialize: {len(failures)} of {self._min_size} connects failed",
+                            failures,
+                        )
                     # Track which successes are still unqueued so a
                     # cancellation mid put-loop can close them precisely
                     # rather than leaking their transports.
