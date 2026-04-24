@@ -42,6 +42,19 @@ logger = logging.getLogger(__name__)
 # request/response payloads against latency for small wire messages.
 _READ_CHUNK_SIZE = 4096
 
+# Upper bound on how wide a server's advertised heartbeat can stretch
+# the per-read deadline on a connection that opted into
+# ``trust_server_heartbeat``. Without this cap a hostile or buggy
+# server could advertise an arbitrary value and effectively disable
+# client-side read timeouts for the whole session. Sized to tolerate
+# sane operational tuning (``config.c`` defaults to 15 s; 300 s fits
+# 20× that with plenty of headroom) while still bounding the widening
+# to a known scale. Changes here must be reflected in the
+# ``trust_server_heartbeat`` docstrings at protocol.py:82 and :106,
+# connection.py:__init__ docstring, and the top-level ``connect`` /
+# ``create_pool`` docstrings in ``__init__.py``.
+_HEARTBEAT_READ_TIMEOUT_CAP_SECONDS = 300.0
+
 
 def _validate_positive_int_or_none(value: int | None, name: str) -> int | None:
     """Shared validation for positive-int-or-None parameters.
@@ -159,7 +172,9 @@ class DqliteProtocol:
             # stays pinned to the operator-configured value so a hostile
             # server cannot advertise a long heartbeat to stretch every
             # writer.drain() beyond the operator's SLO.
-            new_read_timeout = max(self._read_timeout, min(heartbeat_seconds, 300.0))
+            new_read_timeout = max(
+                self._read_timeout, min(heartbeat_seconds, _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS)
+            )
             if new_read_timeout != self._read_timeout:
                 # Security-relevant opt-in: surface the actual widening
                 # at DEBUG so an operator who flipped the knob can

@@ -40,6 +40,12 @@ _DEFAULT_CONNECT_MAX_ATTEMPTS = 3
 # held in memory and serialised into every traceback.
 _MAX_ERROR_MESSAGE_SNIPPET = 200
 
+# Budget for the bounded writer-drain in ``_query_leader``. A
+# responsive peer drains FIN/ACK in microseconds; a slow peer must not
+# hold up leader discovery. 100 ms is generous for LAN and still
+# negligible against the per-probe ``self._timeout`` (typically seconds).
+_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS = 0.1
+
 
 def _truncate_error(message: str) -> str:
     if len(message) <= _MAX_ERROR_MESSAGE_SNIPPET:
@@ -290,7 +296,12 @@ class ClusterClient:
             # during shutdown; the outer cancel still propagates past
             # this ``finally`` as expected.
             with contextlib.suppress(OSError, asyncio.TimeoutError):
-                await asyncio.shield(asyncio.wait_for(writer.wait_closed(), timeout=0.1))
+                await asyncio.shield(
+                    asyncio.wait_for(
+                        writer.wait_closed(),
+                        timeout=_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS,
+                    )
+                )
 
     async def connect(
         self,
