@@ -813,8 +813,16 @@ class ConnectionPool:
             if self._close_done is not None:
                 await self._close_done.wait()
             return
-        self._closed = True
+        # Publish the drain-done event BEFORE flipping the closed flag
+        # so any second caller observing ``_closed=True`` is guaranteed
+        # to see a valid ``_close_done`` to wait on. Under single-task
+        # asyncio this ordering is invisible; under signal-handler
+        # delivery (KeyboardInterrupt landing on a bytecode check
+        # between two assignments) it closes the window where a second
+        # caller saw ``_closed=True`` with ``_close_done is None`` and
+        # short-circuited without waiting on the first caller's drain.
         self._close_done = asyncio.Event()
+        self._closed = True
         try:
             logger.debug(
                 "pool.close: draining idle=%d in_flight=%d",
