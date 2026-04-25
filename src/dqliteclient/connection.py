@@ -586,17 +586,22 @@ class DqliteConnection:
                 "Do not share connections across event loops or OS threads."
             )
         if self._in_use:
+            current_repr = repr(asyncio.current_task())
             raise InterfaceError(
                 "Cannot perform operation: another operation is in progress on this "
-                "connection. DqliteConnection does not support concurrent coroutine "
-                "access. Use a ConnectionPool to manage multiple concurrent operations."
+                f"connection (current task: {current_repr}). DqliteConnection does "
+                "not support concurrent coroutine access. Use a ConnectionPool to "
+                "manage multiple concurrent operations."
             )
         if self._in_transaction and self._tx_owner is not None:
             current = asyncio.current_task()
             if current is not self._tx_owner:
+                owner_repr = repr(self._tx_owner)
+                current_repr = repr(current)
                 raise InterfaceError(
                     "Cannot perform operation: connection is in a transaction owned "
-                    "by another task. Each task should use its own connection from "
+                    f"by another task (owner: {owner_repr}, current: {current_repr}). "
+                    "Each task should use its own connection from "
                     "the pool. Note: wrapping a connection call in "
                     "``asyncio.shield(conn.execute(...))`` creates a new task and "
                     "trips this check — shield the entire "
