@@ -423,47 +423,87 @@ class ConnectionPool:
         leader change or server restart), since other idle connections
         are likely stale too.
         """
+        try:
+            while not self._pool.empty():
+                try:
+                    conn = self._pool.get_nowait()
+                except asyncio.QueueEmpty:  # pragma: no cover
+                    # Defensive: the ``empty()`` check is racy with a
+                    # concurrent ``get_nowait`` from another task. The
+                    # window between check and get is too tight to drive
+                    # without monkey-patching ``asyncio.Queue`` itself.
+                    # Verified by code review, not coverage.
+                    break
+                try:
+                    # Shield each per-connection close against an outer
+                    # ``asyncio.timeout(pool.close())``. Without the shield,
+                    # a cancel that lands mid-``wait_closed`` propagates out
+                    # of the drain and orphans every subsequent queued
+                    # connection (its reader task + transport leak until GC
+                    # prints ``"Task was destroyed but it is pending"`` at
+                    # interpreter exit). The outer cancel still aborts the
+                    # drain loop — but every connection that was STARTED on
+                    # the close path finishes cleanly.
+                    await asyncio.shield(conn.close())
+                except Exception:
+                    # Transport-level failures (BrokenPipeError, OSError, our
+                    # own DqliteConnectionError) are absorbed so drain can
+                    # finish the remaining connections. CancelledError /
+                    # KeyboardInterrupt / SystemExit propagate — swallowing
+                    # them used to break structured concurrency (``asyncio.
+                    # timeout`` around ``pool.close()`` would silently hang).
+                    logger.debug(
+                        "pool: close() on idle connection %r failed",
+                        getattr(conn, "_address", "?"),
+                        exc_info=True,
+                    )
+                finally:
+                    # Shield the reservation decrement against outer cancel:
+                    # an ``asyncio.timeout`` around ``pool.close()`` can fire
+                    # during ``_release_reservation``'s lock acquire; without
+                    # the shield, _size drifts above actual capacity. Sibling
+                    # to the exception-path shield at ``acquire()``.
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(self._release_reservation())
+        finally:
+            # Multi-connection-leak guard: the per-iteration shield
+            # protects an in-flight close, but a cancel propagating out
+            # of one iteration aborts the loop and leaves the remaining
+            # queued connections un-closed. Drain whatever is still in
+            # the queue under shield, best-effort, so no FakeConn /
+            # DqliteConnection sits orphaned in the pool's queue after
+            # ``close()`` returns. The original cancel still propagates
+            # via the surrounding ``finally``.
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(self._drain_remaining_after_cancel())
+
+    async def _drain_remaining_after_cancel(self) -> None:
+        """Best-effort sweep for connections still in the queue after
+        the main drain loop exited (typically via outer cancel).
+
+        Each remaining connection has its ``close()`` awaited and a
+        reservation slot released, mirroring the main loop's
+        bookkeeping. Failures here are absorbed so a single bad close
+        does not abort the cleanup of the rest. Re-entry from a second
+        ``close()`` caller is safe — the queue empties on the first
+        sweep and subsequent calls find ``self._pool.empty() is True``.
+        """
         while not self._pool.empty():
             try:
                 conn = self._pool.get_nowait()
             except asyncio.QueueEmpty:  # pragma: no cover
-                # Defensive: the ``empty()`` check is racy with a
-                # concurrent ``get_nowait`` from another task. The
-                # window between check and get is too tight to drive
-                # without monkey-patching ``asyncio.Queue`` itself.
-                # Verified by code review, not coverage.
                 break
             try:
-                # Shield each per-connection close against an outer
-                # ``asyncio.timeout(pool.close())``. Without the shield,
-                # a cancel that lands mid-``wait_closed`` propagates out
-                # of the drain and orphans every subsequent queued
-                # connection (its reader task + transport leak until GC
-                # prints ``"Task was destroyed but it is pending"`` at
-                # interpreter exit). The outer cancel still aborts the
-                # drain loop — but every connection that was STARTED on
-                # the close path finishes cleanly.
-                await asyncio.shield(conn.close())
+                await conn.close()
             except Exception:
-                # Transport-level failures (BrokenPipeError, OSError, our
-                # own DqliteConnectionError) are absorbed so drain can
-                # finish the remaining connections. CancelledError /
-                # KeyboardInterrupt / SystemExit propagate — swallowing
-                # them used to break structured concurrency (``asyncio.
-                # timeout`` around ``pool.close()`` would silently hang).
                 logger.debug(
-                    "pool: close() on idle connection %r failed",
+                    "pool: cleanup-after-cancel close() on %r failed",
                     getattr(conn, "_address", "?"),
                     exc_info=True,
                 )
             finally:
-                # Shield the reservation decrement against outer cancel:
-                # an ``asyncio.timeout`` around ``pool.close()`` can fire
-                # during ``_release_reservation``'s lock acquire; without
-                # the shield, _size drifts above actual capacity. Sibling
-                # to the exception-path shield at ``acquire()``.
                 with contextlib.suppress(asyncio.CancelledError):
-                    await asyncio.shield(self._release_reservation())
+                    await self._release_reservation()
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
