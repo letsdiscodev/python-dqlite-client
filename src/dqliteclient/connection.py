@@ -569,6 +569,17 @@ class DqliteConnection:
         self._protocol = None
         self._db_id = None
         self._in_use = False
+        # Atomic clear of transaction-state flags: an external
+        # invalidation (heartbeat path, KeyboardInterrupt mid-yield,
+        # ``call_soon_threadsafe``) lands here without going through
+        # ``transaction()``'s ``finally`` clause, leaving stale
+        # ``_in_transaction=True`` and ``_tx_owner=<dead task>`` flags
+        # that ``_check_in_use`` reads. The next user (typically from
+        # the pool) sees a misleading "owned by another task" rejection.
+        # ``transaction()``'s finally is idempotent on the happy path;
+        # this clear is load-bearing on the external-invalidation path.
+        self._in_transaction = False
+        self._tx_owner = None
         if cause is not None:
             self._invalidation_cause = cause
 
@@ -756,6 +767,14 @@ class DqliteConnection:
         if self._in_transaction:
             raise InterfaceError("Nested transactions are not supported; use SAVEPOINT directly")
 
+        # Set the flags before the BEGIN await — the early set is a
+        # secondary guard atop ``_run_protocol``'s ``_in_use`` flag.
+        # While ``_in_use`` rejects concurrent calls with "another
+        # operation in progress", the early ``_in_transaction=True``
+        # makes a *task switch mid-BEGIN* surface as the more specific
+        # "nested transactions are not supported" — useful when
+        # callers wrap operations in a single shared connection by
+        # mistake. The except clause clears on any failure path.
         self._in_transaction = True
         self._tx_owner = asyncio.current_task()
         try:
