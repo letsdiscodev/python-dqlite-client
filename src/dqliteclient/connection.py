@@ -72,6 +72,52 @@ _TRANSACTION_ROLLBACK_SQL = "ROLLBACK"
 _TX_AUTO_ROLLBACK_PRIMARY_CODES = frozenset({4, 9, 10, 11, 13})
 
 
+def _parse_savepoint_name(after_keyword: str) -> str | None:
+    """Extract a savepoint name from text following ``SAVEPOINT``.
+
+    Handles unquoted SQLite identifiers (alphanumeric + underscore +
+    leading-non-digit) and double-quoted identifiers (matching SQLite's
+    ``"..."`` quoting). Returns ``None`` for shapes the prefix-sniff
+    cannot reliably parse (backtick / square-bracket / unicode-only
+    identifiers, multi-statement input). Names are normalised to lower
+    case so unquoted-identifier matching is case-insensitive, mirroring
+    SQLite's identifier resolution.
+    """
+    s = after_keyword.lstrip()
+    if not s:
+        return None
+    if s[0] == '"':
+        end = s.find('"', 1)
+        if end == -1:
+            return None
+        # Preserve case for quoted identifiers — SQLite treats double-
+        # quoted names as case-sensitive in principle. Lowercase here
+        # is acceptable for tracking parity since RELEASE on the
+        # round-trip uses the same quoted form; if the user mixes
+        # quoted and unquoted forms we fall back to no-op.
+        return s[1:end].lower()
+    end = 0
+    while end < len(s) and (s[end].isalnum() or s[end] == "_"):
+        end += 1
+    if end == 0:
+        return None
+    return s[:end].lower()
+
+
+def _parse_release_name(after_keyword: str) -> str | None:
+    """Extract a savepoint name from text following ``RELEASE`` or
+    ``ROLLBACK TO``.
+
+    SQLite accepts both ``RELEASE name`` and ``RELEASE SAVEPOINT name``
+    (likewise for ``ROLLBACK TO``). Strips an optional leading
+    ``SAVEPOINT`` keyword before extracting the identifier.
+    """
+    s = after_keyword.lstrip()
+    if s[:9].upper() == "SAVEPOINT" and (len(s) == 9 or not s[9].isalnum()):
+        s = s[9:].lstrip()
+    return _parse_savepoint_name(s)
+
+
 def _is_no_tx_rollback_error(exc: BaseException) -> bool:
     """True if ``exc`` is the deterministic "no transaction is active"
     reply from the server during a ROLLBACK.
@@ -289,6 +335,14 @@ class DqliteConnection:
         self._in_use = False
         self._bound_loop: asyncio.AbstractEventLoop | None = None
         self._tx_owner: asyncio.Task[Any] | None = None
+        # Savepoint stack and implicit-begin flag for SAVEPOINT / RELEASE
+        # tracking. ``_update_tx_flags_from_sql`` pushes a SAVEPOINT name
+        # on entry, pops on RELEASE / ROLLBACK TO. When the stack drains
+        # and the first SAVEPOINT was an auto-begin (SQLite implicitly
+        # begins a transaction when SAVEPOINT runs outside an active
+        # one), ``_in_transaction`` is flipped back to False.
+        self._savepoint_stack: list[str] = []
+        self._savepoint_implicit_begin = False
         self._pool_released = False
         # Cause recorded by ``_invalidate(cause=...)``; only meaningful
         # while ``_protocol is None``. ``connect()`` clears it on a
@@ -490,6 +544,8 @@ class DqliteConnection:
         # path; this clear covers direct ``DqliteConnection`` users.
         self._in_transaction = False
         self._tx_owner = None
+        self._savepoint_stack.clear()
+        self._savepoint_implicit_begin = False
         if self._protocol is None:
             return
         protocol = self._protocol
@@ -677,6 +733,11 @@ class DqliteConnection:
         # this clear is load-bearing on the external-invalidation path.
         self._in_transaction = False
         self._tx_owner = None
+        # Mirror the clear for the savepoint stack tracker; the server
+        # state is gone, so any stale stack entries would lie about
+        # nesting on the next caller.
+        self._savepoint_stack.clear()
+        self._savepoint_implicit_begin = False
         # Preserve the FIRST cause: ``_ensure_connected`` raises a
         # synthetic ``DqliteConnectionError("Not connected")`` chained
         # from ``self._invalidation_cause`` whenever an
@@ -799,8 +860,8 @@ class DqliteConnection:
         return result
 
     def _update_tx_flags_from_sql(self, sql: str) -> None:
-        """Update _in_transaction / _tx_owner after a successful
-        execute, based on the leading verb of the SQL.
+        """Update _in_transaction / _tx_owner / savepoint stack after
+        a successful execute, based on the leading verb of the SQL.
 
         The check is a cheap prefix sniff — comparable to stdlib
         ``sqlite3.Connection``'s autocommit logic — not a full SQL
@@ -808,9 +869,25 @@ class DqliteConnection:
         BEGIN TRANSACTION / BEGIN DEFERRED / BEGIN IMMEDIATE /
         BEGIN EXCLUSIVE / COMMIT / END / ROLLBACK) but cannot detect
         every embedded transaction-control statement (e.g. multi-
-        statement strings). SAVEPOINT / RELEASE / ROLLBACK TO are
-        deliberately ignored — they leave the outer transaction's
-        boundary unchanged.
+        statement strings).
+
+        SAVEPOINT and RELEASE are tracked because SQLite's bare
+        ``SAVEPOINT name`` outside an active transaction triggers an
+        implicit BEGIN: the savepoint becomes the outer frame, and
+        the matching ``RELEASE [SAVEPOINT] name`` ends the
+        autobegun transaction. Stdlib ``sqlite3.Connection.in_transaction``
+        reports ``True`` between those two points; this driver mirrors
+        that semantics.
+
+        SAVEPOINTs nested inside an explicit ``BEGIN`` do not change
+        the outer transaction boundary (per SQLite spec); the tracker
+        still maintains the stack so a later ROLLBACK / COMMIT can
+        clear it, but ``_in_transaction`` stays True until the
+        explicit COMMIT / ROLLBACK.
+
+        ``ROLLBACK TO [SAVEPOINT] name`` leaves ``name`` active per
+        SQLite spec; frames above ``name`` are popped, and
+        ``_in_transaction`` is unchanged.
         """
         # Strip leading whitespace and a possible trailing semicolon
         # so the simple prefix match handles the common shapes.
@@ -834,15 +911,56 @@ class DqliteConnection:
                 # the caller to serialise their own access (matches
                 # stdlib ``sqlite3`` semantics).
             return
+        if upper.startswith("SAVEPOINT") and (
+            len(upper) > len("SAVEPOINT") and not upper[len("SAVEPOINT")].isalnum()
+        ):
+            name = _parse_savepoint_name(head[len("SAVEPOINT") :])
+            if name is not None:
+                self._savepoint_stack.append(name)
+                if not self._in_transaction:
+                    # SQLite implicit-begin: the savepoint is the
+                    # outer frame of the new transaction. Mirror
+                    # stdlib sqlite3's ``in_transaction = True``
+                    # reporting. Leave ``_tx_owner = None`` for the
+                    # same reason as bare BEGIN.
+                    self._in_transaction = True
+                    self._savepoint_implicit_begin = True
+            return
+        if upper.startswith("RELEASE") and (
+            len(upper) > len("RELEASE") and not upper[len("RELEASE")].isalnum()
+        ):
+            name = _parse_release_name(head[len("RELEASE") :])
+            if name is not None and name in self._savepoint_stack:
+                # Pop everything down to and including this name —
+                # SQLite RELEASE removes the named savepoint and any
+                # frames above it.
+                idx = self._savepoint_stack.index(name)
+                del self._savepoint_stack[idx:]
+                # If the stack is now empty AND the outer SAVEPOINT
+                # was an autobegin, the implicit transaction ends.
+                if not self._savepoint_stack and self._savepoint_implicit_begin:
+                    self._in_transaction = False
+                    self._tx_owner = None
+                    self._savepoint_implicit_begin = False
+            return
         if upper.startswith("ROLLBACK"):
             after = upper[len("ROLLBACK") :].lstrip(" ;")
-            # ``ROLLBACK TO`` / ``ROLLBACK TO SAVEPOINT`` only unwinds
-            # to the named savepoint; the outer transaction stays open.
+            # ``ROLLBACK TO`` / ``ROLLBACK TO SAVEPOINT`` unwinds
+            # frames above the named savepoint but leaves the
+            # named savepoint active; the outer transaction stays
+            # open.
             if after.startswith("TO"):
+                rest = head[len("ROLLBACK") :].lstrip()[len("TO") :]
+                name = _parse_release_name(rest)
+                if name is not None and name in self._savepoint_stack:
+                    idx = self._savepoint_stack.index(name)
+                    del self._savepoint_stack[idx + 1 :]
                 return
             if self._in_transaction:
                 self._in_transaction = False
                 self._tx_owner = None
+                self._savepoint_stack.clear()
+                self._savepoint_implicit_begin = False
             return
         if upper.startswith("COMMIT") or upper.startswith("END"):
             # ``COMMIT`` / ``END`` close the outer transaction. Both
@@ -853,6 +971,8 @@ class DqliteConnection:
                 if self._in_transaction:
                     self._in_transaction = False
                     self._tx_owner = None
+                    self._savepoint_stack.clear()
+                    self._savepoint_implicit_begin = False
                 return
 
     async def query_raw(
