@@ -157,6 +157,17 @@ class ClusterClient:
         collapses N independent per-node sweeps into one. Failures are
         not cached: once the current task completes, the slot clears
         so the next caller runs a fresh probe.
+
+        Single-flight staleness window: the in-flight task snapshots
+        the node store once at the top of its sweep
+        (``_find_leader_impl``). A concurrent ``set_nodes(...)`` update
+        that lands AFTER the sweep started is NOT visible to the
+        sharing waiters — they see the result computed against the
+        pre-update node list. The next sweep picks up the new nodes,
+        so the staleness window is bounded by one sweep duration. The
+        single-flight collapse is a deliberate trade-off: the alternative
+        (re-poll the node store between probes) costs an extra await
+        per probe to close a window most callers do not exercise.
         """
         key: tuple[bool] = (trust_server_heartbeat,)
         task = self._find_leader_tasks.get(key)
