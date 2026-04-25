@@ -292,9 +292,28 @@ class DqliteProtocol:
             shape only; wiring them into cursor-cancel / task-cancel
             is a future-streaming-support feature that is deliberately
             out of scope for the current synchronous-drain client.
-            External callers building directly on this protocol layer
-            may invoke ``interrupt`` themselves after cancelling their
-            outer task.
+
+        .. warning::
+
+            ``interrupt`` has no internal concurrency guard at the
+            protocol layer — it writes to the shared ``_writer`` and
+            reads from the shared decoder without any lock. The
+            ``DqliteConnection.execute`` / ``query_sql`` callers at
+            the level above hold ``_in_use``, so two callers there
+            cannot interleave. But ``interrupt`` itself is reachable
+            via the private ``conn._protocol`` path. External callers
+            using it MUST follow this exact ordering:
+
+            1. cancel the outer task that owns the in-flight stmt,
+            2. **await** the cancelled task to completion so the
+               reader half has fully exited (a bare ``cancel()`` does
+               not block — the cancelled task may still have a
+               pending ``_read_response`` queued),
+            3. only then invoke ``interrupt(db_id)``.
+
+            Skipping (2) races the cancelled task's read against
+            ``interrupt``'s read on the shared decoder and produces
+            wire desync.
         """
         request = InterruptRequest(db_id=db_id)
         self._writer.write(request.encode())
