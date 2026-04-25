@@ -9,7 +9,11 @@ from types import TracebackType
 from typing import Any
 
 from dqliteclient.cluster import ClusterClient
-from dqliteclient.connection import DqliteConnection, _validate_timeout
+from dqliteclient.connection import (
+    _TRANSACTION_ROLLBACK_SQL,
+    DqliteConnection,
+    _validate_timeout,
+)
 from dqliteclient.exceptions import (
     DqliteConnectionError,
     OperationalError,
@@ -728,7 +732,7 @@ class ConnectionPool:
                 )
                 return False
             try:
-                await conn.execute("ROLLBACK")
+                await conn.execute(_TRANSACTION_ROLLBACK_SQL)
             except _POOL_CLEANUP_EXCEPTIONS as exc:
                 logger.debug(
                     "pool: dropping connection %s after ROLLBACK failure: %r",

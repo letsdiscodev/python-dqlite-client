@@ -39,6 +39,15 @@ logger = logging.getLogger(__name__)
 # IMMEDIATE`` without showing up in review.
 _TRANSACTION_BEGIN_SQL = "BEGIN"
 
+# ``COMMIT`` and ``ROLLBACK`` literals are pinned for the same reason as
+# ``_TRANSACTION_BEGIN_SQL``: a refactor must not silently switch to a
+# vendor-qualified form (``COMMIT TRANSACTION``) or a savepoint variant.
+# Consistency between ``transaction()`` and the pool's reset-on-return
+# path is a correctness invariant — if they diverge, a connection could
+# be returned to the pool with a still-open server-side transaction.
+_TRANSACTION_COMMIT_SQL = "COMMIT"
+_TRANSACTION_ROLLBACK_SQL = "ROLLBACK"
+
 
 # RFC 1035 hostname labels are ASCII letters, digits, and hyphen. We
 # accept a dotted sequence of labels up to 253 chars total. Single
@@ -806,7 +815,7 @@ class DqliteConnection:
         try:
             yield
             commit_attempted = True
-            await self.execute("COMMIT")
+            await self.execute(_TRANSACTION_COMMIT_SQL)
         except BaseException:
             if commit_attempted:
                 # COMMIT was sent but failed. Server-side state is ambiguous
@@ -831,7 +840,7 @@ class DqliteConnection:
                 # one that propagates, except for cancellation which
                 # takes precedence.
                 try:
-                    await self.execute("ROLLBACK")
+                    await self.execute(_TRANSACTION_ROLLBACK_SQL)
                 except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
                     # Rollback interrupted mid-flight. Server-side tx is
                     # in an unknown state; invalidate and propagate the

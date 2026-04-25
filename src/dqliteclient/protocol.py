@@ -561,12 +561,24 @@ class DqliteProtocol:
         If ``deadline`` is None, a fresh per-operation deadline is set;
         query_sql passes its own deadline so the budget spans every
         continuation frame, not each one individually.
+
+        ``decode_continuation`` may also return an ``EmptyResponse`` —
+        the server's acknowledgement of a mid-stream INTERRUPT. The
+        client-layer ``query_sql`` flow does not send INTERRUPT, so an
+        ``EmptyResponse`` here would mean the server-side query was
+        cancelled out-of-band; surface it as a protocol error.
         """
         if deadline is None:
             deadline = self._operation_deadline()
         try:
             while True:
                 result = self._decoder.decode_continuation()
+                if isinstance(result, EmptyResponse):
+                    raise ProtocolError(
+                        "Unexpected EmptyResponse during ROWS continuation"
+                        f"{self._addr_suffix()}; query may have been "
+                        "interrupted server-side."
+                    )
                 if result is not None:
                     return result
                 data = await self._read_data(deadline=deadline)
