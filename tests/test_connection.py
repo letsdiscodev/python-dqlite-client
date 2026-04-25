@@ -783,7 +783,13 @@ class TestDqliteConnection:
         task_a = asyncio.create_task(tx_a())
         task_b = asyncio.create_task(tx_b())
 
-        await task_b  # should raise InterfaceError about nested transactions
+        # Sibling task hitting an in-progress transaction should see the
+        # "owned by another task" diagnostic from _check_in_use, NOT the
+        # "Nested transactions" diagnostic that points at SAVEPOINT.
+        # SAVEPOINT is the wrong guidance for cross-task connection
+        # sharing — the actual remedy is a separate connection from the
+        # pool.
+        await task_b
 
         task_a.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -791,10 +797,16 @@ class TestDqliteConnection:
 
         assert len(errors) == 1
         assert isinstance(errors[0], InterfaceError), (
-            f"Expected InterfaceError about nested transactions, "
+            f"Expected InterfaceError about cross-task connection sharing, "
             f"got {type(errors[0]).__name__}: {errors[0]}"
         )
-        assert "Nested" in str(errors[0]) or "nested" in str(errors[0])
+        msg = str(errors[0])
+        assert "owned by another task" in msg or "another operation" in msg, (
+            f"Expected the cross-task / in-progress diagnostic, got: {msg!r}"
+        )
+        # The nested-transactions wording is reserved for SAME-task
+        # re-entry; sibling-task usage must not see it.
+        assert "Nested" not in msg and "nested" not in msg
 
     async def test_loop_guard_active_even_without_connect(self) -> None:
         """The loop-mismatch guard must bind on first _check_in_use, not only

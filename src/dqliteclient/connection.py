@@ -791,8 +791,24 @@ class DqliteConnection:
         need defensive-rollback semantics against outer cancellation
         — not individual operations inside it.
         """
+        # Only the SAME task re-entering an open transaction is "nested".
+        # A sibling task hitting an in-progress transaction should see
+        # the "owned by another task" diagnostic so the actual remedy —
+        # acquire a separate connection from the pool — is obvious. The
+        # nested-tx message historically fired for sibling-task usage
+        # too and pointed users at SAVEPOINT, which was the wrong
+        # guidance for that pattern.
         if self._in_transaction:
-            raise InterfaceError("Nested transactions are not supported; use SAVEPOINT directly")
+            if self._tx_owner is asyncio.current_task():
+                raise InterfaceError(
+                    "Nested transactions are not supported; use SAVEPOINT directly"
+                )
+            owner_repr = repr(self._tx_owner)
+            raise InterfaceError(
+                "Cannot start transaction: connection is in a transaction owned "
+                f"by another task ({owner_repr}). Each task should use its own "
+                "connection from the pool."
+            )
 
         # Set the flags before the BEGIN await — the early set is a
         # secondary guard atop ``_run_protocol``'s ``_in_use`` flag.
