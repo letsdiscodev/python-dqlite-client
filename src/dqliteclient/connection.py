@@ -76,26 +76,30 @@ def _parse_savepoint_name(after_keyword: str) -> str | None:
     """Extract a savepoint name from text following ``SAVEPOINT``.
 
     Handles unquoted SQLite identifiers (alphanumeric + underscore +
-    leading-non-digit) and double-quoted identifiers (matching SQLite's
-    ``"..."`` quoting). Returns ``None`` for shapes the prefix-sniff
-    cannot reliably parse (backtick / square-bracket / unicode-only
-    identifiers, multi-statement input). Names are normalised to lower
-    case so unquoted-identifier matching is case-insensitive, mirroring
-    SQLite's identifier resolution.
+    leading-non-digit) and lowercases the result so unquoted-identifier
+    matching is case-insensitive, mirroring SQLite's identifier
+    resolution for bare names.
+
+    Returns ``None`` for shapes the prefix-sniff cannot reliably and
+    safely parse:
+
+    * Double-quoted identifiers — SQLite treats ``"..."`` names as
+      case-sensitive, but the unquoted branch lowercases. Tracking
+      a quoted form would let a later unquoted RELEASE collide
+      against the lowercased entry and pop the local stack while
+      the server (case-sensitive) refuses, leaving the tracker
+      out of step with the server. Returning ``None`` here keeps
+      the local stack untouched for the quoted frame; the autobegin
+      flag also does not transition. Hand-written quoted SAVEPOINTs
+      are exotic — SA generates ``sa_savepoint_N`` which is bare.
+    * Backtick / square-bracket / unicode-only identifiers.
+    * Multi-statement input.
     """
     s = after_keyword.lstrip()
     if not s:
         return None
     if s[0] == '"':
-        end = s.find('"', 1)
-        if end == -1:
-            return None
-        # Preserve case for quoted identifiers — SQLite treats double-
-        # quoted names as case-sensitive in principle. Lowercase here
-        # is acceptable for tracking parity since RELEASE on the
-        # round-trip uses the same quoted form; if the user mixes
-        # quoted and unquoted forms we fall back to no-op.
-        return s[1:end].lower()
+        return None
     end = 0
     while end < len(s) and (s[end].isalnum() or s[end] == "_"):
         end += 1

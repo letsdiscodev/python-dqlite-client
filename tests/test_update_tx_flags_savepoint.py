@@ -125,12 +125,37 @@ class TestSavepointAutobeginTracking:
         conn._update_tx_flags_from_sql("RELEASE SAVEPOINT does_not_exist")
         assert conn._in_transaction is before
 
-    def test_savepoint_with_double_quoted_name(self, conn: DqliteConnection) -> None:
-        # Identifiers can be double-quoted. Match the quoted name on
-        # release.
+    def test_savepoint_with_double_quoted_name_not_tracked(self, conn: DqliteConnection) -> None:
+        # Double-quoted identifiers are case-sensitive in SQLite, but
+        # the unquoted-identifier branch lowercases. Tracking the
+        # quoted form would let a later unquoted RELEASE collide
+        # against the lowercased entry and pop the local stack while
+        # the server (case-sensitive) refuses. Fall back to no-op
+        # tracking for quoted names — same precedent as backtick /
+        # square-bracket / unicode identifiers.
         conn._update_tx_flags_from_sql('SAVEPOINT "weird name"')
-        assert conn._in_transaction is True
-        conn._update_tx_flags_from_sql('RELEASE SAVEPOINT "weird name"')
+        assert conn._in_transaction is False
+        assert conn._savepoint_stack == []
+
+    def test_savepoint_quoted_then_release_unquoted_does_not_pop_stack(
+        self, conn: DqliteConnection
+    ) -> None:
+        # Regression pin for the case-sensitivity divergence: a
+        # quoted SAVEPOINT is not tracked, so a subsequent unquoted
+        # RELEASE finds nothing on the stack and is a no-op.
+        conn._update_tx_flags_from_sql('SAVEPOINT "MyPoint"')
+        conn._update_tx_flags_from_sql("RELEASE mypoint")
+        assert conn._savepoint_stack == []
+        assert conn._in_transaction is False
+
+    def test_savepoint_quoted_then_release_quoted_same_text_no_op(
+        self, conn: DqliteConnection
+    ) -> None:
+        # Same as the above: even matching-text quoted RELEASE is
+        # not tracked, because the SAVEPOINT itself was not pushed.
+        conn._update_tx_flags_from_sql('SAVEPOINT "MyPoint"')
+        conn._update_tx_flags_from_sql('RELEASE "MyPoint"')
+        assert conn._savepoint_stack == []
         assert conn._in_transaction is False
 
     def test_savepoint_name_case_insensitive_match(self, conn: DqliteConnection) -> None:
