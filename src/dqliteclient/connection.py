@@ -23,6 +23,7 @@ from dqliteclient.protocol import (
     _validate_positive_int_or_none,
 )
 from dqlitewire import LEADER_ERROR_CODES as _LEADER_ERROR_CODES
+from dqlitewire import primary_sqlite_code as _primary_sqlite_code
 from dqlitewire.exceptions import EncodeError as _WireEncodeError
 
 __all__ = ["DqliteConnection"]
@@ -883,8 +884,40 @@ class DqliteConnection:
                     )
                     self._invalidate()
                     raise
+                except OperationalError as roll_exc:
+                    # SQLITE_ERROR with the "no transaction is active"
+                    # wording is the deterministic "nothing to roll
+                    # back" reply — the body exception aborted before
+                    # the implicit BEGIN reached the server, or the
+                    # server already auto-rolled-back. The connection
+                    # is healthy; preserve it and re-raise the body
+                    # exception. Mirrors the dbapi layer's
+                    # _NO_TX_CODES whitelist (ISSUE-696).
+                    msg = str(roll_exc).lower()
+                    is_no_tx = (
+                        _primary_sqlite_code(roll_exc.code) == 1  # SQLITE_ERROR
+                        and ("no transaction is active" in msg or "cannot rollback" in msg)
+                    )
+                    if is_no_tx:
+                        logger.debug(
+                            "transaction(address=%s, id=%s): rollback "
+                            "found no active transaction (server-side "
+                            "tx already gone); preserving connection",
+                            self._address,
+                            id(self),
+                        )
+                    else:
+                        logger.debug(
+                            "transaction(address=%s, id=%s): rollback failed "
+                            "with OperationalError; connection invalidated; "
+                            "propagating original body exception",
+                            self._address,
+                            id(self),
+                            exc_info=True,
+                        )
+                        self._invalidate()
                 except Exception:
-                    # Rollback failed for a non-cancellation reason.
+                    # Rollback failed for a non-OperationalError reason.
                     # Invalidate so the pool discards on return, then
                     # re-raise the ORIGINAL body exception (below)
                     # — rollback failure is a secondary concern.
