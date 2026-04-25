@@ -109,6 +109,46 @@ async def test_max_elapsed_seconds_bad_values_rejected(bad: float) -> None:
 
 
 @pytest.mark.asyncio
+async def test_deadline_rechecked_before_each_attempt_after_first() -> None:
+    """The deadline must be re-checked at the top of each iteration
+    (after the first), not only before the inter-attempt sleep. A
+    func() that takes longer than the remaining budget would otherwise
+    run entirely past the deadline before the next iteration's guard
+    can react. The fix re-checks at the top of every attempt > 0."""
+    import asyncio
+    import time
+
+    call_times: list[float] = []
+    start = time.monotonic()
+
+    async def _slow_fail() -> int:
+        call_times.append(time.monotonic() - start)
+        # First attempt completes inside the budget; second attempt
+        # would start past the deadline.
+        await asyncio.sleep(0.06)
+        raise OSError("transport refused")
+
+    with pytest.raises(OSError):
+        await retry_with_backoff(
+            _slow_fail,
+            max_attempts=10,
+            base_delay=0.0,
+            max_delay=0.0,
+            jitter=0.0,
+            max_elapsed_seconds=0.05,  # budget < first attempt's 0.06s
+        )
+
+    # Without the deadline-recheck-at-top-of-iteration, attempt 2 would
+    # still have run because the previous "before the sleep" check
+    # passed when the sleep was 0. With the fix, attempt 2 is skipped
+    # because the budget is exhausted by then.
+    assert len(call_times) == 1, (
+        f"Expected exactly one call (deadline reached after first), "
+        f"got {len(call_times)} calls at {call_times}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_max_elapsed_seconds_bool_rejected() -> None:
     with pytest.raises(TypeError, match="max_elapsed_seconds"):
         await retry_with_backoff(_ok, max_elapsed_seconds=True)  # type: ignore[arg-type]

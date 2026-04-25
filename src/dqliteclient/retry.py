@@ -137,6 +137,13 @@ async def retry_with_backoff[T](
     last_error: BaseException | None = None
 
     for attempt in range(max_attempts):
+        # Deadline re-check BEFORE the next func() call: a previous
+        # backoff sleep may have woken close to the deadline. Without
+        # this check the next func() runs entirely past the deadline,
+        # producing wall-clock overshoots that are visible to outer
+        # asyncio.wait_for callers as missed timeouts.
+        if attempt > 0 and deadline is not None and loop.time() >= deadline:
+            break
         try:
             return await func()
         except excluded_exceptions:
