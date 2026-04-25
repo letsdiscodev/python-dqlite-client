@@ -72,6 +72,31 @@ _TRANSACTION_ROLLBACK_SQL = "ROLLBACK"
 _TX_AUTO_ROLLBACK_PRIMARY_CODES = frozenset({4, 9, 10, 11, 13})
 
 
+def _is_no_tx_rollback_error(exc: BaseException) -> bool:
+    """True if ``exc`` is the deterministic "no transaction is active"
+    reply from the server during a ROLLBACK.
+
+    Recognised by SQLite primary code 1 (``SQLITE_ERROR``) plus the
+    "no transaction is active" or "cannot rollback" wording. Both
+    conditions must hold so a disk-full / constraint / IO error whose
+    message happens to include the magic substring is not silently
+    treated as benign.
+
+    Used by the ``transaction()`` context manager and by the pool's
+    ``_reset_connection`` to distinguish "server already auto-rolled
+    back; preserve the slot" from a real ROLLBACK failure that
+    requires invalidation. Centralising the check avoids drift if the
+    SQLite-error wording ever changes.
+    """
+    if not isinstance(exc, OperationalError):
+        return False
+    code = getattr(exc, "code", None)
+    if code is None or _primary_sqlite_code(code) != 1:  # SQLITE_ERROR
+        return False
+    msg = str(exc).lower()
+    return "no transaction is active" in msg or "cannot rollback" in msg
+
+
 # RFC 1035 hostname labels are ASCII letters, digits, and hyphen. We
 # accept a dotted sequence of labels up to 253 chars total. Single
 # labels (e.g. "localhost") are also accepted.
@@ -1010,12 +1035,7 @@ class DqliteConnection:
                     # is healthy; preserve it and re-raise the body
                     # exception. Mirrors the dbapi layer's
                     # _NO_TX_CODES whitelist (ISSUE-696).
-                    msg = str(roll_exc).lower()
-                    is_no_tx = (
-                        _primary_sqlite_code(roll_exc.code) == 1  # SQLITE_ERROR
-                        and ("no transaction is active" in msg or "cannot rollback" in msg)
-                    )
-                    if is_no_tx:
+                    if _is_no_tx_rollback_error(roll_exc):
                         logger.debug(
                             "transaction(address=%s, id=%s): rollback "
                             "found no active transaction (server-side "

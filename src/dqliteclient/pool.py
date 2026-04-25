@@ -12,6 +12,7 @@ from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import (
     _TRANSACTION_ROLLBACK_SQL,
     DqliteConnection,
+    _is_no_tx_rollback_error,
     _validate_timeout,
 )
 from dqliteclient.exceptions import (
@@ -744,6 +745,26 @@ class ConnectionPool:
             try:
                 await conn.execute(_TRANSACTION_ROLLBACK_SQL)
             except _POOL_CLEANUP_EXCEPTIONS as exc:
+                # Distinguish "server already auto-rolled back" (the
+                # deterministic SQLITE_ERROR + "no transaction is
+                # active" reply) from a real ROLLBACK failure. The
+                # benign case happens during a leader-flip cascade:
+                # the new leader has no record of our tx, so the
+                # ROLLBACK ack reports tx-none. The connection itself
+                # is healthy — preserve the slot, scrub the local
+                # flags, and let the next acquirer reuse it instead
+                # of paying a fresh-connect round-trip per slot.
+                # ``transaction()`` applies the same discrimination
+                # at its rollback site.
+                if _is_no_tx_rollback_error(exc):
+                    logger.debug(
+                        "pool: ROLLBACK on %s found no active transaction "
+                        "(server-side tx already gone); preserving connection",
+                        conn._address,
+                    )
+                    conn._in_transaction = False
+                    conn._tx_owner = None
+                    return True
                 logger.debug(
                     "pool: dropping connection %s after ROLLBACK failure: %r",
                     conn._address,
