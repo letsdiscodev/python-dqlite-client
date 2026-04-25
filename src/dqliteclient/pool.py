@@ -595,8 +595,12 @@ class ConnectionPool:
                     # doesn't sit on the task object until GC, which
                     # would emit "Task exception was never retrieved"
                     # under rapid cancel churn and keep a reference to
-                    # ``closed_event`` alive via the task.
-                    with contextlib.suppress(BaseException):
+                    # ``closed_event`` alive via the task. Narrow to
+                    # ``CancelledError`` so a ``KeyboardInterrupt`` /
+                    # ``SystemExit`` raised by the cancelled task's
+                    # underlying coroutine still propagates, per
+                    # Python signal-propagation contract.
+                    with contextlib.suppress(asyncio.CancelledError):
                         await closed_task
                 if (
                     get_task is not None
@@ -635,7 +639,7 @@ class ConnectionPool:
                             await asyncio.shield(self._release_reservation())
                 elif get_task is not None and not get_task.done():
                     get_task.cancel()
-                    with contextlib.suppress(BaseException):
+                    with contextlib.suppress(asyncio.CancelledError):
                         await get_task
                 raise
             assert get_task is not None and closed_task is not None
@@ -645,7 +649,10 @@ class ConnectionPool:
                 # sit on the task object until GC. asyncio.Event.wait()
                 # exits cleanly on cancel so this returns promptly.
                 # Symmetric with the get_task-cancel branch below.
-                with contextlib.suppress(BaseException):
+                # Narrow to ``CancelledError``: a ``KeyboardInterrupt``
+                # / ``SystemExit`` raised by the underlying coroutine
+                # must still propagate.
+                with contextlib.suppress(asyncio.CancelledError):
                     await closed_task
             if get_task in done:
                 conn = get_task.result()
@@ -653,7 +660,7 @@ class ConnectionPool:
                 # Either close fired or the poll timer fired; either way,
                 # cancel the queue wait cleanly and let the loop re-check.
                 get_task.cancel()
-                with contextlib.suppress(BaseException):
+                with contextlib.suppress(asyncio.CancelledError):
                     await get_task
                 continue
 
