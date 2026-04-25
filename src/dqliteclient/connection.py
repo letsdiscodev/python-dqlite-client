@@ -440,6 +440,23 @@ class DqliteConnection:
         if pending is not None and not pending.done():
             with contextlib.suppress(Exception):
                 await pending
+        # Mirror ``_invalidate``'s atomic clear of the transaction
+        # bookkeeping. Without this, a raw ``BEGIN`` followed by an
+        # explicit ``close()`` and a reconnect on the same instance
+        # leaves ``_in_transaction=True`` (and possibly a stale
+        # ``_tx_owner``) — the next caller's ``in_transaction`` lies
+        # about server-side state, and ``transaction()`` trips the
+        # "Nested transactions are not supported" guard with no real
+        # nesting happening. Place the clear before the
+        # ``_protocol is None`` early-return so an already-closed
+        # connection that still carries stale flags (e.g. from a prior
+        # raw BEGIN whose close was concurrent with this one) gets
+        # them scrubbed too. Pool-released connections take the
+        # early-return at the top of the method, so the pool's
+        # ``_reset_connection`` remains the canonical clear for that
+        # path; this clear covers direct ``DqliteConnection`` users.
+        self._in_transaction = False
+        self._tx_owner = None
         if self._protocol is None:
             return
         protocol = self._protocol
