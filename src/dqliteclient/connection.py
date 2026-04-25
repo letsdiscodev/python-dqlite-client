@@ -49,6 +49,28 @@ _TRANSACTION_BEGIN_SQL = "BEGIN"
 _TRANSACTION_COMMIT_SQL = "COMMIT"
 _TRANSACTION_ROLLBACK_SQL = "ROLLBACK"
 
+# Primary SQLite error codes whose semantics imply the server-side
+# SQLite transaction was automatically rolled back. Upstream
+# ``leader.c`` polls ``sqlite3_txn_state`` after each exec and clears
+# ``active_leader`` when the engine reports ``SQLITE_TXN_NONE``, so
+# the cluster-side tx is gone for any of these primary codes:
+#
+#   * SQLITE_ABORT (4) — operation aborted, e.g. via sqlite3_interrupt.
+#   * SQLITE_INTERRUPT (9) — query interrupted via INTERRUPT.
+#   * SQLITE_IOERR (10) — and most extended IOERR variants (the leader-
+#     change variants are caught earlier as ``_LEADER_ERROR_CODES`` and
+#     trigger a full ``_invalidate`` instead).
+#   * SQLITE_CORRUPT (11).
+#   * SQLITE_FULL (13).
+#
+# When ``_run_protocol`` sees one of these on a non-leader-class
+# OperationalError, the underlying connection is still healthy but
+# ``_in_transaction`` / ``_tx_owner`` must be cleared — otherwise the
+# Python side reports True for ``in_transaction`` while the server
+# reports tx-none, and the next user statement implicitly auto-begins
+# a fresh transaction whose boundary the user code does not know about.
+_TX_AUTO_ROLLBACK_PRIMARY_CODES = frozenset({4, 9, 10, 11, 13})
+
 
 # RFC 1035 hostname labels are ASCII letters, digits, and hyphen. We
 # accept a dotted sequence of labels up to 253 chars total. Single
@@ -682,6 +704,16 @@ class DqliteConnection:
         except OperationalError as e:
             if e.code in _LEADER_ERROR_CODES:
                 self._invalidate(e)
+            elif _primary_sqlite_code(e.code) in _TX_AUTO_ROLLBACK_PRIMARY_CODES:
+                # Server-side SQLite engine auto-rolled-back the
+                # transaction; the connection itself remains healthy.
+                # Clear the local tx flags so ``in_transaction`` does
+                # not lie to downstream layers (PEP 249 dbapi, SA
+                # dialect) and so the next statement does not run
+                # under a stale "we're still inside the user's tx"
+                # assumption.
+                self._in_transaction = False
+                self._tx_owner = None
             raise
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as e:
             # Interrupted mid-operation; we don't know how much of the
