@@ -42,8 +42,27 @@ async def retry_with_backoff[T](
 ) -> T:
     """Retry an async function with exponential backoff.
 
+    Safety note for SQL callables:
+        Retrying a callable that issues SQL against dqlite is UNSAFE for
+        non-idempotent statements. The cluster commits writes through
+        Raft replication; a transport-level failure (TCP reset, leader
+        flip, deadline exceeded) can fire AFTER the server has already
+        applied and Raft-replicated the change but BEFORE the client
+        receives the success response. Re-running the statement on
+        retry produces duplicate rows / double-applied updates with no
+        idempotence guarantees from the protocol.
+
+        The default ``retryable_exceptions`` tuple deliberately omits
+        ``OperationalError`` so the most common SQL-level failures do
+        not retry. Callers who broaden the tuple — or who wrap a SQL
+        callable in this helper at all — must restrict themselves to
+        idempotent shapes (UPSERT, INSERT OR IGNORE, plain SELECT,
+        application-level idempotency tokens) or accept at-least-once
+        application semantics.
+
     Args:
-        func: Async function to retry
+        func: Async function to retry. See the safety note above before
+            wrapping a SQL-mutating callable.
         max_attempts: Maximum number of attempts
         base_delay: Initial delay between retries in seconds
         max_delay: Maximum delay between retries
@@ -64,7 +83,9 @@ async def retry_with_backoff[T](
             deterministic server/client errors (``OperationalError``,
             ``DataError``, ``InterfaceError``) are NOT retried by
             default. Callers that want broader catches should pass
-            their own tuple.
+            their own tuple, but see the safety note above on the
+            at-least-once consequences of broadening this for SQL
+            callables.
         excluded_exceptions: Subclasses of ``retryable_exceptions`` that
             must NOT be retried — useful when a deterministic,
             non-recoverable error (e.g. a policy rejection) is a subtype
