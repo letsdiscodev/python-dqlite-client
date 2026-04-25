@@ -462,7 +462,15 @@ class DqliteConnection:
         # ``connect()``'s own ``_pending_drain = None`` symmetry.
         pending = self._pending_drain
         self._pending_drain = None
-        if pending is not None and not pending.done():
+        if pending is not None and not pending.done():  # pragma: no cover
+            # Defensive: the pending bounded-drain task is set only
+            # by ``_invalidate`` and is normally already-done by
+            # the time ``close()`` runs (the drain is bounded by
+            # ``close_timeout`` and the close path is the second
+            # caller). Reaching here requires the rare race where
+            # ``_invalidate`` fires between the snapshot read and
+            # the second caller's resumption — verified by code
+            # review, not coverage.
             with contextlib.suppress(Exception):
                 await pending
         # Mirror ``_invalidate``'s atomic clear of the transaction

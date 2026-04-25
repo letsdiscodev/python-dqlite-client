@@ -426,7 +426,12 @@ class ConnectionPool:
         while not self._pool.empty():
             try:
                 conn = self._pool.get_nowait()
-            except asyncio.QueueEmpty:
+            except asyncio.QueueEmpty:  # pragma: no cover
+                # Defensive: the ``empty()`` check is racy with a
+                # concurrent ``get_nowait`` from another task. The
+                # window between check and get is too tight to drive
+                # without monkey-patching ``asyncio.Queue`` itself.
+                # Verified by code review, not coverage.
                 break
             try:
                 # Shield each per-connection close against an outer

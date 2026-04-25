@@ -587,7 +587,11 @@ class DqliteProtocol:
         ``EmptyResponse`` here would mean the server-side query was
         cancelled out-of-band; surface it as a protocol error.
         """
-        if deadline is None:
+        if deadline is None:  # pragma: no cover
+            # Defensive: in-tree callers always pass an explicit
+            # deadline. Reaching here requires a third-party caller
+            # using ``read_continuation`` directly; the fallback
+            # picks up the connection's operation timeout.
             deadline = self._operation_deadline()
         try:
             while True:
@@ -629,7 +633,13 @@ class DqliteProtocol:
         except _WireProtocolError as e:
             raise ProtocolError(f"Wire decode failed{self._addr_suffix()}: {e}") from e
 
-        if message is None:
+        if message is None:  # pragma: no cover
+            # Defensive: ``decoder.decode()`` returns None only when
+            # the buffer has no complete message. ``read_message``
+            # is called only after ``has_message()`` confirmed a
+            # complete frame is available, so this branch requires
+            # a torn buffer state between the two calls — verified
+            # by code review, not coverage.
             raise ProtocolError(f"Failed to decode message{self._addr_suffix()}")
 
         return message
