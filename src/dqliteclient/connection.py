@@ -599,7 +599,19 @@ class DqliteConnection:
         # this clear is load-bearing on the external-invalidation path.
         self._in_transaction = False
         self._tx_owner = None
-        if cause is not None:
+        # Preserve the FIRST cause: ``_ensure_connected`` raises a
+        # synthetic ``DqliteConnectionError("Not connected")`` chained
+        # from ``self._invalidation_cause`` whenever an
+        # already-invalidated connection is touched. ``_run_protocol``
+        # then catches that synthetic wrapper and calls
+        # ``_invalidate(synthetic_wrapper)``, which would overwrite
+        # ``_invalidation_cause`` with the wrapper itself. After several
+        # invalidated calls the stored cause becomes a self-chaining
+        # "Not connected → Not connected → ..." stack with the real
+        # transport error buried or dropped from the surface chain. The
+        # ``cause is None`` guard preserves the original root cause for
+        # operators triaging a leader flip.
+        if cause is not None and self._invalidation_cause is None:
             self._invalidation_cause = cause
 
     @staticmethod
