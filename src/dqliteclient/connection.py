@@ -818,6 +818,14 @@ class DqliteConnection:
                     # Rollback interrupted mid-flight. Server-side tx is
                     # in an unknown state; invalidate and propagate the
                     # higher-priority signal.
+                    logger.debug(
+                        "transaction(address=%s, id=%s): rollback was "
+                        "cancelled mid-flight; connection invalidated; "
+                        "propagating cancellation",
+                        self._address,
+                        id(self),
+                        exc_info=True,
+                    )
                     self._invalidate()
                     raise
                 except Exception:
@@ -825,6 +833,14 @@ class DqliteConnection:
                     # Invalidate so the pool discards on return, then
                     # re-raise the ORIGINAL body exception (below)
                     # — rollback failure is a secondary concern.
+                    logger.debug(
+                        "transaction(address=%s, id=%s): rollback failed; "
+                        "connection invalidated; propagating original body "
+                        "exception",
+                        self._address,
+                        id(self),
+                        exc_info=True,
+                    )
                     self._invalidate()
             raise
         finally:
