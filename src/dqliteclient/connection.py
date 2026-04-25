@@ -29,6 +29,16 @@ __all__ = ["DqliteConnection"]
 
 logger = logging.getLogger(__name__)
 
+# Bare ``BEGIN`` opens an implicit ``DEFERRED`` transaction per SQLite's
+# grammar default. dqlite's Raft FSM serializes transactions regardless
+# of the qualifier, so DEFERRED / IMMEDIATE / EXCLUSIVE collapse to the
+# same SERIALIZABLE semantics on dqlite — there is no benefit to
+# emitting an explicit qualifier and doing so would diverge from the C
+# and Go peer clients which also emit a bare ``BEGIN``. The constant
+# pins the literal so a refactor can't silently upgrade to ``BEGIN
+# IMMEDIATE`` without showing up in review.
+_TRANSACTION_BEGIN_SQL = "BEGIN"
+
 
 # RFC 1035 hostname labels are ASCII letters, digits, and hyphen. We
 # accept a dotted sequence of labels up to 253 chars total. Single
@@ -738,6 +748,14 @@ class DqliteConnection:
     async def transaction(self) -> AsyncIterator[None]:
         """Context manager for transactions.
 
+        Issues a bare ``BEGIN`` (SQLite default ``BEGIN DEFERRED``) on
+        entry, ``COMMIT`` on clean exit, and ``ROLLBACK`` if the body
+        raises. dqlite's Raft FSM serializes transactions across the
+        cluster regardless of the ``DEFERRED`` / ``IMMEDIATE`` /
+        ``EXCLUSIVE`` qualifier — isolation is always SERIALIZABLE —
+        so the qualifier choice has no semantic effect on dqlite. The
+        ``BEGIN`` literal matches the C/Go peer behaviour.
+
         Cancellation contract:
         - Cancellation during BEGIN: state cleared, CancelledError
           propagates.
@@ -778,7 +796,7 @@ class DqliteConnection:
         self._in_transaction = True
         self._tx_owner = asyncio.current_task()
         try:
-            await self.execute("BEGIN")
+            await self.execute(_TRANSACTION_BEGIN_SQL)
         except BaseException:
             self._tx_owner = None
             self._in_transaction = False
