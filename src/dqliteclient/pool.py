@@ -16,6 +16,7 @@ from dqliteclient.connection import (
 )
 from dqliteclient.exceptions import (
     DqliteConnectionError,
+    InterfaceError,
     OperationalError,
     ProtocolError,
 )
@@ -36,11 +37,20 @@ __all__ = ["ConnectionPool"]
 # ``OSError`` entry covers every stdlib transport-error shape —
 # mirrors the classification in ``sqlalchemy-dqlite``'s
 # ``is_disconnect``.
+#
+# ``InterfaceError`` belongs here defensively: ``_reset_connection``
+# calls ``conn.execute("ROLLBACK")``, which goes through
+# ``_run_protocol → _check_in_use``. A connection where ``_in_transaction``
+# is ``True`` and ``_tx_owner`` is some other still-live task makes
+# ``_check_in_use`` raise ``InterfaceError("owned by another task")``.
+# That should drop the connection, not crash the pool's release path
+# (which would leak a ``_size`` slot and eventually wedge the pool).
 _POOL_CLEANUP_EXCEPTIONS = (
     OSError,
     DqliteConnectionError,
     ProtocolError,
     OperationalError,
+    InterfaceError,
 )
 
 logger = logging.getLogger(__name__)
