@@ -100,16 +100,24 @@ class ClusterClient:
         self._node_store = node_store
         self._timeout = timeout
         self._redirect_policy = redirect_policy
-        # Single-flight slot for ``find_leader``. Concurrent callers
+        # Single-flight slot map for ``find_leader``. Concurrent callers
         # share the in-flight discovery task instead of each launching
         # an independent per-node sweep — under a leader flip with N
         # waiting acquirers, this collapses N×M handshake attempts
         # against the failing ex-leader into M (one sweep). See
-        # ISSUE-631 for the stampede shape this closes. The slot is
+        # ISSUE-631 for the stampede shape this closes. Slots are
         # cleared on done-callback so a fresh probe re-runs after the
         # current task finishes; consecutive callers do NOT share a
         # cached failure.
-        self._find_leader_task: asyncio.Task[str] | None = None
+        #
+        # The map is keyed by ``(trust_server_heartbeat,)``: callers
+        # that requested different heartbeat-trust semantics must NOT
+        # collapse onto the same task — the per-call flag would
+        # otherwise be silently ignored for the second caller, which
+        # is a security-adjacent regression for operators who opted
+        # one pool out of widened heartbeats. Bounded to two slots
+        # since the flag is a bool.
+        self._find_leader_tasks: dict[tuple[bool], asyncio.Task[str]] = {}
 
     @classmethod
     def from_addresses(
@@ -150,20 +158,21 @@ class ClusterClient:
         not cached: once the current task completes, the slot clears
         so the next caller runs a fresh probe.
         """
-        task = self._find_leader_task
+        key: tuple[bool] = (trust_server_heartbeat,)
+        task = self._find_leader_tasks.get(key)
         if task is None or task.done():
             task = asyncio.create_task(
                 self._find_leader_impl(trust_server_heartbeat=trust_server_heartbeat)
             )
-            self._find_leader_task = task
+            self._find_leader_tasks[key] = task
 
             def _clear_slot(t: asyncio.Task[str]) -> None:
                 # Clear the slot only if it still points at THIS task —
                 # a concurrent ``find_leader`` may have already
                 # supplanted us if our task finished and a new caller
                 # triggered a fresh probe before this callback ran.
-                if self._find_leader_task is t:
-                    self._find_leader_task = None
+                if self._find_leader_tasks.get(key) is t:
+                    del self._find_leader_tasks[key]
 
             task.add_done_callback(_clear_slot)
         # Shield so a caller's outer cancel does not kill the shared
