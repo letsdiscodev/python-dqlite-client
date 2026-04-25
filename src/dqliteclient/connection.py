@@ -728,9 +728,77 @@ class DqliteConnection:
         """Execute a SQL statement.
 
         Returns (last_insert_id, rows_affected).
+
+        Sniffs the SQL prefix after a successful exec to keep the
+        ``_in_transaction`` flag in sync with raw ``BEGIN`` / ``COMMIT``
+        / ``ROLLBACK`` statements. The ``transaction()`` context
+        manager updates these flags eagerly; the sniff makes the same
+        invariant hold for the stdlib ``sqlite3``-style idiom of
+        ``cursor.execute("BEGIN")`` ... ``cursor.execute("COMMIT")``.
+        Without the sniff, ``in_transaction`` would lie about the
+        engine state for raw-tx users.
         """
         self._validate_params(params)
-        return await self._run_protocol(lambda p, db: p.exec_sql(db, sql, params))
+        result = await self._run_protocol(lambda p, db: p.exec_sql(db, sql, params))
+        self._update_tx_flags_from_sql(sql)
+        return result
+
+    def _update_tx_flags_from_sql(self, sql: str) -> None:
+        """Update _in_transaction / _tx_owner after a successful
+        execute, based on the leading verb of the SQL.
+
+        The check is a cheap prefix sniff — comparable to stdlib
+        ``sqlite3.Connection``'s autocommit logic — not a full SQL
+        parser. It correctly tracks the common shapes (BEGIN /
+        BEGIN TRANSACTION / BEGIN DEFERRED / BEGIN IMMEDIATE /
+        BEGIN EXCLUSIVE / COMMIT / END / ROLLBACK) but cannot detect
+        every embedded transaction-control statement (e.g. multi-
+        statement strings). SAVEPOINT / RELEASE / ROLLBACK TO are
+        deliberately ignored — they leave the outer transaction's
+        boundary unchanged.
+        """
+        # Strip leading whitespace and a possible trailing semicolon
+        # so the simple prefix match handles the common shapes.
+        head = sql.lstrip()
+        if not head:
+            return
+        upper = head.upper()
+        if upper.startswith("BEGIN") and (
+            len(upper) == len("BEGIN") or not upper[len("BEGIN")].isalnum()
+        ):
+            if not self._in_transaction:
+                self._in_transaction = True
+                # Deliberately leave ``_tx_owner`` as None for a raw
+                # BEGIN: the dbapi's sync ``_run_sync`` submits each
+                # call as a fresh task on the background loop, so
+                # binding ``_tx_owner`` to the BEGIN-task would cause
+                # the next sync ``execute`` call to be rejected as
+                # "owned by another task". The async ``transaction()``
+                # context manager (which DOES set ``_tx_owner``) keeps
+                # the cross-task guard for its scope; raw BEGIN trusts
+                # the caller to serialise their own access (matches
+                # stdlib ``sqlite3`` semantics).
+            return
+        if upper.startswith("ROLLBACK"):
+            after = upper[len("ROLLBACK") :].lstrip(" ;")
+            # ``ROLLBACK TO`` / ``ROLLBACK TO SAVEPOINT`` only unwinds
+            # to the named savepoint; the outer transaction stays open.
+            if after.startswith("TO"):
+                return
+            if self._in_transaction:
+                self._in_transaction = False
+                self._tx_owner = None
+            return
+        if upper.startswith("COMMIT") or upper.startswith("END"):
+            # ``COMMIT`` / ``END`` close the outer transaction. Both
+            # forms (``COMMIT``, ``COMMIT TRANSACTION``, ``END``,
+            # ``END TRANSACTION``) end here.
+            verb = "COMMIT" if upper.startswith("COMMIT") else "END"
+            if len(upper) == len(verb) or not upper[len(verb)].isalnum():
+                if self._in_transaction:
+                    self._in_transaction = False
+                    self._tx_owner = None
+                return
 
     async def query_raw(
         self, sql: str, params: Sequence[Any] | None = None
