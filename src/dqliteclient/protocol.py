@@ -56,6 +56,21 @@ _READ_CHUNK_SIZE = 4096
 _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS = 300.0
 
 
+def _failure_message(message: str, addr_suffix: str) -> str:
+    """Render the body of a FailureResponse-derived exception.
+
+    Substitutes a stable placeholder when the server message is empty
+    or reduces to whitespace under the wire-layer
+    ``_sanitize_server_text`` cleanup. Without this, an empty message
+    bubbles up as ``"[1] "`` (with a trailing space and no
+    diagnostic), which log scraping cannot group on usefully and
+    operators cannot grep. The placeholder ``"(no diagnostic from
+    server)"`` is the contract.
+    """
+    body = message if message.strip() else "(no diagnostic from server)"
+    return body + addr_suffix
+
+
 def _validate_positive_int_or_none(value: int | None, name: str) -> int | None:
     """Shared validation for positive-int-or-None parameters.
 
@@ -148,7 +163,13 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise ProtocolError(f"Handshake failed: {response.message}")
+            # Mirror the query-path raise sites: surface the
+            # server-reported code and peer address so log aggregators
+            # can group on the numeric code (DQLITE_PARSE,
+            # DQLITE_NOTLEADER, etc.) rather than on text alone.
+            raise ProtocolError(
+                f"Handshake failed: [{response.code}] {self._failure_text(response)}"
+            )
 
         if not isinstance(response, WelcomeResponse):
             raise ProtocolError(
@@ -200,7 +221,7 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message + self._addr_suffix())
+            raise OperationalError(response.code, self._failure_text(response))
 
         if not isinstance(response, LeaderResponse):
             raise ProtocolError(
@@ -221,7 +242,7 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message + self._addr_suffix())
+            raise OperationalError(response.code, self._failure_text(response))
 
         if not isinstance(response, DbResponse):
             raise ProtocolError(
@@ -242,7 +263,7 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message + self._addr_suffix())
+            raise OperationalError(response.code, self._failure_text(response))
 
         if not isinstance(response, StmtResponse):
             raise ProtocolError(
@@ -260,7 +281,7 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message + self._addr_suffix())
+            raise OperationalError(response.code, self._failure_text(response))
 
         if not isinstance(response, EmptyResponse):
             raise ProtocolError(
@@ -332,7 +353,7 @@ class DqliteProtocol:
             if isinstance(response, EmptyResponse):
                 return
             if isinstance(response, FailureResponse):
-                raise OperationalError(response.code, response.message + self._addr_suffix())
+                raise OperationalError(response.code, self._failure_text(response))
             # RowsResponse mid-drain is expected: the server's in-flight
             # continuation may land before the interrupt takes effect.
             # Other message types indicate stream desync.
@@ -369,7 +390,7 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message + self._addr_suffix())
+            raise OperationalError(response.code, self._failure_text(response))
 
         if not isinstance(response, ResultResponse):
             raise ProtocolError(
@@ -393,7 +414,7 @@ class DqliteProtocol:
         deadline = self._operation_deadline()
         response = await self._read_response(deadline=deadline)
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, response.message + self._addr_suffix())
+            raise OperationalError(response.code, self._failure_text(response))
         if not isinstance(response, RowsResponse):
             raise ProtocolError(
                 f"Expected RowsResponse, got {type(response).__name__}{self._addr_suffix()}"
@@ -569,6 +590,19 @@ class DqliteProtocol:
         error messages clean for callers that don't thread it in.
         """
         return f" to {self._address}" if self._address else ""
+
+    def _failure_text(self, response: FailureResponse) -> str:
+        """Render a FailureResponse as the body string for an
+        OperationalError / ProtocolError raise.
+
+        Substitutes a stable placeholder when the server message is
+        empty or whitespace-only so log scraping has a keyword to
+        match instead of staring at ``"[1] "``. Wraps
+        :func:`_failure_message` with the protocol's ``_addr_suffix``.
+        Used uniformly across the query-path raise sites so the
+        rendering is consistent.
+        """
+        return _failure_message(response.message, self._addr_suffix())
 
     def _operation_deadline(self) -> float:
         """Deadline (monotonic seconds) for a single protocol operation."""

@@ -307,6 +307,46 @@ class TestDqliteProtocol:
         with pytest.raises(ProtocolError, match="Handshake failed"):
             await protocol.handshake()
 
+    async def test_handshake_failure_includes_code_and_address(
+        self,
+        mock_reader: AsyncMock,
+        mock_writer: MagicMock,
+    ) -> None:
+        """Pin that handshake FailureResponse surfaces the server-
+        reported code and the peer address, mirroring the query-path
+        FailureResponse raises. Without this, a "[Handshake failed:
+        bad protocol]" message gives operators no way to distinguish
+        a DQLITE_PARSE from a DQLITE_NOTLEADER without re-running.
+        """
+        failure = FailureResponse(code=101, message="bad protocol version").encode()
+        mock_reader.read.return_value = failure
+        protocol = DqliteProtocol(mock_reader, mock_writer, address="leader.example:9001")
+
+        with pytest.raises(ProtocolError) as ei:
+            await protocol.handshake()
+
+        message = str(ei.value)
+        assert "[101]" in message
+        assert "bad protocol version" in message
+        assert "leader.example:9001" in message
+
+    async def test_handshake_failure_empty_message_uses_placeholder(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """An empty server message must surface the
+        ``"(no diagnostic from server)"`` placeholder rather than a
+        bare ``"[1] "`` rendering.
+        """
+        failure = FailureResponse(code=1, message="").encode()
+        mock_reader.read.return_value = failure
+
+        with pytest.raises(ProtocolError) as ei:
+            await protocol.handshake()
+
+        assert "(no diagnostic from server)" in str(ei.value)
+
     async def test_open_database(
         self,
         protocol: DqliteProtocol,
