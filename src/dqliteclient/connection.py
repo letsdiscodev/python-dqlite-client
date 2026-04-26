@@ -1564,6 +1564,22 @@ class DqliteConnection:
         need defensive-rollback semantics against outer cancellation
         — not individual operations inside it.
         """
+        # An untracked SAVEPOINT (parser-rejected name issued without a
+        # preceding BEGIN) auto-begins a server-side tx without flipping
+        # ``_in_transaction``. Surface a dedicated diagnostic so the
+        # user sees the SAVEPOINT root cause rather than a wire-level
+        # "cannot start a transaction within a transaction" from BEGIN.
+        # ``_tx_owner`` is None in this case, so the owned-by-another-
+        # task branch below would render a misleading
+        # ``repr(None)`` owner.
+        if self._has_untracked_savepoint and not self._in_transaction:
+            raise InterfaceError(
+                "Cannot start transaction: a SAVEPOINT outside an explicit "
+                "BEGIN is currently open on this connection (the SQLite "
+                "engine has auto-begun a transaction). Issue COMMIT / "
+                "ROLLBACK or RELEASE the outer SAVEPOINT before entering "
+                "transaction()."
+            )
         # Only the SAME task re-entering an open transaction is "nested".
         # A sibling task hitting an in-progress transaction should see
         # the "owned by another task" diagnostic so the actual remedy —
