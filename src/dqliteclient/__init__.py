@@ -33,10 +33,6 @@ from dqlitewire import (
 __version__ = "0.1.3"
 
 __all__ = [
-    "__version__",
-    "allowlist_policy",
-    "connect",
-    "create_pool",
     "ClusterClient",
     "ClusterError",
     "ClusterPolicyError",
@@ -52,6 +48,10 @@ __all__ = [
     "OperationalError",
     "ProtocolError",
     "RedirectPolicy",
+    "__version__",
+    "allowlist_policy",
+    "connect",
+    "create_pool",
 ]
 
 
