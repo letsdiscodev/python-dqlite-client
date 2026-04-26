@@ -641,6 +641,16 @@ class ConnectionPool:
                     get_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await get_task
+                elif get_task is not None and get_task.done():
+                    # Queue.get() completed but with cancellation or an
+                    # exception. Consume the result so the task does not
+                    # log "Task exception was never retrieved" at GC and
+                    # so the task object can be released cleanly. Suppress
+                    # BaseException because the consumed exception may
+                    # itself be a CancelledError, and the outer cancel
+                    # below takes priority.
+                    with contextlib.suppress(BaseException):
+                        await get_task
                 raise
             assert get_task is not None and closed_task is not None
             if not closed_task.done():
