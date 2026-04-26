@@ -212,7 +212,7 @@ async def test_busy_with_checkpoint_substring_only_in_raw_message_clears_tx_stat
     assert "checkpoint in progress" not in err.message.lower()
     assert "checkpoint in progress" in err.raw_message.lower()
 
-    async def fake_send(protocol, db_id):
+    async def fake_send(protocol: object, db_id: object) -> None:
         raise err
 
     conn._in_transaction = True

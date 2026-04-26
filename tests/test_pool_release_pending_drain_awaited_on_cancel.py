@@ -58,7 +58,7 @@ async def test_release_drains_pending_before_setting_pool_released() -> None:
         # pinning the order on.
         return False
 
-    pool._reset_connection = fake_reset  # type: ignore[method-assign]
+    pool._reset_connection = fake_reset  # type: ignore[method-assign,assignment]
 
     # Capture the drain task's done-state at the moment
     # _release_reservation runs. With the fix, the drain has been
@@ -102,7 +102,7 @@ async def test_release_with_no_pending_drain_path_unchanged() -> None:
     async def fake_reset(c: DqliteConnection) -> bool:
         return False
 
-    pool._reset_connection = fake_reset  # type: ignore[method-assign]
+    pool._reset_connection = fake_reset  # type: ignore[method-assign,assignment]
 
     async def noop() -> None:
         return
@@ -141,7 +141,7 @@ async def test_release_pending_drain_failure_does_not_block_release() -> None:
     async def fake_reset(c: DqliteConnection) -> bool:
         return False
 
-    pool._reset_connection = fake_reset  # type: ignore[method-assign]
+    pool._reset_connection = fake_reset  # type: ignore[method-assign,assignment]
 
     async def noop() -> None:
         return
