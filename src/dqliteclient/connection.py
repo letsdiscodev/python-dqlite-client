@@ -1378,6 +1378,22 @@ class DqliteConnection:
                     self._in_transaction = False
                     self._tx_owner = None
                     self._savepoint_implicit_begin = False
+            else:
+                # The parsed name is valid bare-ASCII but does not
+                # appear in the local stack — the server must have
+                # created the frame via a path the tracker did not
+                # observe (an earlier untracked-name SAVEPOINT, a
+                # multi-statement batch the splitter could not see,
+                # etc.). The server's success-only call here means
+                # the named SP and every frame above it are gone
+                # server-side; we don't know which (if any) of our
+                # tracked frames sat above the unobserved target.
+                # Mirror the parser-rejected branch: conservatively
+                # clear the local stack and lock
+                # ``_has_untracked_savepoint=True`` so pool reset
+                # fires on return.
+                self._savepoint_stack.clear()
+                self._has_untracked_savepoint = True
             return
         if upper.startswith("ROLLBACK"):
             # Use bare ``lstrip()`` to consume any whitespace SQLite's
@@ -1427,6 +1443,19 @@ class DqliteConnection:
                     # duplicate names — see RELEASE branch above).
                     idx = len(self._savepoint_stack) - 1 - self._savepoint_stack[::-1].index(name)
                     del self._savepoint_stack[idx + 1 :]
+                else:
+                    # The parsed name does not appear in the local
+                    # stack. The server's success-only call here
+                    # means the named target exists on its side and
+                    # frames above it have been unwound. We don't
+                    # know which (if any) of our tracked frames sat
+                    # above the unobserved target; over-correcting
+                    # by clearing tracked frames could drop frames
+                    # that sat BELOW the target. Conservative: leave
+                    # ``_savepoint_stack`` untouched and lock
+                    # ``_has_untracked_savepoint=True`` so the
+                    # pool-reset safety net fires.
+                    self._has_untracked_savepoint = True
                 return
             if self._in_transaction:
                 self._in_transaction = False

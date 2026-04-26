@@ -116,14 +116,32 @@ class TestSavepointAutobeginTracking:
         conn._update_tx_flags_from_sql("ROLLBACK")
         assert conn._in_transaction is False
 
-    def test_release_of_unknown_name_is_a_no_op_on_tracker(self, conn: DqliteConnection) -> None:
-        # The server will reject a RELEASE of a name not on the stack,
-        # but the helper must not crash (e.g. with IndexError) on the
-        # path. The flag stays whatever it was before.
+    def test_release_of_known_to_server_unknown_to_client_clears_stack(
+        self, conn: DqliteConnection
+    ) -> None:
+        # ``_update_tx_flags_from_sql`` runs only on success, so when it
+        # observes ``RELEASE name`` whose parsed name is not in the local
+        # stack, the server must have created that frame via a path the
+        # tracker did not observe. The server's RELEASE pops the named
+        # SP and every frame above; we cannot know which of our tracked
+        # frames sat above. Conservatively clear and force the pool-reset
+        # safety net via ``_has_untracked_savepoint=True``.
         conn._update_tx_flags_from_sql("SAVEPOINT sp1")
-        before = conn._in_transaction
         conn._update_tx_flags_from_sql("RELEASE SAVEPOINT does_not_exist")
-        assert conn._in_transaction is before
+        assert conn._savepoint_stack == []
+        assert conn._has_untracked_savepoint is True
+
+    def test_rollback_to_known_to_server_unknown_to_client_marks_untracked(
+        self, conn: DqliteConnection
+    ) -> None:
+        # ``ROLLBACK TO`` does NOT pop the named target — only frames
+        # ABOVE it are unwound. Over-correcting by clearing the local
+        # stack could drop frames that sat BELOW the unobserved target.
+        # Conservative: leave the stack alone, set the untracked flag.
+        conn._update_tx_flags_from_sql("SAVEPOINT sp1")
+        conn._update_tx_flags_from_sql("ROLLBACK TO SAVEPOINT does_not_exist")
+        assert conn._savepoint_stack == ["sp1"]
+        assert conn._has_untracked_savepoint is True
 
     def test_savepoint_with_double_quoted_name_not_tracked(self, conn: DqliteConnection) -> None:
         # Double-quoted identifiers are case-sensitive in SQLite, but
