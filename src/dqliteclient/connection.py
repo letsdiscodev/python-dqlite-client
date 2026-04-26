@@ -627,8 +627,35 @@ class DqliteConnection:
         if pending is not None:
             if not pending.done():
                 pending.cancel()
-                with contextlib.suppress(BaseException):
+                # Awaiting a cancelled task raises ``CancelledError``;
+                # that is the cancel WE delivered and must be consumed
+                # here so connect() can proceed. But an outer
+                # ``task.cancel()`` may have also landed on the current
+                # task — distinguish via ``Task.uncancel()``: if the
+                # task has zero cancels pending after we consume the
+                # one from awaiting ``pending``, the cancel was ours.
+                # Otherwise re-raise so the outer cancel reaches the
+                # next checkpoint cleanly. (Without this, ``connect()``
+                # would silently consume an outer ``task.cancel()`` and
+                # proceed to open a TCP connection the parent intended
+                # to abort.)
+                try:
                     await pending
+                except asyncio.CancelledError:
+                    # The CancelledError came either from our own
+                    # ``pending.cancel()`` (which we want to consume
+                    # so connect() can proceed) OR from an outer
+                    # ``task.cancel()`` that propagated through our
+                    # fut_waiter. ``Task.cancelling()`` distinguishes:
+                    # it counts cancels delivered TO the current task,
+                    # which our own ``pending.cancel()`` does not
+                    # increment. If > 0, the cancel was outer; let
+                    # it propagate to the next checkpoint.
+                    self_task = asyncio.current_task()
+                    if self_task is not None and self_task.cancelling() > 0:
+                        raise
+                except Exception:
+                    pass
             self._pending_drain = None
 
         self._bound_loop = asyncio.get_running_loop()

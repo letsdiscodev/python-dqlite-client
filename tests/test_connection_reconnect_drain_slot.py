@@ -10,6 +10,7 @@ to cancel-and-await a pending prior drain closes the loop.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -99,3 +100,74 @@ async def test_connect_cancels_prior_pending_drain() -> None:
     # Drain the task result so we don't leak a pending task.
     with pytest.raises(asyncio.CancelledError):
         await prior
+
+
+@pytest.mark.asyncio
+async def test_connect_propagates_outer_cancel_during_pending_drain_retire() -> None:
+    """An outer ``task.cancel()`` delivered while ``connect()`` is
+    awaiting a prior pending-drain task MUST propagate. Without this,
+    a broad suppress-after-cancel-and-await would silently consume
+    the parent's cancel signal and ``connect()`` would proceed to
+    invoke ``asyncio.open_connection`` despite the parent's intent."""
+    conn = DqliteConnection("localhost:9001", timeout=5.0, close_timeout=5.0)
+
+    # Long-running drain task standing in for a prior _invalidate's
+    # bounded wait. Holds onto execution until externally cancelled.
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def slow_drain() -> None:
+        started.set()
+        try:
+            await proceed.wait()
+        except asyncio.CancelledError:
+            # Yield before propagating so the outer cancel of driver_task
+            # has a chance to land while connect() is awaiting us.
+            await asyncio.sleep(0)
+            raise
+
+    prior = asyncio.get_running_loop().create_task(slow_drain())
+    await started.wait()
+    conn._pending_drain = prior
+
+    # Patch open_connection so we can detect whether the cancel signal
+    # was honored. If connect() proceeds past the pending-retire, this
+    # mock fires and we record the call — that's the regression we are
+    # guarding against.
+    open_connection_called: list[object] = []
+    real_open = asyncio.open_connection
+
+    async def fake_open(host: str, port: int):
+        open_connection_called.append((host, port))
+        # Hand back enough to survive a first read; never reached on
+        # the success path, so an assertion error here is a clear bug.
+        return MagicMock(), MagicMock()
+
+    asyncio.open_connection = fake_open  # type: ignore[assignment]
+    try:
+
+        async def driver() -> None:
+            await conn.connect()
+
+        driver_task = asyncio.get_running_loop().create_task(driver())
+        # Let driver enter connect() and reach ``await pending``.
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+        # Cancel the outer driver task. connect()'s pending-drain await
+        # MUST surface the cancel to the next checkpoint.
+        driver_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await driver_task
+    finally:
+        asyncio.open_connection = real_open
+        if not prior.done():
+            prior.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await prior
+
+    assert not open_connection_called, (
+        "connect() must not invoke open_connection after an outer "
+        "task.cancel() delivered during the pending-drain await"
+    )
