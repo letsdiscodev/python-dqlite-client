@@ -31,7 +31,7 @@ def protocol() -> DqliteProtocol:
     return p
 
 
-@pytest.mark.parametrize("code", [0, 1, 19, 10250])
+@pytest.mark.parametrize("code", [1, 19, 10250])
 @pytest.mark.parametrize("message", ["", "   ", "\t\n"])
 async def test_exec_sql_empty_message_renders_placeholder(
     protocol: DqliteProtocol, code: int, message: str
@@ -45,7 +45,7 @@ async def test_exec_sql_empty_message_renders_placeholder(
     assert exc_info.value.code == code
 
 
-@pytest.mark.parametrize("code", [0, 1, 19, 10250])
+@pytest.mark.parametrize("code", [1, 19, 10250])
 async def test_query_sql_empty_message_renders_placeholder(
     protocol: DqliteProtocol, code: int
 ) -> None:

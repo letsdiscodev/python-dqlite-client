@@ -657,3 +657,67 @@ class TestSplitTopLevelStatements:
         assert _split_top_level_statements("") == []
         assert _split_top_level_statements("   ") == []
         assert _split_top_level_statements(";;") == []
+
+
+class TestSavepointEmbeddedComment:
+    """SQLite tokenizer treats ``/* ... */`` and ``--`` as whitespace
+    anywhere in the token stream, including between a SAVEPOINT verb
+    and the following name. The tracker's name parser must strip those
+    so ``SAVEPOINT /* x */ sp`` is tokenised the same way the server
+    will.
+
+    Without the embedded-comment skip, the parser returns None and
+    falls into the ``_has_untracked_savepoint`` conservative branch:
+    pool reset still fires ROLLBACK so cross-acquirer leaks are
+    prevented, but in-task observers see ``in_transaction`` lie
+    (False instead of True) and same-task RELEASE on the local-stack
+    misses (server has the savepoint; local stack is empty).
+    """
+
+    def test_savepoint_with_embedded_block_comment_pushes_frame(
+        self, conn: DqliteConnection
+    ) -> None:
+        conn._update_tx_flags_from_sql("SAVEPOINT /* x */ sp")
+        assert conn._savepoint_stack == ["sp"]
+        assert conn._in_transaction is True
+        assert conn._savepoint_implicit_begin is True
+
+    def test_savepoint_with_embedded_line_comment_pushes_frame(
+        self, conn: DqliteConnection
+    ) -> None:
+        conn._update_tx_flags_from_sql("SAVEPOINT -- x\n sp")
+        assert conn._savepoint_stack == ["sp"]
+        assert conn._in_transaction is True
+
+    def test_release_with_embedded_block_comment_pops_frame(
+        self, conn: DqliteConnection
+    ) -> None:
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        conn._update_tx_flags_from_sql("RELEASE /* x */ sp")
+        assert conn._savepoint_stack == []
+        assert conn._in_transaction is False
+
+    def test_release_savepoint_with_embedded_block_comment_pops_frame(
+        self, conn: DqliteConnection
+    ) -> None:
+        """Embedded comment between RELEASE and SAVEPOINT keyword."""
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        conn._update_tx_flags_from_sql("RELEASE /* x */ SAVEPOINT sp")
+        assert conn._savepoint_stack == []
+
+    def test_rollback_to_with_embedded_block_comment_unwinds(
+        self, conn: DqliteConnection
+    ) -> None:
+        conn._update_tx_flags_from_sql("SAVEPOINT outer")
+        conn._update_tx_flags_from_sql("SAVEPOINT inner")
+        conn._update_tx_flags_from_sql("ROLLBACK TO /* x */ outer")
+        assert conn._savepoint_stack == ["outer"]
+
+    def test_savepoint_with_embedded_comment_does_not_set_untracked_flag(
+        self, conn: DqliteConnection
+    ) -> None:
+        """Negative pin: with the parser fix, the comment-prefixed
+        savepoint is now properly tracked, so the conservative
+        ``_has_untracked_savepoint`` flag should NOT fire."""
+        conn._update_tx_flags_from_sql("SAVEPOINT /* x */ sp")
+        assert conn._has_untracked_savepoint is False

@@ -242,7 +242,12 @@ def _parse_savepoint_name(after_keyword: str) -> str | None:
       tracker would push a name the server has not created.
     * Multi-statement input.
     """
-    s = after_keyword.lstrip()
+    # Strip both leading whitespace AND embedded comments (SQLite
+    # treats ``/* ... */`` and ``--`` as whitespace anywhere in the
+    # token stream). Without the comment-strip, ``SAVEPOINT /* x */ sp``
+    # falls into the "untracked" branch even though the server creates
+    # the savepoint normally.
+    s = _strip_leading_comments(after_keyword)
     if not s or s[0] not in _BARE_IDENT_FIRST:
         return None
     end = 1
@@ -259,10 +264,13 @@ def _parse_release_name(after_keyword: str) -> str | None:
     (likewise for ``ROLLBACK TO``). Strips an optional leading
     ``SAVEPOINT`` keyword before extracting the identifier.
     """
-    s = after_keyword.lstrip()
+    # Strip leading whitespace AND embedded comments, mirroring
+    # ``_parse_savepoint_name``. Handles ``RELEASE /* x */ SAVEPOINT
+    # sp`` and ``RELEASE /* x */ sp`` shapes.
+    s = _strip_leading_comments(after_keyword)
     kw_len = len("SAVEPOINT")
     if s[:kw_len].upper() == "SAVEPOINT" and _is_keyword_boundary(s, kw_len):
-        s = s[kw_len:].lstrip()
+        s = s[kw_len:]
     return _parse_savepoint_name(s)
 
 
