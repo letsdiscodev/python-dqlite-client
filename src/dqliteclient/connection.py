@@ -80,6 +80,17 @@ _TRANSACTION_ROLLBACK_SQL = "ROLLBACK"
 _BARE_IDENT_FIRST = frozenset(string.ascii_letters + "_")
 _BARE_IDENT_REST = frozenset(string.ascii_letters + string.digits + "_")
 
+# Coupled to dqlite-upstream/src/gateway.c failure() emissions for the
+# Raft-side BUSY path that means "the in-flight write was not accepted;
+# the server-side tx may already be gone." Currently the only such
+# wording is "checkpoint in progress" (gateway.c emits it for
+# checkpoint-contention BUSY); other Raft-BUSY paths are
+# indistinguishable from engine-BUSY at the Python layer. Centralising
+# the matcher here keeps the upstream-coupling explicit so a future
+# rewording (or addition of a new Raft-BUSY message) is one-line update
+# rather than a hunt through the classifier.
+_RAFT_BUSY_MESSAGE_FRAGMENTS: tuple[str, ...] = ("checkpoint in progress",)
+
 
 def _is_keyword_boundary(s: str, kw_len: int) -> bool:
     """True if position ``kw_len`` in ``s`` ends an SQL keyword.
@@ -1071,10 +1082,9 @@ class DqliteConnection:
                 self._savepoint_stack.clear()
                 self._savepoint_implicit_begin = False
                 self._has_untracked_savepoint = False
-            elif (
-                _primary_sqlite_code(e.code) == 5
-                and "checkpoint in progress"
-                in (getattr(e, "raw_message", None) or e.message or "").lower()
+            elif _primary_sqlite_code(e.code) == 5 and any(
+                frag in (getattr(e, "raw_message", None) or e.message or "").lower()
+                for frag in _RAFT_BUSY_MESSAGE_FRAGMENTS
             ):
                 # SQLITE_BUSY (5) has two distinct origins in dqlite:
                 # SQLite-engine-side BUSY (the user can retry the
