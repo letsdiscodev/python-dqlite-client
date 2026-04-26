@@ -184,6 +184,31 @@ def _split_top_level_statements(sql: str) -> list[str]:
     return out
 
 
+_TX_CONTROL_VERBS: frozenset[str] = frozenset(
+    {"BEGIN", "SAVEPOINT", "RELEASE", "ROLLBACK", "COMMIT", "END"}
+)
+
+
+def _starts_with_tx_verb(stmt: str) -> bool:
+    """True if ``stmt`` (already split off a multi-statement batch by
+    ``_split_top_level_statements``) starts with a transaction-control
+    verb. Used to distinguish "may have changed tx state" pieces from
+    benign DML in the multi-statement-failure conservative-flag path.
+
+    Strips leading comments + whitespace before the verb extraction;
+    splits the verb on the keyword boundary helper to avoid mistaking
+    ``BEGIN_foo`` (a bareword identifier) for the BEGIN keyword.
+    """
+    s = _strip_leading_comments(stmt)
+    if not s:
+        return False
+    upper = s.upper()
+    for verb in _TX_CONTROL_VERBS:
+        if upper.startswith(verb) and _is_keyword_boundary(upper, len(verb)):
+            return True
+    return False
+
+
 def _strip_leading_comments(sql: str) -> str:
     """Strip leading SQL comments (``--`` and ``/* */``) and whitespace.
 
@@ -1072,7 +1097,30 @@ class DqliteConnection:
         engine state for raw-tx users.
         """
         self._validate_params(params)
-        result = await self._run_protocol(lambda p, db: p.exec_sql(db, sql, params))
+        try:
+            result = await self._run_protocol(lambda p, db: p.exec_sql(db, sql, params))
+        except OperationalError:
+            # Multi-statement EXEC partial failure: dqlite's gateway
+            # iterates the statement list, so an early statement (e.g.,
+            # ``BEGIN; SAVEPOINT a; INSERT ...``) may have committed
+            # server-side state before the failing statement. The
+            # tracker's success-only ``_update_tx_flags_from_sql`` call
+            # below is skipped on raise — leaving the local view out of
+            # sync with the server's open transaction.
+            #
+            # Conservatively flag the connection as carrying untracked
+            # state when the SQL contains a transaction-control verb
+            # AND a top-level ``;`` boundary. Pool reset's safety
+            # ROLLBACK then fires (via ``_has_untracked_savepoint``)
+            # and prevents cross-acquirer poisoning. False-positive
+            # reset on a benign multi-INSERT batch is acceptable —
+            # multi-statement INSERT is uncommon in direct dbapi use,
+            # and the safety ROLLBACK is one round-trip.
+            if ";" in sql:
+                pieces = _split_top_level_statements(sql)
+                if len(pieces) > 1 and any(_starts_with_tx_verb(p) for p in pieces):
+                    self._has_untracked_savepoint = True
+            raise
         self._update_tx_flags_from_sql(sql)
         return result
 
