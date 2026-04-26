@@ -65,7 +65,7 @@ async def test_body_exc_with_real_rollback_failure_invalidates_connection() -> N
             raise rollback_error
         return (0, 0)
 
-    conn.execute = fake_execute  # type: ignore[assignment]
+    conn.execute = fake_execute
 
     body_exc: ValueError | None = None
     try:
@@ -105,7 +105,7 @@ async def test_body_exc_with_no_tx_rollback_preserves_connection() -> None:
             raise no_tx_error
         return (0, 0)
 
-    conn.execute = fake_execute  # type: ignore[assignment]
+    conn.execute = fake_execute
 
     body_exc: ValueError | None = None
     try:
@@ -141,7 +141,7 @@ async def test_rollback_cancellation_supersedes_body_with_context_chain() -> Non
             raise asyncio.CancelledError()
         return (0, 0)
 
-    conn.execute = fake_execute  # type: ignore[assignment]
+    conn.execute = fake_execute
 
     cancelled_exc: asyncio.CancelledError | None = None
     try:

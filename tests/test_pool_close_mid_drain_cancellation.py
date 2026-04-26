@@ -48,14 +48,14 @@ async def test_drain_does_not_orphan_remaining_queued_connections() -> None:
     fakes = [FakeConn(i) for i in range(10)]
 
     pool = ConnectionPool.__new__(ConnectionPool)
-    pool._pool = asyncio.Queue()  # type: ignore[attr-defined]
+    pool._pool = asyncio.Queue()
     for f in fakes:
-        pool._pool.put_nowait(f)
-    pool._size = len(fakes)  # type: ignore[attr-defined]
-    pool._max_size = len(fakes)  # type: ignore[attr-defined]
-    pool._lock = asyncio.Lock()  # type: ignore[attr-defined]
-    pool._closed = False  # type: ignore[attr-defined]
-    pool._closed_event = None  # type: ignore[attr-defined]
+        pool._pool.put_nowait(f)  # type: ignore[arg-type]
+    pool._size = len(fakes)
+    pool._max_size = len(fakes)
+    pool._lock = asyncio.Lock()
+    pool._closed = False
+    pool._closed_event = None
 
     # Race the outer cancel against the drain. 0.12s lets the loop
     # start the second connection (each close is 0.05s), then the

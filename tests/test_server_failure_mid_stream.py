@@ -51,8 +51,8 @@ class TestServerFailureMidStreamClassification:
         initial = RowsResponse(
             column_names=["x"],
             column_types=[ValueType.INTEGER],
-            rows=[(1,)],
-            row_types=[(ValueType.INTEGER,)],
+            rows=[[1]],
+            row_types=[[ValueType.INTEGER]],
             has_more=False,
         ).encode()
         part_marker = encode_uint64(ROW_PART_MARKER)
@@ -63,10 +63,7 @@ class TestServerFailureMidStreamClassification:
         failure = FailureResponse(code=10250, message="not leader")
         failure_frame = failure.encode()
 
-        protocol._reader.read = AsyncMock(  # type: ignore[attr-defined]
-            side_effect=[frame_with_part + failure_frame, b""]
-        )
-        protocol._handshake_done = True
+        protocol._reader.read = AsyncMock(side_effect=[frame_with_part + failure_frame, b""])
 
         with pytest.raises(OperationalError) as exc_info:
             await protocol.query_sql(1, "SELECT 1")
@@ -84,18 +81,15 @@ class TestServerFailureMidStreamClassification:
         initial = RowsResponse(
             column_names=["x"],
             column_types=[ValueType.INTEGER],
-            rows=[(1,)],
-            row_types=[(ValueType.INTEGER,)],
+            rows=[[1]],
+            row_types=[[ValueType.INTEGER]],
             has_more=False,
         ).encode()
         part_marker = encode_uint64(ROW_PART_MARKER)
         frame_with_part = initial[:-8] + part_marker
 
         failure_frame = FailureResponse(code=5, message="db locked").encode()
-        protocol._reader.read = AsyncMock(  # type: ignore[attr-defined]
-            side_effect=[frame_with_part + failure_frame, b""]
-        )
-        protocol._handshake_done = True
+        protocol._reader.read = AsyncMock(side_effect=[frame_with_part + failure_frame, b""])
 
         with pytest.raises(OperationalError) as exc_info:
             await protocol.query_sql(1, "SELECT 1")

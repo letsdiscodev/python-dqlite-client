@@ -4,6 +4,7 @@ import pytest
 
 import dqliteclient
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo
+from dqlitewire.constants import NodeRole
 
 
 class TestMemoryNodeStore:
@@ -20,7 +21,7 @@ class TestMemoryNodeStore:
         assert nodes[1].address == "localhost:9002"
 
     async def test_initial_nodes_have_voter_role(self) -> None:
-        """Initial nodes should be VOTER (role=0), not STANDBY."""
+        """Initial nodes should be VOTER (role=NodeRole.VOTER), not STANDBY."""
         store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
         nodes = await store.get_nodes()
         for node in nodes:
@@ -36,8 +37,8 @@ class TestMemoryNodeStore:
     async def test_set_nodes(self) -> None:
         store = MemoryNodeStore()
         nodes = [
-            NodeInfo(node_id=1, address="node1:9001", role=1),
-            NodeInfo(node_id=2, address="node2:9002", role=2),
+            NodeInfo(node_id=1, address="node1:9001", role=NodeRole.STANDBY),
+            NodeInfo(node_id=2, address="node2:9002", role=NodeRole.SPARE),
         ]
         await store.set_nodes(nodes)
 
@@ -63,18 +64,18 @@ class TestMemoryNodeStore:
         nodes = await store.get_nodes()
         assert isinstance(nodes, tuple)
         with pytest.raises(dataclasses.FrozenInstanceError):
-            nodes[0].address = "evil"  # type: ignore[misc]
+            nodes[0].address = "evil"
 
     async def test_node_info_is_frozen(self) -> None:
         import dataclasses
 
-        info = NodeInfo(node_id=1, address="h:1", role=0)
+        info = NodeInfo(node_id=1, address="h:1", role=NodeRole.VOTER)
         with pytest.raises(dataclasses.FrozenInstanceError):
             info.address = "other"  # type: ignore[misc]
 
     async def test_node_info_is_hashable(self) -> None:
-        info1 = NodeInfo(node_id=1, address="h:1", role=0)
-        info2 = NodeInfo(node_id=1, address="h:1", role=0)
+        info1 = NodeInfo(node_id=1, address="h:1", role=NodeRole.VOTER)
+        info2 = NodeInfo(node_id=1, address="h:1", role=NodeRole.VOTER)
         assert hash(info1) == hash(info2)
         assert {info1, info2} == {info1}
 

@@ -26,7 +26,7 @@ _SUBMODULES = [
 def test_submodule_declares_all(modname: str) -> None:
     mod = importlib.import_module(modname)
     assert hasattr(mod, "__all__"), f"{modname} is missing __all__"
-    exported = mod.__all__  # type: ignore[attr-defined]
+    exported = mod.__all__
     assert isinstance(exported, list | tuple), (
         f"{modname}.__all__ must be list/tuple, got {type(exported).__name__}"
     )

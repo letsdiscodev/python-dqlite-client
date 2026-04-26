@@ -41,7 +41,7 @@ class _SlowCloseConn:
         self.close_called = True
         # Block until the test explicitly releases us.
         await self._gate.wait()
-        self._protocol = None
+        self._protocol = None  # type: ignore[assignment]
 
 
 @pytest.mark.asyncio

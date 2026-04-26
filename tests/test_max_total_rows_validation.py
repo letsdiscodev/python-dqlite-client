@@ -32,7 +32,7 @@ class TestValidator:
     def test_bool_rejected(self) -> None:
         # True is technically int, but PEP-489-style APIs rightly reject it.
         with pytest.raises(TypeError, match="max_total_rows must be int or None"):
-            _validate_positive_int_or_none(True, "max_total_rows")  # type: ignore[arg-type]
+            _validate_positive_int_or_none(True, "max_total_rows")
 
     def test_string_rejected(self) -> None:
         with pytest.raises(TypeError, match="max_total_rows must be int or None"):
@@ -50,7 +50,7 @@ class TestConstructorValidation:
 
     def test_dqlite_connection_bool_rejected(self) -> None:
         with pytest.raises(TypeError):
-            DqliteConnection("localhost:19001", max_total_rows=True)  # type: ignore[arg-type]
+            DqliteConnection("localhost:19001", max_total_rows=True)
 
     def test_dqlite_connection_none_allowed(self) -> None:
         conn = DqliteConnection("localhost:19001", max_total_rows=None)

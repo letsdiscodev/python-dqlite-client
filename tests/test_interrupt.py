@@ -30,7 +30,6 @@ def protocol() -> DqliteProtocol:
     writer.close = MagicMock()
     writer.wait_closed = AsyncMock()
     proto = DqliteProtocol(reader, writer, timeout=1.0, address="test:9001")
-    proto._handshake_done = True
     return proto
 
 
@@ -39,9 +38,7 @@ class TestInterrupt:
         """Interrupt sends the request and consumes messages until
         EmptyResponse arrives.
         """
-        protocol._reader.read = AsyncMock(  # type: ignore[attr-defined]
-            side_effect=[EmptyResponse().encode(), b""]
-        )
+        protocol._reader.read = AsyncMock(side_effect=[EmptyResponse().encode(), b""])
         await protocol.interrupt(db_id=1)
         # Write was issued.
         protocol._writer.write.assert_called()  # type: ignore[attr-defined]
@@ -54,23 +51,19 @@ class TestInterrupt:
         rows = RowsResponse(
             column_names=["x"],
             column_types=[ValueType.INTEGER],
-            rows=[(1,)],
-            row_types=[(ValueType.INTEGER,)],
+            rows=[[1]],
+            row_types=[[ValueType.INTEGER]],
             has_more=False,
         ).encode()
         empty = EmptyResponse().encode()
-        protocol._reader.read = AsyncMock(  # type: ignore[attr-defined]
-            side_effect=[rows + empty, b""]
-        )
+        protocol._reader.read = AsyncMock(side_effect=[rows + empty, b""])
         await protocol.interrupt(db_id=1)
 
     async def test_interrupt_raises_operational_error_on_failure(
         self, protocol: DqliteProtocol
     ) -> None:
         failure = FailureResponse(code=5, message="interrupted").encode()
-        protocol._reader.read = AsyncMock(  # type: ignore[attr-defined]
-            side_effect=[failure, b""]
-        )
+        protocol._reader.read = AsyncMock(side_effect=[failure, b""])
         with pytest.raises(OperationalError) as exc_info:
             await protocol.interrupt(db_id=1)
         assert exc_info.value.code == 5
@@ -94,7 +87,6 @@ class TestInterrupt:
             address="test:9001",
             max_continuation_frames=3,
         )
-        proto._handshake_done = True
 
         # Four in-flight frames arrive before EmptyResponse; cap = 3
         # trips on frame 4. RowsResponse with has_more=False is the
@@ -102,14 +94,12 @@ class TestInterrupt:
         rows_frame = RowsResponse(
             column_names=["x"],
             column_types=[ValueType.INTEGER],
-            rows=[(1,)],
-            row_types=[(ValueType.INTEGER,)],
+            rows=[[1]],
+            row_types=[[ValueType.INTEGER]],
             has_more=False,
         ).encode()
         empty = EmptyResponse().encode()
-        proto._reader.read = AsyncMock(  # type: ignore[attr-defined]
-            side_effect=[rows_frame * 4 + empty, b""]
-        )
+        proto._reader.read = AsyncMock(side_effect=[rows_frame * 4 + empty, b""])
         with pytest.raises(ProtocolError, match="max_continuation_frames"):
             await proto.interrupt(db_id=1)
 
@@ -129,19 +119,16 @@ class TestInterrupt:
             address="test:9001",
             max_continuation_frames=None,
         )
-        proto._handshake_done = True
 
         rows_frame = RowsResponse(
             column_names=["x"],
             column_types=[ValueType.INTEGER],
-            rows=[(1,)],
-            row_types=[(ValueType.INTEGER,)],
+            rows=[[1]],
+            row_types=[[ValueType.INTEGER]],
             has_more=False,
         ).encode()
         empty = EmptyResponse().encode()
-        proto._reader.read = AsyncMock(  # type: ignore[attr-defined]
-            side_effect=[rows_frame * 10 + empty, b""]
-        )
+        proto._reader.read = AsyncMock(side_effect=[rows_frame * 10 + empty, b""])
         # No raise: deadline-only behaviour preserved.
         await proto.interrupt(db_id=1)
 
@@ -154,8 +141,6 @@ class TestInterrupt:
         from dqlitewire.messages import DbResponse
 
         unexpected = DbResponse(db_id=42).encode()
-        protocol._reader.read = AsyncMock(  # type: ignore[attr-defined]
-            side_effect=[unexpected, b""]
-        )
+        protocol._reader.read = AsyncMock(side_effect=[unexpected, b""])
         with pytest.raises(ProtocolError, match="Expected EmptyResponse"):
             await protocol.interrupt(db_id=1)

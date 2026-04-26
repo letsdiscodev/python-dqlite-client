@@ -41,7 +41,7 @@ async def test_rollback_no_transaction_active_preserves_connection() -> None:
             raise no_tx_error
         return (0, 0)
 
-    conn.execute = fake_execute  # type: ignore[assignment]
+    conn.execute = fake_execute
 
     with pytest.raises(RuntimeError, match="body raised"):
         async with conn.transaction():
@@ -76,7 +76,7 @@ async def test_rollback_other_operational_error_invalidates() -> None:
             raise other_error
         return (0, 0)
 
-    conn.execute = fake_execute  # type: ignore[assignment]
+    conn.execute = fake_execute
 
     with pytest.raises(RuntimeError, match="body raised"):
         async with conn.transaction():
@@ -101,7 +101,7 @@ async def test_rollback_non_operational_error_invalidates() -> None:
             raise InterfaceError("interface broke mid-rollback")
         return (0, 0)
 
-    conn.execute = fake_execute  # type: ignore[assignment]
+    conn.execute = fake_execute
 
     with pytest.raises(RuntimeError, match="body raised"):
         async with conn.transaction():

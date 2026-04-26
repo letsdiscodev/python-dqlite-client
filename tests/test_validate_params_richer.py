@@ -44,9 +44,9 @@ class TestClientValidateParamsRichRejections:
 
     def test_str_and_bytes_still_rejected(self) -> None:
         with pytest.raises(DataError, match="str"):
-            _make_conn()._validate_params("abc")  # type: ignore[arg-type]
+            _make_conn()._validate_params("abc")
         with pytest.raises(DataError, match="bytes"):
-            _make_conn()._validate_params(b"abc")  # type: ignore[arg-type]
+            _make_conn()._validate_params(b"abc")
 
     def test_list_and_tuple_accepted(self) -> None:
         _make_conn()._validate_params([1, 2])

@@ -42,7 +42,7 @@ class TestClusterConnectReturnsConn:
 
         monkeypatch.setattr(ClusterClient, "find_leader", _patched_find_leader)
 
-        cluster = ClusterClient([cluster_address], timeout=2.0)
+        cluster = ClusterClient([cluster_address], timeout=2.0)  # type: ignore[arg-type]
         conn = await cluster.connect()
         try:
             assert isinstance(conn, DqliteConnection)

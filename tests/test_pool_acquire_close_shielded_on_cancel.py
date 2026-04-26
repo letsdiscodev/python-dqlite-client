@@ -40,7 +40,7 @@ async def _build_pool_with_breakable_conn() -> tuple[ConnectionPool, DqliteConne
     async def _fake_create_connection() -> DqliteConnection:
         return conn
 
-    pool._create_connection = _fake_create_connection  # type: ignore[method-assign]
+    pool._create_connection = _fake_create_connection
     return pool, conn
 
 
@@ -77,7 +77,7 @@ async def test_acquire_cleanup_close_completes_under_outer_cancel() -> None:
     async def fake_drain_idle() -> None:
         return
 
-    pool._drain_idle = fake_drain_idle  # type: ignore[method-assign]
+    pool._drain_idle = fake_drain_idle
 
     with (
         patch.object(conn, "close", new=fake_close),
@@ -120,7 +120,7 @@ async def test_acquire_cleanup_close_failure_still_sets_pool_released() -> None:
     async def fake_drain_idle() -> None:
         return
 
-    pool._drain_idle = fake_drain_idle  # type: ignore[method-assign]
+    pool._drain_idle = fake_drain_idle
 
     with patch.object(conn, "close", new=fake_close), pytest.raises((ValueError, RuntimeError)):
         async with pool.acquire():
@@ -146,7 +146,7 @@ async def test_drain_idle_failure_does_not_skip_close() -> None:
     async def fake_drain_idle() -> None:
         raise DqliteConnectionError("simulated drain failure")
 
-    pool._drain_idle = fake_drain_idle  # type: ignore[method-assign]
+    pool._drain_idle = fake_drain_idle
 
     with patch.object(conn, "close", new=fake_close), pytest.raises(ValueError):
         async with pool.acquire():

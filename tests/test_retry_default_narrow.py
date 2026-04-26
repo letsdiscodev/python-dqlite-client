@@ -31,7 +31,7 @@ from dqliteclient.retry import retry_with_backoff
     ],
 )
 @pytest.mark.asyncio
-async def test_default_does_not_retry_deterministic_errors(exc_factory) -> None:  # type: ignore[no-untyped-def]
+async def test_default_does_not_retry_deterministic_errors(exc_factory) -> None:
     call_count = 0
 
     async def always_fail() -> str:

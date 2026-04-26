@@ -38,7 +38,7 @@ class TestSendDrainTimeout:
         async def _never_drain() -> None:
             await asyncio.Event().wait()
 
-        protocol._writer.drain = _never_drain  # type: ignore[attr-defined]
+        protocol._writer.drain = _never_drain
 
         loop = asyncio.get_running_loop()
         start = loop.time()
@@ -57,7 +57,7 @@ class TestSendDrainTimeout:
         async def _never_drain() -> None:
             await asyncio.Event().wait()
 
-        protocol._writer.drain = _never_drain  # type: ignore[attr-defined]
+        protocol._writer.drain = _never_drain
 
         with pytest.raises(DqliteConnectionError) as exc_info:
             await protocol._send()

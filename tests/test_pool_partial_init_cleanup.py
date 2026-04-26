@@ -42,11 +42,11 @@ class _FakeConn:
         self._pool_released = False
         self._protocol = MagicMock() if alive else None
         if alive:
-            self._protocol._writer = MagicMock()
-            self._protocol._writer.transport = MagicMock()
-            self._protocol._writer.transport.is_closing = lambda: False
-            self._protocol._reader = MagicMock()
-            self._protocol._reader.at_eof = lambda: False
+            self._protocol._writer = MagicMock()  # type: ignore[union-attr]
+            self._protocol._writer.transport = MagicMock()  # type: ignore[union-attr]
+            self._protocol._writer.transport.is_closing = lambda: False  # type: ignore[union-attr]
+            self._protocol._reader = MagicMock()  # type: ignore[union-attr]
+            self._protocol._reader.at_eof = lambda: False  # type: ignore[union-attr]
         self.close_called = 0
         self.close_raises: BaseException | None = None
 
@@ -148,7 +148,7 @@ class TestInitializeUnqueuedSurvivorCloseErrorSwallow:
 
         async def _intercept_put(item: object) -> None:
             nonlocal puts
-            await original_put(item)
+            await original_put(item)  # type: ignore[arg-type]
             puts += 1
             if puts == 1:
                 # Cancel the in-flight initialize() task at the next
@@ -158,7 +158,7 @@ class TestInitializeUnqueuedSurvivorCloseErrorSwallow:
                 # the unqueued list.
                 raise asyncio.CancelledError
 
-        pool._pool.put = _intercept_put  # type: ignore[method-assign]
+        pool._pool.put = _intercept_put
 
         with (
             caplog.at_level(logging.DEBUG, logger="dqliteclient.pool"),
@@ -194,7 +194,7 @@ class TestAcquireReservationReleasedOnDrainThenCreateFailure:
         pool = _pool_with_factory(_factory, min_size=0, max_size=1)
         # Manually inject the stale conn + reservation as if a previous
         # acquire+release cycle had populated it.
-        await pool._pool.put(stale)
+        await pool._pool.put(stale)  # type: ignore[arg-type]
         pool._size = 1
 
         size_before = pool._size

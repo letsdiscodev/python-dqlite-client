@@ -44,7 +44,7 @@ async def test_inner_exception_observed_via_done_callback_probe() -> None:
         await inner_release.wait()
         raise ClusterError("simulated: no leader on any node")
 
-    cluster._find_leader_impl = _fake_impl  # type: ignore[method-assign]
+    cluster._find_leader_impl = _fake_impl
 
     async def cancel_after_inner_starts() -> None:
         async with asyncio.timeout(10):
@@ -103,7 +103,7 @@ async def test_success_path_unaffected() -> None:
     async def _fake_impl(*, trust_server_heartbeat: bool) -> str:
         return "elected:9001"
 
-    cluster._find_leader_impl = _fake_impl  # type: ignore[method-assign]
+    cluster._find_leader_impl = _fake_impl
 
     leader = await cluster.find_leader()
     assert leader == "elected:9001"
@@ -121,7 +121,7 @@ async def test_inner_exception_propagates_to_live_caller() -> None:
     async def _fake_impl(*, trust_server_heartbeat: bool) -> str:
         raise ClusterError("simulated: no leader on any node")
 
-    cluster._find_leader_impl = _fake_impl  # type: ignore[method-assign]
+    cluster._find_leader_impl = _fake_impl
 
     with pytest.raises(ClusterError, match="no leader"):
         await cluster.find_leader()

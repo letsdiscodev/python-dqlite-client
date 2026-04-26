@@ -82,7 +82,7 @@ def _stub_drain_idle(pool: ConnectionPool) -> None:
     async def _noop() -> None:
         return None
 
-    pool._drain_idle = _noop  # type: ignore[method-assign]
+    pool._drain_idle = _noop
 
 
 @pytest.mark.asyncio
@@ -93,7 +93,7 @@ async def test_cleanup_propagates_attribute_error_from_close() -> None:
 
     with pytest.raises(AttributeError, match="close bug"):
         async with pool.acquire() as conn:
-            conn.is_connected = False  # simulate in-body invalidation
+            conn.is_connected = False  # type: ignore[misc]
             raise RuntimeError("user code failure")
 
     assert pool._size == 0
@@ -108,7 +108,7 @@ async def test_cleanup_logs_oserror_from_close(caplog: pytest.LogCaptureFixture)
     caplog.set_level(logging.DEBUG, logger="dqliteclient.pool")
     with pytest.raises(RuntimeError, match="user code failure"):
         async with pool.acquire() as conn:
-            conn.is_connected = False
+            conn.is_connected = False  # type: ignore[misc]
             raise RuntimeError("user code failure")
 
     assert broken.close_calls == 1
@@ -137,7 +137,7 @@ async def test_cleanup_logs_timeout_error_from_close(
     caplog.set_level(logging.DEBUG, logger="dqliteclient.pool")
     with pytest.raises(RuntimeError, match="user code failure"):
         async with pool.acquire() as conn:
-            conn.is_connected = False
+            conn.is_connected = False  # type: ignore[misc]
             raise RuntimeError("user code failure")
 
     assert broken.close_calls == 1
@@ -158,7 +158,7 @@ async def test_cleanup_preserves_original_exception_when_close_silent() -> None:
 
     with pytest.raises(DqliteConnectionError, match="original body error"):
         async with pool.acquire() as conn:
-            conn.is_connected = False
+            conn.is_connected = False  # type: ignore[misc]
             raise DqliteConnectionError("original body error")
 
     assert broken.close_calls == 1
@@ -177,12 +177,12 @@ async def test_cleanup_logs_drain_idle_failure(caplog: pytest.LogCaptureFixture)
         # programmer bugs (TypeError / AttributeError) still propagate.
         raise OSError("drain-idle transport failure")
 
-    pool._drain_idle = explode  # type: ignore[method-assign]
+    pool._drain_idle = explode
 
     caplog.set_level(logging.DEBUG, logger="dqliteclient.pool")
     with pytest.raises(RuntimeError, match="user code failure"):
         async with pool.acquire() as conn:
-            conn.is_connected = False
+            conn.is_connected = False  # type: ignore[misc]
             raise RuntimeError("user code failure")
 
     assert any(

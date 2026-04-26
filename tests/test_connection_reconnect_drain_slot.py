@@ -56,7 +56,7 @@ async def test_connect_cancels_prior_pending_drain() -> None:
     # OperationalError that does NOT trigger reconnect-worthy branches.
     import dqliteclient.connection as conn_mod
 
-    real_proto = conn_mod.DqliteProtocol
+    real_proto = conn_mod.DqliteProtocol  # type: ignore[attr-defined]
     real_open = asyncio.open_connection
 
     class _StubProtocol:
@@ -76,18 +76,18 @@ async def test_connect_cancels_prior_pending_drain() -> None:
     async def fake_abort(self: object) -> None:
         return None
 
-    conn_mod.DqliteProtocol = _StubProtocol  # type: ignore[assignment]
+    conn_mod.DqliteProtocol = _StubProtocol  # type: ignore[assignment,attr-defined]
     asyncio.open_connection = fake_open_connection  # type: ignore[assignment]
     original_abort = DqliteConnection._abort_protocol
-    DqliteConnection._abort_protocol = fake_abort  # type: ignore[assignment]
+    DqliteConnection._abort_protocol = fake_abort
 
     try:
         with pytest.raises(RuntimeError, match="synthetic stop"):
             await conn.connect()
     finally:
-        conn_mod.DqliteProtocol = real_proto  # type: ignore[assignment]
-        asyncio.open_connection = real_open  # type: ignore[assignment]
-        DqliteConnection._abort_protocol = original_abort  # type: ignore[assignment]
+        conn_mod.DqliteProtocol = real_proto  # type: ignore[attr-defined]
+        asyncio.open_connection = real_open
+        DqliteConnection._abort_protocol = original_abort
 
     # Either the prior task was cancelled-and-awaited, or the slot was
     # explicitly reset — both satisfy the invariant that a subsequent

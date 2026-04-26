@@ -81,7 +81,7 @@ class _FakeConn:
         if self._pool_released or self._protocol is None:
             return
         self.close_effective = True
-        self._protocol = None
+        self._protocol = None  # type: ignore[assignment]
 
     async def execute(self, sql: str, params: Any = None) -> tuple[int, int]:
         return (0, 0)

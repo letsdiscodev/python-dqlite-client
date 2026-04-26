@@ -197,7 +197,7 @@ class TestConnectionPool:
 
         await pool.close()
 
-    async def test_acquire_logs_drain_idle_when_stale_conn_detected(self, caplog) -> None:  # type: ignore[no-untyped-def]
+    async def test_acquire_logs_drain_idle_when_stale_conn_detected(self, caplog) -> None:
         """A ``_drain_idle`` call triggered by a detected-stale
         connection emits a DEBUG log so the pool-wide replacement is
         visible to operators."""
@@ -235,7 +235,7 @@ class TestConnectionPool:
 
         await pool.close()
 
-    async def test_pool_emits_debug_logs_for_lifecycle_events(self, caplog) -> None:  # type: ignore[no-untyped-def]
+    async def test_pool_emits_debug_logs_for_lifecycle_events(self, caplog) -> None:
         """DEBUG traces the key pool state-change events so an operator
         can reconstruct pool behaviour from logs without adding
         bespoke instrumentation. Covers initialize start/end, the
@@ -259,9 +259,7 @@ class TestConnectionPool:
             # Drive at-capacity wait: hold the single slot, queue a second
             # acquire that will time out, observe the capacity-wait log.
             async with pool.acquire():
-                waiter = asyncio.create_task(
-                    pool.acquire().__aenter__()  # type: ignore[func-returns-value]
-                )
+                waiter = asyncio.create_task(pool.acquire().__aenter__())
                 # Give the waiter a chance to reach the at-capacity park.
                 for _ in range(10):
                     await asyncio.sleep(0)
@@ -452,7 +450,7 @@ class TestConnectionPool:
             async def waiter():
                 nonlocal waiter_result
                 async with pool.acquire() as c:
-                    waiter_result = c
+                    waiter_result = c  # type: ignore[assignment]
                     waiter_done.set()
 
             waiter_task = asyncio.create_task(waiter())
@@ -562,7 +560,7 @@ class TestConnectionPool:
             with pytest.raises(DqliteConnectionError):
                 async with pool.acquire() as acquired:
                     # Mark as broken (simulates leader change / server error)
-                    acquired.is_connected = False
+                    acquired.is_connected = False  # type: ignore[misc]
                     raise DqliteConnectionError("connection lost")
 
         # The broken connection was discarded. The 2 idle connections should
@@ -701,7 +699,7 @@ class TestConnectionPool:
         # Simulate a connection that becomes broken during use
         with pytest.raises(ValueError, match="user error"):
             async with pool.acquire() as conn:
-                conn.is_connected = False  # Mark as broken (simulates invalidation)
+                conn.is_connected = False  # type: ignore[misc]
                 raise ValueError("user error")
 
         # Broken connection SHOULD have been closed and discarded

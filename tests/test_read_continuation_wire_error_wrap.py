@@ -49,8 +49,8 @@ class TestReadContinuationWrapsWireError:
         initial = RowsResponse(
             column_names=["x"],
             column_types=[ValueType.INTEGER],
-            rows=[(1,)],
-            row_types=[(ValueType.INTEGER,)],
+            rows=[[1]],
+            row_types=[[ValueType.INTEGER]],
             has_more=False,  # encoded below manually
         ).encode()
         # Swap the trailing DONE marker to PART so the decoder expects
@@ -67,11 +67,8 @@ class TestReadContinuationWrapsWireError:
         garbage_frame = garbage_header + garbage_body
 
         # Reader returns the valid initial then the garbage in one shot.
-        protocol._reader.read = AsyncMock(  # type: ignore[attr-defined]
-            side_effect=[frame_with_part + garbage_frame, b""]
-        )
+        protocol._reader.read = AsyncMock(side_effect=[frame_with_part + garbage_frame, b""])
 
-        protocol._handshake_done = True
         # Kick off a query; any read past the PART marker should trip
         # the wire decoder and surface as client ProtocolError via
         # _read_continuation.

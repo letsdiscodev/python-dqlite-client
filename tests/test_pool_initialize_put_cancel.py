@@ -49,7 +49,7 @@ async def test_initialize_cancel_mid_put_keeps_size_consistent() -> None:
     async def _create() -> object:
         return next(create_iter)
 
-    pool._create_connection = _create  # type: ignore[method-assign]
+    pool._create_connection = _create  # type: ignore[assignment]
 
     # Wrap put so the third call raises CancelledError. The first two
     # legitimately land in the queue.
@@ -61,9 +61,9 @@ async def test_initialize_cancel_mid_put_keeps_size_consistent() -> None:
         put_call_count += 1
         if put_call_count == 3:
             raise asyncio.CancelledError()
-        await original_put(conn)
+        await original_put(conn)  # type: ignore[arg-type]
 
-    pool._pool.put = _put  # type: ignore[method-assign]
+    pool._pool.put = _put  # type: ignore[assignment]
 
     with pytest.raises(asyncio.CancelledError):
         await pool.initialize()
@@ -100,7 +100,7 @@ async def test_initialize_clean_success_leaves_size_at_min_size() -> None:
     async def _create() -> object:
         return next(create_iter)
 
-    pool._create_connection = _create  # type: ignore[method-assign]
+    pool._create_connection = _create  # type: ignore[assignment]
 
     await pool.initialize()
 

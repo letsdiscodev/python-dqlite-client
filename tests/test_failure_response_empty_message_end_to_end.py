@@ -28,7 +28,6 @@ def protocol() -> DqliteProtocol:
     writer.close = MagicMock()
     writer.wait_closed = AsyncMock()
     p = DqliteProtocol(reader, writer)
-    p._handshake_done = True
     return p
 
 

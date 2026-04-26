@@ -78,7 +78,7 @@ class TestContinuationFrames:
         N_ROWS = 5000
         frames_seen: list[int] = []
 
-        async def _spy(self, initial, deadline):  # type: ignore[no-untyped-def]
+        async def _spy(self, initial, deadline):
             # Copied structurally from the real method but with a
             # frames counter escape hatch. Keeps the original on the
             # class intact for other tests.

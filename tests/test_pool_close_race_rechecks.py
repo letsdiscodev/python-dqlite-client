@@ -51,7 +51,7 @@ class _FakeConn:
         return self._protocol is not None
 
     async def close(self) -> None:
-        self._protocol = None
+        self._protocol = None  # type: ignore[assignment]
 
     async def execute(self, sql: str, params: Any = None) -> tuple[int, int]:
         return (0, 0)
@@ -82,7 +82,7 @@ def _counted_flipping_lock(target: ConnectionPool, flip_on: int) -> asyncio.Lock
             super().__init__()
             self._n = 0
 
-        async def acquire(self) -> bool:
+        async def acquire(self) -> bool:  # type: ignore[override]
             result = await super().acquire()
             self._n += 1
             if self._n == flip_on:

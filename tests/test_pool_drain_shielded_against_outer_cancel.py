@@ -35,14 +35,14 @@ async def test_per_connection_close_survives_outer_cancel() -> None:
 
     # Build the pool skeleton directly, bypassing `initialize()`.
     pool = ConnectionPool.__new__(ConnectionPool)
-    pool._pool = asyncio.Queue()  # type: ignore[attr-defined]
+    pool._pool = asyncio.Queue()
     for f in fakes:
-        pool._pool.put_nowait(f)
-    pool._size = len(fakes)  # type: ignore[attr-defined]
-    pool._max_size = len(fakes)  # type: ignore[attr-defined]
-    pool._lock = asyncio.Lock()  # type: ignore[attr-defined]
-    pool._closed = False  # type: ignore[attr-defined]
-    pool._closed_event = None  # type: ignore[attr-defined]
+        pool._pool.put_nowait(f)  # type: ignore[arg-type]
+    pool._size = len(fakes)
+    pool._max_size = len(fakes)
+    pool._lock = asyncio.Lock()
+    pool._closed = False
+    pool._closed_event = None
 
     # Race an outer cancel against the drain.
     drain_task = asyncio.create_task(pool._drain_idle())

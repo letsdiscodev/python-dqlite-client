@@ -41,7 +41,7 @@ class TestTransactionRollbackFailureLogged:
                 raise OSError("connection lost")
             return (0, 0)
 
-        conn.execute = mock_execute  # type: ignore[method-assign]
+        conn.execute = mock_execute
 
         caplog.set_level(logging.DEBUG, logger="dqliteclient.connection")
         with pytest.raises(ValueError, match="body"):
@@ -65,7 +65,7 @@ class TestTransactionRollbackFailureLogged:
                 raise asyncio.CancelledError
             return (0, 0)
 
-        conn.execute = mock_execute  # type: ignore[method-assign]
+        conn.execute = mock_execute
 
         caplog.set_level(logging.DEBUG, logger="dqliteclient.connection")
         with pytest.raises(asyncio.CancelledError):

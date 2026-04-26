@@ -255,7 +255,7 @@ class TestDqliteProtocol:
         self,
         mock_reader: AsyncMock,
         mock_writer: MagicMock,
-        caplog,  # type: ignore[no-untyped-def]
+        caplog,
     ) -> None:
         """``trust_server_heartbeat=True`` with a server heartbeat that
         actually widens the per-read deadline emits a DEBUG log so an
@@ -278,7 +278,7 @@ class TestDqliteProtocol:
         self,
         mock_reader: AsyncMock,
         mock_writer: MagicMock,
-        caplog,  # type: ignore[no-untyped-def]
+        caplog,
     ) -> None:
         """Default (``trust_server_heartbeat=False``) path must not log
         at all for the server-advertised heartbeat — even when the

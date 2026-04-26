@@ -25,7 +25,7 @@ async def test_max_attempts_must_be_int() -> None:
 @pytest.mark.asyncio
 async def test_max_attempts_bool_rejected() -> None:
     with pytest.raises(TypeError, match="max_attempts must be an int"):
-        await retry_with_backoff(_ok, max_attempts=True)  # type: ignore[arg-type]
+        await retry_with_backoff(_ok, max_attempts=True)
 
 
 @pytest.mark.asyncio
@@ -38,7 +38,7 @@ async def test_base_delay_bad_values_rejected(bad: float) -> None:
 @pytest.mark.asyncio
 async def test_base_delay_bool_rejected() -> None:
     with pytest.raises(TypeError, match="base_delay must be a number"):
-        await retry_with_backoff(_ok, base_delay=True)  # type: ignore[arg-type]
+        await retry_with_backoff(_ok, base_delay=True)
 
 
 @pytest.mark.asyncio
@@ -58,7 +58,7 @@ async def test_jitter_bad_values_rejected(bad: float) -> None:
 @pytest.mark.asyncio
 async def test_jitter_bool_rejected() -> None:
     with pytest.raises(TypeError, match="jitter must be a number"):
-        await retry_with_backoff(_ok, jitter=True)  # type: ignore[arg-type]
+        await retry_with_backoff(_ok, jitter=True)
 
 
 @pytest.mark.asyncio
@@ -151,4 +151,4 @@ async def test_deadline_rechecked_before_each_attempt_after_first() -> None:
 @pytest.mark.asyncio
 async def test_max_elapsed_seconds_bool_rejected() -> None:
     with pytest.raises(TypeError, match="max_elapsed_seconds"):
-        await retry_with_backoff(_ok, max_elapsed_seconds=True)  # type: ignore[arg-type]
+        await retry_with_backoff(_ok, max_elapsed_seconds=True)

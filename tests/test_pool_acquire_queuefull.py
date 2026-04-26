@@ -52,7 +52,7 @@ class _FakeConn:
         if self._pool_released or self._protocol is None:
             return
         self.close_effective = True
-        self._protocol = None
+        self._protocol = None  # type: ignore[assignment]
 
     async def execute(self, sql: str, params: Any = None) -> tuple[int, int]:
         return (0, 0)
@@ -107,12 +107,12 @@ async def test_queuefull_on_reinsert_closes_won_conn_and_shrinks_size() -> None:
     # exercises the corrective close path.
     import dqliteclient.pool as pool_mod
 
-    real_wait = pool_mod.asyncio.wait
+    real_wait = pool_mod.asyncio.wait  # type: ignore[attr-defined]
     original_put_nowait = pool._pool.put_nowait
 
     wait_called = []
 
-    async def fake_wait(tasks, *, timeout=None, return_when):  # type: ignore[no-untyped-def]
+    async def fake_wait(tasks, *, timeout=None, return_when):
         wait_called.append(1)
         # Unblock get_task by placing the held conn into the queue.
         original_put_nowait(blocking)
@@ -120,7 +120,7 @@ async def test_queuefull_on_reinsert_closes_won_conn_and_shrinks_size() -> None:
         await real_wait(tasks, timeout=0.5, return_when=return_when)
         # Now install the QueueFull monkeypatch so the cleanup-arm's
         # re-insertion attempt fails.
-        pool._pool.put_nowait = _raise_queue_full  # type: ignore[method-assign]
+        pool._pool.put_nowait = _raise_queue_full  # type: ignore[assignment]
         # Simulate the outer task being cancelled while control is
         # in the wait: raise CancelledError.
         raise asyncio.CancelledError
@@ -128,22 +128,22 @@ async def test_queuefull_on_reinsert_closes_won_conn_and_shrinks_size() -> None:
     def _raise_queue_full(_conn: object) -> None:
         raise asyncio.QueueFull
 
-    pool_mod.asyncio.wait = fake_wait  # type: ignore[assignment]
+    pool_mod.asyncio.wait = fake_wait  # type: ignore[attr-defined]
     cm = pool.acquire()
     try:
         await cm.__aenter__()
     except asyncio.CancelledError:
         pass
     except BaseException as e:  # pragma: no cover - defensive
-        pool_mod.asyncio.wait = real_wait  # type: ignore[assignment]
-        pool._pool.put_nowait = original_put_nowait  # type: ignore[method-assign]
+        pool_mod.asyncio.wait = real_wait  # type: ignore[attr-defined]
+        pool._pool.put_nowait = original_put_nowait
         raise AssertionError(f"expected CancelledError, got {type(e).__name__}: {e}") from e
     else:  # pragma: no cover - defensive
-        pool_mod.asyncio.wait = real_wait  # type: ignore[assignment]
-        pool._pool.put_nowait = original_put_nowait  # type: ignore[method-assign]
+        pool_mod.asyncio.wait = real_wait  # type: ignore[attr-defined]
+        pool._pool.put_nowait = original_put_nowait
         raise AssertionError("expected acquire to be cancelled, but it returned")
-    pool_mod.asyncio.wait = real_wait  # type: ignore[assignment]
-    pool._pool.put_nowait = original_put_nowait  # type: ignore[method-assign]
+    pool_mod.asyncio.wait = real_wait  # type: ignore[attr-defined]
+    pool._pool.put_nowait = original_put_nowait
     assert wait_called, "fake_wait monkeypatch did not apply"
 
     # The connection that was won must have had close() called on

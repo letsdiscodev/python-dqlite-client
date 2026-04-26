@@ -28,7 +28,7 @@ async def test_connect_cleanup_uses_configured_close_timeout() -> None:
 
     import dqliteclient.connection as conn_mod
 
-    real_proto = conn_mod.DqliteProtocol
+    real_proto = conn_mod.DqliteProtocol  # type: ignore[attr-defined]
     real_open = asyncio.open_connection
     real_wait_for = asyncio.wait_for
 
@@ -41,21 +41,21 @@ async def test_connect_cleanup_uses_configured_close_timeout() -> None:
 
     captured_timeouts: list[float] = []
 
-    async def spy_wait_for(aw, timeout):  # type: ignore[no-untyped-def]
+    async def spy_wait_for(aw, timeout):
         captured_timeouts.append(timeout)
         return await real_wait_for(aw, timeout=timeout)
 
-    conn_mod.DqliteProtocol = _BrokenProtocol  # type: ignore[assignment]
+    conn_mod.DqliteProtocol = _BrokenProtocol  # type: ignore[assignment,attr-defined]
     asyncio.open_connection = fake_open_connection  # type: ignore[assignment]
-    conn_mod.asyncio.wait_for = spy_wait_for  # type: ignore[assignment]
+    conn_mod.asyncio.wait_for = spy_wait_for  # type: ignore[attr-defined]
 
     try:
         with pytest.raises(RuntimeError, match="protocol construction"):
             await conn.connect()
     finally:
-        conn_mod.DqliteProtocol = real_proto  # type: ignore[assignment]
-        asyncio.open_connection = real_open  # type: ignore[assignment]
-        conn_mod.asyncio.wait_for = real_wait_for  # type: ignore[assignment]
+        conn_mod.DqliteProtocol = real_proto  # type: ignore[attr-defined]
+        asyncio.open_connection = real_open
+        conn_mod.asyncio.wait_for = real_wait_for  # type: ignore[attr-defined]
 
     # At least one wait_for call should carry the configured close_timeout.
     assert captured_timeouts, "expected wait_for to run during cleanup"

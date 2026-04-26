@@ -66,7 +66,7 @@ class _FakeProtocol:
             "COMMIT": self.on_commit,
             "ROLLBACK": self.on_rollback,
         }.get(verb, self._default_ok)
-        return await hook()
+        return await hook()  # type: ignore[no-any-return]
 
     def close(self) -> None:
         self._open = False

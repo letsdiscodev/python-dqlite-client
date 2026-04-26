@@ -42,7 +42,7 @@ class _FakeConn:
         self.close_called = True
         if self._pool_released or self._protocol is None:
             return
-        self._protocol = None
+        self._protocol = None  # type: ignore[assignment]
 
     async def execute(self, sql: str, params: Any = None) -> tuple[int, int]:
         return (0, 0)
@@ -87,19 +87,19 @@ async def test_queuefull_cleanup_wakes_waiters_via_state_signal() -> None:
 
     import dqliteclient.pool as pool_mod
 
-    real_wait = pool_mod.asyncio.wait
+    real_wait = pool_mod.asyncio.wait  # type: ignore[attr-defined]
     original_put_nowait = pool._pool.put_nowait
 
-    async def fake_wait(tasks, *, timeout=None, return_when):  # type: ignore[no-untyped-def]
+    async def fake_wait(tasks, *, timeout=None, return_when):
         original_put_nowait(blocking)
         await real_wait(tasks, timeout=0.5, return_when=return_when)
-        pool._pool.put_nowait = _raise_queue_full  # type: ignore[method-assign]
+        pool._pool.put_nowait = _raise_queue_full  # type: ignore[assignment]
         raise asyncio.CancelledError
 
     def _raise_queue_full(_conn: object) -> None:
         raise asyncio.QueueFull
 
-    pool_mod.asyncio.wait = fake_wait  # type: ignore[assignment]
+    pool_mod.asyncio.wait = fake_wait  # type: ignore[attr-defined]
     try:
         cm = pool.acquire()
         try:
@@ -109,8 +109,8 @@ async def test_queuefull_cleanup_wakes_waiters_via_state_signal() -> None:
         else:  # pragma: no cover - defensive
             raise AssertionError("expected CancelledError")
     finally:
-        pool_mod.asyncio.wait = real_wait  # type: ignore[assignment]
-        pool._pool.put_nowait = original_put_nowait  # type: ignore[method-assign]
+        pool_mod.asyncio.wait = real_wait  # type: ignore[attr-defined]
+        pool._pool.put_nowait = original_put_nowait
 
     # After the cleanup arm runs, the closed event must be set — that
     # is the signal ``_release_reservation`` emits via

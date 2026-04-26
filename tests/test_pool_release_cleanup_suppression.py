@@ -66,7 +66,7 @@ async def test_release_closed_branch_absorbs_cleanup_exception() -> None:
     conn = _FakeConn(close_raises=BrokenPipeError("EPIPE"))
     pool._size = 1
     # Branch 1: pool is closed.
-    await pool._release(conn)
+    await pool._release(conn)  # type: ignore[arg-type]
     assert conn.close_called
     assert conn._pool_released is True
 
@@ -80,10 +80,10 @@ async def test_release_reset_fail_branch_absorbs_operational_error() -> None:
     async def _reset_fail(c: Any) -> bool:
         return False
 
-    pool._reset_connection = _reset_fail  # type: ignore[method-assign]
+    pool._reset_connection = _reset_fail  # type: ignore[assignment]
 
     # Branch 2: reset returned False.
-    await pool._release(conn)
+    await pool._release(conn)  # type: ignore[arg-type]
     assert conn.close_called
     assert conn._pool_released is True
 
@@ -103,10 +103,10 @@ async def test_release_queuefull_branch_absorbs_cleanup_exception() -> None:
     async def _reset_ok(c: Any) -> bool:
         return True
 
-    pool._reset_connection = _reset_ok  # type: ignore[method-assign]
+    pool._reset_connection = _reset_ok  # type: ignore[assignment]
 
     # Branch 3: queue full on put_nowait.
-    await pool._release(conn)
+    await pool._release(conn)  # type: ignore[arg-type]
     assert conn.close_called
     assert conn._pool_released is True
 
@@ -120,4 +120,4 @@ async def test_release_closed_branch_propagates_programmer_bug() -> None:
     conn = _FakeConn(close_raises=TypeError("whoops"))
     pool._size = 1
     with pytest.raises(TypeError, match="whoops"):
-        await pool._release(conn)
+        await pool._release(conn)  # type: ignore[arg-type]

@@ -56,7 +56,6 @@ class TestGetLeaderErrorBranches:
             code=1, message="probe failed"
         ).encode()
         # handshake must succeed first — simulate by setting the flag.
-        protocol._handshake_done = True
         with pytest.raises(OperationalError) as exc_info:
             await protocol.get_leader()
         assert exc_info.value.code == 1
@@ -64,7 +63,6 @@ class TestGetLeaderErrorBranches:
 
     async def test_get_leader_wrong_type(self, protocol: DqliteProtocol) -> None:
         protocol._reader.read.return_value = DbResponse(db_id=1).encode()  # type: ignore[attr-defined]
-        protocol._handshake_done = True
         with pytest.raises(ProtocolError, match="Expected LeaderResponse"):
             await protocol.get_leader()
 
@@ -74,7 +72,6 @@ class TestOpenDatabaseWrongType:
         protocol._reader.read.return_value = LeaderResponse(  # type: ignore[attr-defined]
             node_id=1, address="a:1"
         ).encode()
-        protocol._handshake_done = True
         with pytest.raises(ProtocolError, match="Expected DbResponse"):
             await protocol.open_database("test.db")
 
@@ -84,14 +81,12 @@ class TestPrepareErrorBranches:
         protocol._reader.read.return_value = FailureResponse(  # type: ignore[attr-defined]
             code=1, message="SQL syntax error"
         ).encode()
-        protocol._handshake_done = True
         with pytest.raises(OperationalError) as exc_info:
             await protocol.prepare(1, "BAD SQL")
         assert exc_info.value.code == 1
 
     async def test_prepare_wrong_type(self, protocol: DqliteProtocol) -> None:
         protocol._reader.read.return_value = DbResponse(db_id=1).encode()  # type: ignore[attr-defined]
-        protocol._handshake_done = True
         with pytest.raises(ProtocolError, match="Expected StmtResponse"):
             await protocol.prepare(1, "SELECT 1")
 
@@ -101,7 +96,6 @@ class TestFinalizeFailureBranch:
         protocol._reader.read.return_value = FailureResponse(  # type: ignore[attr-defined]
             code=21, message="misuse"
         ).encode()
-        protocol._handshake_done = True
         with pytest.raises(OperationalError) as exc_info:
             await protocol.finalize(1, 1)
         assert exc_info.value.code == 21
@@ -112,14 +106,12 @@ class TestExecSqlErrorBranches:
         protocol._reader.read.return_value = FailureResponse(  # type: ignore[attr-defined]
             code=19, message="constraint failed"
         ).encode()
-        protocol._handshake_done = True
         with pytest.raises(OperationalError) as exc_info:
             await protocol.exec_sql(1, "INSERT INTO t VALUES (1)")
         assert exc_info.value.code == 19
 
     async def test_exec_sql_wrong_type(self, protocol: DqliteProtocol) -> None:
         protocol._reader.read.return_value = DbResponse(db_id=1).encode()  # type: ignore[attr-defined]
-        protocol._handshake_done = True
         with pytest.raises(ProtocolError, match="Expected ResultResponse"):
             await protocol.exec_sql(1, "INSERT INTO t VALUES (1)")
 
@@ -129,13 +121,11 @@ class TestSendQueryErrorBranches:
         protocol._reader.read.return_value = FailureResponse(  # type: ignore[attr-defined]
             code=5, message="busy"
         ).encode()
-        protocol._handshake_done = True
         with pytest.raises(OperationalError) as exc_info:
             await protocol.query_sql(1, "SELECT 1")
         assert exc_info.value.code == 5
 
     async def test_query_sql_wrong_type(self, protocol: DqliteProtocol) -> None:
         protocol._reader.read.return_value = DbResponse(db_id=1).encode()  # type: ignore[attr-defined]
-        protocol._handshake_done = True
         with pytest.raises(ProtocolError, match="Expected RowsResponse"):
             await protocol.query_sql(1, "SELECT 1")

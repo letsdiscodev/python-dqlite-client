@@ -66,7 +66,7 @@ async def test_initialize_close_race_routes_survivors_through_cleanup() -> None:
         await close_done.wait()
         return next(create_iter)
 
-    pool._create_connection = _create  # type: ignore[method-assign]
+    pool._create_connection = _create  # type: ignore[assignment]
 
     init_task = asyncio.create_task(pool.initialize())
     # Wait for gather to have started (and be suspended) on every node.
@@ -116,7 +116,7 @@ async def test_initialize_close_race_guards_initialized_flag() -> None:
         await close_done.wait()
         return next(create_iter)
 
-    pool._create_connection = _create  # type: ignore[method-assign]
+    pool._create_connection = _create  # type: ignore[assignment]
 
     init_task = asyncio.create_task(pool.initialize())
     await gather_started.wait()
@@ -162,7 +162,7 @@ async def test_initialize_close_between_put_iterations_closes_tail_survivors() -
     async def _create() -> object:
         return next(create_iter)
 
-    pool._create_connection = _create  # type: ignore[method-assign]
+    pool._create_connection = _create  # type: ignore[assignment]
 
     # Intercept the queue put so that exactly the first put succeeds,
     # then close() fires before the second put iteration runs.
@@ -172,14 +172,14 @@ async def test_initialize_close_between_put_iterations_closes_tail_survivors() -
 
     async def _intercept_put(item: object) -> None:
         nonlocal puts_done
-        await original_put(item)
+        await original_put(item)  # type: ignore[arg-type]
         puts_done += 1
         if puts_done == 1:
             # Land the close() between put-loop iterations.
             await pool.close()
             close_fired.set()
 
-    pool._pool.put = _intercept_put  # type: ignore[method-assign]
+    pool._pool.put = _intercept_put
 
     await asyncio.wait_for(pool.initialize(), timeout=1.0)
     assert close_fired.is_set(), "close() did not land between put-iterations"

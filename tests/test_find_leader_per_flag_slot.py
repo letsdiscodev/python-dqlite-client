@@ -34,7 +34,7 @@ async def test_concurrent_callers_with_different_flags_do_not_collapse() -> None
         await asyncio.sleep(0.01)
         return "127.0.0.1:9001"
 
-    cluster._find_leader_impl = fake_impl  # type: ignore[assignment]
+    cluster._find_leader_impl = fake_impl
 
     a, b = await asyncio.gather(
         cluster.find_leader(trust_server_heartbeat=True),
@@ -63,7 +63,7 @@ async def test_concurrent_callers_with_same_flag_still_collapse() -> None:
         await asyncio.sleep(0.01)
         return "127.0.0.1:9001"
 
-    cluster._find_leader_impl = fake_impl  # type: ignore[assignment]
+    cluster._find_leader_impl = fake_impl
 
     await asyncio.gather(
         cluster.find_leader(trust_server_heartbeat=False),

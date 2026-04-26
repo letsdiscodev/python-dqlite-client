@@ -141,7 +141,7 @@ class TestRedirectPolicy:
             result = asyncio.run(cc.find_leader())
         assert result == "10.0.0.1:9001"
 
-    def test_redirect_rejection_emits_debug_log(self, caplog) -> None:  # type: ignore[no-untyped-def]
+    def test_redirect_rejection_emits_debug_log(self, caplog) -> None:
         """Policy rejection must emit a DEBUG log so an SSRF-style
         attempt or a policy misconfiguration is visible from logs
         alone — not only through the exception stack."""

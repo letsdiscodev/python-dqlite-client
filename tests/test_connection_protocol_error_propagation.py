@@ -113,7 +113,7 @@ class TestReadContinuationRejectsUnexpectedEmptyResponse:
         proto._timeout = 2.0
         # _read_data should never be called on this code path; if it
         # is, fail loudly rather than silently.
-        proto._read_data = AsyncMock(  # type: ignore[method-assign]
+        proto._read_data = AsyncMock(
             side_effect=AssertionError(
                 "_read_data must not be called when decoder yields EmptyResponse"
             )

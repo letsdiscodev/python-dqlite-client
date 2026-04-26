@@ -51,7 +51,7 @@ async def test_acquire_revive_on_closed_pool_raises() -> None:
         await create_gate.wait()
         return fresh_conn
 
-    pool._create_connection = _create  # type: ignore[method-assign]
+    pool._create_connection = _create  # type: ignore[assignment]
 
     async def _consume() -> None:
         async with pool.acquire() as conn:

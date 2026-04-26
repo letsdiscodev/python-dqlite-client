@@ -87,7 +87,7 @@ class TestInvalidateNoLoopBranch:
         conn = DqliteConnection("localhost:9001")
         # Set up state that should be cleared regardless of loop
         # presence.
-        conn._protocol = MagicMock()  # type: ignore[assignment]
+        conn._protocol = MagicMock()
         conn._in_transaction = True
 
         captured: dict[str, BaseException | None] = {"err": None}
@@ -151,7 +151,7 @@ class TestCloseLogsUnexpectedDrainError:
         proto = MagicMock()
         proto.close = MagicMock(return_value=None)
         proto.wait_closed = AsyncMock(side_effect=ValueError("boom"))
-        conn._protocol = proto  # type: ignore[assignment]
+        conn._protocol = proto
 
         with caplog.at_level(logging.DEBUG, logger="dqliteclient.connection"):
             await conn.close()
@@ -168,7 +168,7 @@ class TestCloseLogsUnexpectedDrainError:
         proto = MagicMock()
         proto.close = MagicMock(return_value=None)
         proto.wait_closed = AsyncMock(side_effect=ValueError("boom"))
-        conn._protocol = proto  # type: ignore[assignment]
+        conn._protocol = proto
 
         with caplog.at_level(logging.DEBUG, logger="dqliteclient.connection"):
             await conn._abort_protocol()

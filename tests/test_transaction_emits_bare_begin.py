@@ -30,7 +30,7 @@ def test_transaction_begin_sql_constant_is_bare_begin() -> None:
 class TestTransactionEmitsBareBegin:
     async def test_transaction_emits_bare_begin(self, conn: DqliteConnection) -> None:
         execute = AsyncMock(return_value=(0, 0))
-        conn.execute = execute  # type: ignore[method-assign]
+        conn.execute = execute
 
         async with conn.transaction():
             pass
@@ -42,7 +42,7 @@ class TestTransactionEmitsBareBegin:
         """Negative pin: refactors that emit BEGIN IMMEDIATE / EXCLUSIVE
         diverge from the C and Go peers and would break this test."""
         execute = AsyncMock(return_value=(0, 0))
-        conn.execute = execute  # type: ignore[method-assign]
+        conn.execute = execute
 
         async with conn.transaction():
             pass

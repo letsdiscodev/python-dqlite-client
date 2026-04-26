@@ -52,7 +52,7 @@ async def test_partial_failure_logs_survivor_count(
             raise val
         return val
 
-    pool._create_connection = _create_mock  # type: ignore[method-assign]
+    pool._create_connection = _create_mock  # type: ignore[assignment]
 
     with (
         caplog.at_level(logging.DEBUG, logger="dqliteclient.pool"),

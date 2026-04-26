@@ -32,7 +32,7 @@ async def test_concurrent_find_leader_callers_share_one_task() -> None:
         await leader_event.wait()
         return "elected:9001"
 
-    cluster._find_leader_impl = _fake_impl  # type: ignore[method-assign]
+    cluster._find_leader_impl = _fake_impl
 
     callers = [asyncio.create_task(cluster.find_leader()) for _ in range(20)]
     # Yield enough times for every caller to enter find_leader.
@@ -61,7 +61,7 @@ async def test_consecutive_find_leader_calls_get_fresh_probes() -> None:
         impl_calls += 1
         return f"leader-{impl_calls}:9001"
 
-    cluster._find_leader_impl = _fake_impl  # type: ignore[method-assign]
+    cluster._find_leader_impl = _fake_impl
 
     a = await cluster.find_leader()
     b = await cluster.find_leader()

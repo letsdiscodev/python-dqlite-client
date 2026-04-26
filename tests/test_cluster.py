@@ -9,6 +9,7 @@ import pytest
 from dqliteclient.cluster import ClusterClient
 from dqliteclient.exceptions import ClusterError, DqliteConnectionError
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo
+from dqlitewire.constants import NodeRole
 
 
 class TestClusterClient:
@@ -465,10 +466,10 @@ class TestClusterClient:
         # Seed with a non-voter first, then a voter.
         await store.set_nodes(
             [
-                NodeInfo(node_id=2, address="spare:9002", role=2),  # spare
-                NodeInfo(node_id=1, address="standby:9003", role=1),  # standby
-                NodeInfo(node_id=3, address="voter1:9001", role=0),
-                NodeInfo(node_id=4, address="voter2:9004", role=0),
+                NodeInfo(node_id=2, address="spare:9002", role=NodeRole.SPARE),  # spare
+                NodeInfo(node_id=1, address="standby:9003", role=NodeRole.STANDBY),  # standby
+                NodeInfo(node_id=3, address="voter1:9001", role=NodeRole.VOTER),
+                NodeInfo(node_id=4, address="voter2:9004", role=NodeRole.VOTER),
             ]
         )
         client = ClusterClient(store, timeout=0.2)
@@ -547,7 +548,7 @@ class TestConnectMaxAttempts:
             call_count[0] += 1
             raise DqliteConnectionError("unreachable")
 
-        client.find_leader = fake_find_leader  # type: ignore[method-assign]
+        client.find_leader = fake_find_leader
 
         with contextlib.suppress(DqliteConnectionError):
             await client.connect(max_attempts=5)
@@ -572,7 +573,7 @@ class TestConnectObservability:
         async def fake_find_leader(**_kwargs: object) -> str:
             raise DqliteConnectionError("simulated")
 
-        client.find_leader = fake_find_leader  # type: ignore[method-assign]
+        client.find_leader = fake_find_leader
 
         caplog.set_level(logging.DEBUG, logger="dqliteclient.cluster")
         with contextlib.suppress(DqliteConnectionError):
@@ -847,7 +848,7 @@ class TestTryConnectNarrowExcept:
         async def fake_find_leader(**_kwargs: object) -> str:
             raise TypeError("programming bug")
 
-        client.find_leader = fake_find_leader  # type: ignore[method-assign]
+        client.find_leader = fake_find_leader
 
         with pytest.raises(TypeError, match="programming bug"):
             await client.connect(max_attempts=1)

@@ -45,11 +45,11 @@ def _prime_failure(conn: DqliteConnection, code: int, message: str) -> None:
     """Prime the underlying protocol's exec_sql to raise OperationalError."""
     err = OperationalError(code, message)
 
-    async def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+    async def _raise(*_args, **_kwargs):
         raise err
 
-    conn._protocol.exec_sql = _raise  # type: ignore[assignment]
-    conn._protocol.query_sql = _raise  # type: ignore[assignment]
+    conn._protocol.exec_sql = _raise  # type: ignore[union-attr]
+    conn._protocol.query_sql = _raise  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize(

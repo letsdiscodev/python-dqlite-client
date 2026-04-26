@@ -248,7 +248,7 @@ class TestDqliteConnection:
         async def mock_execute(sql: str, params=None):
             return (0, 0)
 
-        conn.execute = mock_execute  # type: ignore[assignment]
+        conn.execute = mock_execute
 
         from dqliteclient.exceptions import InterfaceError
 
@@ -295,7 +295,7 @@ class TestDqliteConnection:
                 raise OSError("Connection lost")
             return (0, 0)
 
-        conn.execute = mock_execute  # type: ignore[assignment]
+        conn.execute = mock_execute
 
         with pytest.raises(ValueError, match="user error"):
             async with conn.transaction():
@@ -404,7 +404,7 @@ class TestDqliteConnection:
 
     async def test_connect_emits_debug_logs_on_handshake_and_open(
         self, caplog, mock_reader, mock_writer, welcome_response, db_response
-    ) -> None:  # type: ignore[no-untyped-def]
+    ) -> None:
         """DEBUG traces the happy-path connect sequence so an operator
         can see which address actually landed through the log alone.
         """
@@ -557,7 +557,7 @@ class TestDqliteConnection:
             call_log.append(sql)
             return (0, 0)
 
-        conn.execute = mock_execute  # type: ignore[assignment]
+        conn.execute = mock_execute
 
         async def cancelled_transaction():
             async with conn.transaction():
@@ -652,7 +652,7 @@ class TestDqliteConnection:
             await asyncio.sleep(10)
             return (0, 1)
 
-        conn._protocol.exec_sql = AsyncMock(side_effect=slow_exec_sql)  # type: ignore[union-attr]
+        conn._protocol.exec_sql = AsyncMock(side_effect=slow_exec_sql)
 
         errors: list[Exception] = []
 
@@ -744,7 +744,7 @@ class TestDqliteConnection:
             await asyncio.sleep(10)
             return (0, 1)
 
-        conn._protocol.exec_sql = AsyncMock(side_effect=slow_exec_sql)  # type: ignore[union-attr]
+        conn._protocol.exec_sql = AsyncMock(side_effect=slow_exec_sql)
 
         async def do_execute():
             await conn.execute("INSERT INTO t VALUES (1)")
@@ -794,7 +794,7 @@ class TestDqliteConnection:
                 await asyncio.sleep(0)  # yield to let second coroutine enter
             return (0, 0)
 
-        conn.execute = mock_execute  # type: ignore[assignment]
+        conn.execute = mock_execute
 
         errors: list[Exception] = []
 
@@ -925,7 +925,7 @@ class TestDqliteConnection:
         async def raise_client_error(_db, _sql, _params=None):
             raise TypeError("bad parameter type")
 
-        conn._protocol.exec_sql = raise_client_error  # type: ignore[assignment]
+        conn._protocol.exec_sql = raise_client_error
 
         with pytest.raises(TypeError, match="bad parameter"):
             await conn.execute("INSERT INTO t VALUES (?)", [object()])
@@ -1016,7 +1016,7 @@ class TestDqliteConnection:
 
         conn, _, _ = connected_connection
         with pytest.raises(DataError, match="list or tuple"):
-            await conn.execute("SELECT ?", "alice")  # type: ignore[arg-type]
+            await conn.execute("SELECT ?", "alice")
 
     async def test_int64_overflow_raises_dataerror(self, connected_connection) -> None:
         """Out-of-range int (|v| >= 2^63) must surface as DataError, not the
@@ -1121,7 +1121,7 @@ class TestDqliteConnection:
                 await asyncio.sleep(0)  # yield to let task B run
             return (0, 0)
 
-        conn.execute = mock_execute_a  # type: ignore[assignment]
+        conn.execute = mock_execute_a
 
         errors: list[Exception] = []
 

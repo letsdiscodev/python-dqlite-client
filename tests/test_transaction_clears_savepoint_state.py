@@ -48,7 +48,7 @@ async def test_benign_no_tx_rollback_clears_savepoint_state() -> None:
             raise no_tx_error
         return (0, 0)
 
-    conn.execute = fake_execute  # type: ignore[method-assign]
+    conn.execute = fake_execute
 
     with pytest.raises(RuntimeError, match="body raised"):
         async with conn.transaction():
@@ -84,7 +84,7 @@ async def test_finally_clears_savepoint_state_on_body_exception_with_invalidatio
             raise OperationalError(1, "some other failure mode")
         return (0, 0)
 
-    conn.execute = fake_execute  # type: ignore[method-assign]
+    conn.execute = fake_execute
 
     with pytest.raises(RuntimeError, match="body raised"):
         async with conn.transaction():
@@ -114,7 +114,7 @@ async def test_finally_clears_savepoint_state_on_success_path() -> None:
             return (0, 0)
         return (0, 0)
 
-    conn.execute = fake_execute  # type: ignore[method-assign]
+    conn.execute = fake_execute
 
     async with conn.transaction():
         pass
