@@ -451,15 +451,31 @@ class ClusterClient:
                 leader = await self.find_leader(
                     trust_server_heartbeat=trust_server_heartbeat,
                 )
-                conn = DqliteConnection(
-                    leader,
-                    database=database,
-                    timeout=self._timeout,
-                    max_total_rows=max_total_rows,
-                    max_continuation_frames=max_continuation_frames,
-                    trust_server_heartbeat=trust_server_heartbeat,
-                    close_timeout=close_timeout,
-                )
+                try:
+                    conn = DqliteConnection(
+                        leader,
+                        database=database,
+                        timeout=self._timeout,
+                        max_total_rows=max_total_rows,
+                        max_continuation_frames=max_continuation_frames,
+                        trust_server_heartbeat=trust_server_heartbeat,
+                        close_timeout=close_timeout,
+                    )
+                except ValueError as e:
+                    # ``DqliteConnection.__init__`` validates the
+                    # address (hostname format, port range, IDN,
+                    # etc.) and raises bare ``ValueError`` on
+                    # malformed input. The leader address came from
+                    # the server's LeaderResponse — a malformed
+                    # redirect target is a deterministic protocol
+                    # violation that should NOT be retried, AND
+                    # should surface through PEP 249 wrapping.
+                    # Re-raise as ``ClusterPolicyError`` so the SA
+                    # / dbapi classifier maps it to a clean error
+                    # class instead of leaking ``ValueError``.
+                    raise ClusterPolicyError(
+                        f"Server redirected to invalid leader address: {e}"
+                    ) from e
                 await conn.connect()
                 return conn
             except (OSError, DqliteConnectionError, ClusterError) as exc:
