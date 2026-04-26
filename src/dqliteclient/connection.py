@@ -119,8 +119,9 @@ def _parse_release_name(after_keyword: str) -> str | None:
     ``SAVEPOINT`` keyword before extracting the identifier.
     """
     s = after_keyword.lstrip()
-    if s[:9].upper() == "SAVEPOINT" and (len(s) == 9 or not s[9].isalnum()):
-        s = s[9:].lstrip()
+    kw_len = len("SAVEPOINT")
+    if s[:kw_len].upper() == "SAVEPOINT" and (len(s) == kw_len or not s[kw_len].isalnum()):
+        s = s[kw_len:].lstrip()
     return _parse_savepoint_name(s)
 
 
