@@ -81,6 +81,20 @@ _BARE_IDENT_FIRST = frozenset(string.ascii_letters + "_")
 _BARE_IDENT_REST = frozenset(string.ascii_letters + string.digits + "_")
 
 
+def _is_keyword_boundary(s: str, kw_len: int) -> bool:
+    """True if position ``kw_len`` in ``s`` ends an SQL keyword.
+
+    A keyword ends at end-of-string or at a character that is NOT a
+    SQLite identifier-continuation character. ``str.isalnum`` is wrong
+    here: SQLite's identifier tokenizer (``sqlite3IsIdChar``) treats
+    ``_`` as an identifier character, but ``'_'.isalnum()`` is False —
+    so an unfixed boundary check would split ``SAVEPOINT_foo`` into
+    ``SAVEPOINT`` + ``_foo`` and silently push ``_foo`` onto the local
+    savepoint stack while the server (correctly) creates ``SAVEPOINT_foo``.
+    """
+    return len(s) == kw_len or s[kw_len] not in _BARE_IDENT_REST
+
+
 def _strip_leading_comments(sql: str) -> str:
     """Strip leading SQL comments (``--`` and ``/* */``) and whitespace.
 
@@ -158,7 +172,7 @@ def _parse_release_name(after_keyword: str) -> str | None:
     """
     s = after_keyword.lstrip()
     kw_len = len("SAVEPOINT")
-    if s[:kw_len].upper() == "SAVEPOINT" and (len(s) == kw_len or not s[kw_len].isalnum()):
+    if s[:kw_len].upper() == "SAVEPOINT" and _is_keyword_boundary(s, kw_len):
         s = s[kw_len:].lstrip()
     return _parse_savepoint_name(s)
 
@@ -979,9 +993,7 @@ class DqliteConnection:
         if not head:
             return
         upper = head.upper()
-        if upper.startswith("BEGIN") and (
-            len(upper) == len("BEGIN") or not upper[len("BEGIN")].isalnum()
-        ):
+        if upper.startswith("BEGIN") and _is_keyword_boundary(upper, len("BEGIN")):
             if not self._in_transaction:
                 self._in_transaction = True
                 # Deliberately leave ``_tx_owner`` as None for a raw
@@ -995,8 +1007,10 @@ class DqliteConnection:
                 # the caller to serialise their own access (matches
                 # stdlib ``sqlite3`` semantics).
             return
-        if upper.startswith("SAVEPOINT") and (
-            len(upper) > len("SAVEPOINT") and not upper[len("SAVEPOINT")].isalnum()
+        if (
+            upper.startswith("SAVEPOINT")
+            and len(upper) > len("SAVEPOINT")
+            and _is_keyword_boundary(upper, len("SAVEPOINT"))
         ):
             name = _parse_savepoint_name(head[len("SAVEPOINT") :])
             if name is not None:
@@ -1010,8 +1024,10 @@ class DqliteConnection:
                     self._in_transaction = True
                     self._savepoint_implicit_begin = True
             return
-        if upper.startswith("RELEASE") and (
-            len(upper) > len("RELEASE") and not upper[len("RELEASE")].isalnum()
+        if (
+            upper.startswith("RELEASE")
+            and len(upper) > len("RELEASE")
+            and _is_keyword_boundary(upper, len("RELEASE"))
         ):
             name = _parse_release_name(head[len("RELEASE") :])
             if name is not None and name in self._savepoint_stack:
@@ -1043,8 +1059,8 @@ class DqliteConnection:
             # TO SAVEPOINT sp`` is correctly classified as a savepoint
             # rollback, not a full ROLLBACK.
             tx_kw_len = len("TRANSACTION")
-            if after_upper[:tx_kw_len] == "TRANSACTION" and (
-                len(after_upper) == tx_kw_len or not after_upper[tx_kw_len].isalnum()
+            if after_upper[:tx_kw_len] == "TRANSACTION" and _is_keyword_boundary(
+                after_upper, tx_kw_len
             ):
                 after_upper = after_upper[tx_kw_len:].lstrip()
                 after_orig = after_orig[tx_kw_len:].lstrip()
@@ -1072,7 +1088,7 @@ class DqliteConnection:
             # forms (``COMMIT``, ``COMMIT TRANSACTION``, ``END``,
             # ``END TRANSACTION``) end here.
             verb = "COMMIT" if upper.startswith("COMMIT") else "END"
-            if len(upper) == len(verb) or not upper[len(verb)].isalnum():
+            if _is_keyword_boundary(upper, len(verb)):
                 if self._in_transaction:
                     self._in_transaction = False
                     self._tx_owner = None

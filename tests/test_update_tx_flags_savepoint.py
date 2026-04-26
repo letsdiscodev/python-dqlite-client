@@ -421,3 +421,106 @@ class TestSavepointDuplicateNameLIFO:
         conn._update_tx_flags_from_sql("RELEASE sp")
         assert conn._savepoint_stack == ["a", "sp", "b"]
         assert conn._in_transaction is True
+
+
+class TestKeywordBoundaryUnderscoreAndAlnum:
+    """Pin the keyword/identifier boundary check.
+
+    Python's ``str.isalnum`` returns False for ``_``, but SQLite's
+    identifier tokenizer treats ``_`` as a continuation character. A
+    boundary check that uses ``not isalnum`` will mis-split identifiers
+    like ``SAVEPOINT_foo`` into the keyword ``SAVEPOINT`` followed by
+    a separate name ``_foo`` — pushing the wrong name onto the local
+    stack while the server (correctly) creates ``SAVEPOINT_foo``.
+
+    Verified across the six keyword sites: BEGIN, SAVEPOINT, RELEASE,
+    ROLLBACK [TRANSACTION], COMMIT, END — all share the same boundary
+    helper.
+    """
+
+    def test_savepoint_underscore_identifier_not_split(self) -> None:
+        """``_parse_release_name`` must NOT strip ``SAVEPOINT`` when the
+        next character is ``_`` — the whole token is a bareword."""
+        from dqliteclient.connection import _parse_release_name
+
+        assert _parse_release_name(" SAVEPOINT_foo") == "savepoint_foo"
+
+    def test_release_savepoint_savepoint_underscore_foo_passes_through(self) -> None:
+        """``RELEASE SAVEPOINT SAVEPOINT_foo`` must release the
+        identifier ``SAVEPOINT_foo`` — the inner ``SAVEPOINT`` keyword
+        is consumed once; the trailing ``SAVEPOINT_foo`` is the name."""
+        from dqliteclient.connection import _parse_release_name
+
+        assert _parse_release_name(" SAVEPOINT SAVEPOINT_foo") == "savepoint_foo"
+
+    def test_begin_underscore_identifier_does_not_set_in_transaction(
+        self, conn: DqliteConnection
+    ) -> None:
+        """``BEGIN_foo`` is a bareword (probably not a real DDL but the
+        parser must not classify it as the BEGIN keyword)."""
+        conn._update_tx_flags_from_sql("BEGIN_foo")
+        assert conn._in_transaction is False
+
+    def test_savepoint_keyword_followed_by_underscore_treated_as_bareword(
+        self, conn: DqliteConnection
+    ) -> None:
+        """``SAVEPOINT_foo`` (no space) is a single bareword — the
+        prefix-sniff classifier must not push anything onto the local
+        savepoint stack."""
+        conn._update_tx_flags_from_sql("SAVEPOINT_foo")
+        assert conn._savepoint_stack == []
+        assert conn._in_transaction is False
+        assert conn._savepoint_implicit_begin is False
+
+    def test_release_keyword_followed_by_underscore_treated_as_bareword(
+        self, conn: DqliteConnection
+    ) -> None:
+        """``RELEASE_foo`` is a single bareword — must not be classified
+        as a RELEASE statement."""
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT _foo")
+        # RELEASE_foo (no space) is a bareword; the tracker must not
+        # pop the stack.
+        conn._update_tx_flags_from_sql("RELEASE_foo")
+        assert conn._savepoint_stack == ["_foo"]
+        assert conn._in_transaction is True
+
+    def test_commit_underscore_identifier_does_not_close_transaction(
+        self, conn: DqliteConnection
+    ) -> None:
+        """``COMMIT_foo`` is a bareword — must not close the
+        transaction the way the COMMIT keyword would."""
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("COMMIT_foo")
+        assert conn._in_transaction is True
+
+    def test_rollback_transaction_underscore_identifier_treated_as_bareword(
+        self, conn: DqliteConnection
+    ) -> None:
+        """The TRANSACTION keyword strip in ROLLBACK must respect the
+        underscore boundary too — ``ROLLBACK TRANSACTION_foo`` cannot
+        strip ``TRANSACTION``. The whole tail is a bareword that the
+        ROLLBACK branch then ignores (no TO prefix), falling into the
+        plain-ROLLBACK path."""
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        # ``TRANSACTION_foo`` is not the TRANSACTION keyword. The tail
+        # also lacks a TO prefix, so the plain-ROLLBACK branch runs:
+        # the transaction is fully rolled back.
+        conn._update_tx_flags_from_sql("ROLLBACK TRANSACTION_foo")
+        assert conn._savepoint_stack == []
+        assert conn._in_transaction is False
+
+    def test_savepoint_dollar_or_dot_still_split_correctly(self, conn: DqliteConnection) -> None:
+        """Negative pin: ``$`` and ``.`` are NOT identifier characters
+        in SQLite, so ``SAVEPOINT$foo`` / ``SAVEPOINT.foo`` are still
+        ``SAVEPOINT`` + a non-identifier tail — the keyword-boundary
+        check correctly accepts the strip. The parser then rejects
+        ``$foo`` / ``.foo`` as invalid bare identifiers, leaving the
+        tracker untouched."""
+        conn._update_tx_flags_from_sql("SAVEPOINT$foo")
+        assert conn._savepoint_stack == []
+        assert conn._in_transaction is False
+        conn._update_tx_flags_from_sql("SAVEPOINT.foo")
+        assert conn._savepoint_stack == []
+        assert conn._in_transaction is False
