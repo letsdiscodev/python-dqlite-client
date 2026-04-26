@@ -71,6 +71,47 @@ class TestServerFailureMidStreamClassification:
         assert exc_info.value.code == 10250
         assert "not leader" in exc_info.value.message
 
+    async def test_mid_stream_non_leader_failure_keeps_connection_usable(
+        self, protocol: DqliteProtocol
+    ) -> None:
+        """After a non-leader-class FailureResponse arriving mid-stream
+        (e.g. SQLITE_CONSTRAINT, SQLITE_BUSY engine-side, SQLITE_ERROR),
+        the wire decoder no longer poisons the buffer (see the wire-layer
+        fix). The next request on the same connection must decode
+        cleanly without ``ProtocolError("Wire decode failed: buffer
+        poisoned")``."""
+        from dqlitewire.messages import LeaderResponse
+
+        initial = RowsResponse(
+            column_names=["x"],
+            column_types=[ValueType.INTEGER],
+            rows=[[1]],
+            row_types=[[ValueType.INTEGER]],
+            has_more=False,
+        ).encode()
+        part_marker = encode_uint64(ROW_PART_MARKER)
+        frame_with_part = initial[:-8] + part_marker
+
+        # Mid-stream non-leader failure (SQLITE_CONSTRAINT = 19).
+        failure_frame = FailureResponse(code=19, message="CHECK constraint failed").encode()
+
+        # Follow-up response to the next request on the same connection.
+        followup_frame = LeaderResponse(node_id=1, address="127.0.0.1:9001").encode()
+
+        protocol._reader.read = AsyncMock(
+            side_effect=[frame_with_part + failure_frame, followup_frame, b""]
+        )
+
+        with pytest.raises(OperationalError) as exc_info:
+            await protocol.query_sql(1, "SELECT 1")
+        assert exc_info.value.code == 19
+
+        # Buffer is NOT poisoned; a second protocol operation succeeds.
+        assert not protocol._decoder.is_poisoned
+        leader = await protocol._read_response()
+        assert isinstance(leader, LeaderResponse)
+        assert leader.address == "127.0.0.1:9001"
+
     async def test_mid_stream_failure_not_raised_as_protocol_error(
         self, protocol: DqliteProtocol
     ) -> None:
