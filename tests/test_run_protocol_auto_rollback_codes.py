@@ -23,6 +23,7 @@ from dqliteclient.exceptions import OperationalError
     "code,description",
     [
         (4, "SQLITE_ABORT"),
+        (7, "SQLITE_NOMEM"),
         (9, "SQLITE_INTERRUPT"),
         (10, "SQLITE_IOERR (primary)"),
         (10 | (8 << 8), "SQLITE_IOERR_FSTAT extended"),
