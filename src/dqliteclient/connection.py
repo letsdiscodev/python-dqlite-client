@@ -1145,6 +1145,45 @@ class DqliteConnection:
         try:
             result = await self._run_protocol(lambda p, db: p.exec_sql(db, sql, params))
         except OperationalError as e:
+            # Split the SQL once so both the deferred-FK check and the
+            # conservative-flag set can consult the trailing piece for
+            # multi-statement input.
+            pieces: list[str] | None = None
+            trigger_stmt = sql
+            is_multi_with_tx_verb = False
+            if ";" in sql:
+                pieces = _split_top_level_statements(sql)
+                if pieces:
+                    trigger_stmt = pieces[-1]
+                if len(pieces) > 1 and any(_starts_with_tx_verb(p) for p in pieces):
+                    is_multi_with_tx_verb = True
+
+            # Deferred-foreign-key auto-rollback: per SQLite spec
+            # (https://www.sqlite.org/lang_savepoint.html), an attempt
+            # to RELEASE the OUTERMOST savepoint after a deferred-FK
+            # error is treated as COMMIT — the engine rolls back the
+            # entire transaction. Same applies to plain COMMIT under
+            # PRAGMA defer_foreign_keys=ON. SQLITE_CONSTRAINT (primary
+            # 19) is NOT in ``_TX_AUTO_ROLLBACK_PRIMARY_CODES``
+            # (a CHECK violation on a plain INSERT does NOT auto-
+            # rollback). Verb-condition the clear: only fires when the
+            # last attempted piece is plain COMMIT/END or a RELEASE of
+            # the OUTERMOST frame on the savepoint stack. Using the
+            # trailing piece here covers multi-statement EXEC where
+            # the failing piece is the last attempted one (the dqlite
+            # gateway stops on first failure).
+            deferred_fk_cleared = False
+            if (
+                _primary_sqlite_code(e.code) == 19  # SQLITE_CONSTRAINT
+                and self._sql_is_outermost_release_or_commit(trigger_stmt)
+            ):
+                self._in_transaction = False
+                self._tx_owner = None
+                self._savepoint_stack.clear()
+                self._savepoint_implicit_begin = False
+                self._has_untracked_savepoint = False
+                deferred_fk_cleared = True
+
             # Multi-statement EXEC partial failure: dqlite's gateway
             # iterates the statement list, so an early statement (e.g.,
             # ``BEGIN; SAVEPOINT a; INSERT ...``) may have committed
@@ -1155,36 +1194,18 @@ class DqliteConnection:
             #
             # Conservatively flag the connection as carrying untracked
             # state when the SQL contains a transaction-control verb
-            # AND a top-level ``;`` boundary. Pool reset's safety
-            # ROLLBACK then fires (via ``_has_untracked_savepoint``)
-            # and prevents cross-acquirer poisoning. False-positive
-            # reset on a benign multi-INSERT batch is acceptable —
-            # multi-statement INSERT is uncommon in direct dbapi use,
-            # and the safety ROLLBACK is one round-trip.
-            if ";" in sql:
-                pieces = _split_top_level_statements(sql)
-                if len(pieces) > 1 and any(_starts_with_tx_verb(p) for p in pieces):
-                    self._has_untracked_savepoint = True
-            # Deferred-foreign-key auto-rollback: per SQLite spec
-            # (https://www.sqlite.org/lang_savepoint.html), an attempt
-            # to RELEASE the OUTERMOST savepoint after a deferred-FK
-            # error is treated as COMMIT — the engine rolls back the
-            # entire transaction. Same applies to plain COMMIT under
-            # PRAGMA defer_foreign_keys=ON. SQLITE_CONSTRAINT (primary
-            # 19) is NOT in ``_TX_AUTO_ROLLBACK_PRIMARY_CODES``
-            # (a CHECK violation on a plain INSERT does NOT auto-
-            # rollback). Verb-condition the clear: only fires when the
-            # SQL is plain COMMIT/END or a RELEASE of the OUTERMOST
-            # frame on the savepoint stack.
+            # AND a top-level ``;`` boundary. Skip the flag-set when
+            # ``_run_protocol`` already cleared the auto-rollback
+            # state (either via ``_TX_AUTO_ROLLBACK_PRIMARY_CODES``
+            # which clears ``_has_untracked_savepoint=False``, or via
+            # the deferred-FK branch above). Otherwise we'd re-set
+            # the flag and trigger a redundant pool-reset ROLLBACK.
             if (
-                _primary_sqlite_code(e.code) == 19  # SQLITE_CONSTRAINT
-                and self._sql_is_outermost_release_or_commit(sql)
+                is_multi_with_tx_verb
+                and not deferred_fk_cleared
+                and _primary_sqlite_code(e.code) not in _TX_AUTO_ROLLBACK_PRIMARY_CODES
             ):
-                self._in_transaction = False
-                self._tx_owner = None
-                self._savepoint_stack.clear()
-                self._savepoint_implicit_begin = False
-                self._has_untracked_savepoint = False
+                self._has_untracked_savepoint = True
             raise
         self._update_tx_flags_from_sql(sql)
         return result

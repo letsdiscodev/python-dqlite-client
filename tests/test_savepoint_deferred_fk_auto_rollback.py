@@ -91,6 +91,59 @@ async def test_end_with_deferred_fk_violation_clears_tracker() -> None:
 
 
 @pytest.mark.asyncio
+async def test_multistatement_deferred_fk_release_outermost_clears_tracker() -> None:
+    """Multi-statement EXEC ending in RELEASE of the outermost savepoint
+    that fails with code 19 must trigger the deferred-FK clear. The
+    classifier reads the trailing piece (the failing one — dqlite's
+    gateway stops on first failure) so multi-statement input is
+    handled identically to the single-statement case."""
+    conn = _conn_with_outermost_savepoint("outer")
+    with (
+        patch.object(conn, "_run_protocol", new=_raise_constraint),
+        pytest.raises(OperationalError),
+    ):
+        # BEGIN; INSERT; RELEASE outer — RELEASE outer is the trailing
+        # piece and matches the outermost stack frame.
+        await conn.execute("BEGIN; INSERT INTO t VALUES (1); RELEASE outer")
+    assert conn._in_transaction is False
+    assert conn._savepoint_stack == []
+    assert conn._has_untracked_savepoint is False
+
+
+@pytest.mark.asyncio
+async def test_multistatement_auto_rollback_does_not_re_set_untracked_flag() -> None:
+    """Multi-statement EXEC with a tx-control verb that fails with an
+    auto-rollback primary code (SQLITE_NOMEM / IOERR / INTERRUPT /
+    CORRUPT / FULL / ABORT) — _run_protocol clears the tracker via the
+    auto-rollback branch; the multi-statement conservative flag must
+    NOT re-set _has_untracked_savepoint, otherwise the pool fires a
+    redundant ROLLBACK that the server ignores."""
+    conn = DqliteConnection("localhost:9001")
+    conn._db_id = 1
+    conn._protocol = object()  # type: ignore[assignment]
+    conn._in_transaction = True
+    conn._savepoint_stack = ["outer"]
+    conn._savepoint_implicit_begin = True
+
+    async def _raise_interrupt(*args: object, **kwargs: object) -> None:
+        # SQLITE_INTERRUPT (9) is in _TX_AUTO_ROLLBACK_PRIMARY_CODES.
+        # Mimic the real _run_protocol path: clear tracker on the way out.
+        conn._in_transaction = False
+        conn._savepoint_stack.clear()
+        conn._savepoint_implicit_begin = False
+        conn._has_untracked_savepoint = False
+        raise OperationalError(9, "interrupted")
+
+    with (
+        patch.object(conn, "_run_protocol", new=_raise_interrupt),
+        pytest.raises(OperationalError),
+    ):
+        await conn.execute("BEGIN; INSERT INTO t VALUES (1)")
+    # Conservative flag must NOT have been re-set after auto-rollback clear.
+    assert conn._has_untracked_savepoint is False
+
+
+@pytest.mark.asyncio
 async def test_commit_with_constraint_failure_outside_tx_does_not_clear() -> None:
     """Negative pin: a SQLITE_CONSTRAINT (code 19) on a COMMIT issued
     outside an active transaction must NOT trigger the deferred-FK
