@@ -23,6 +23,8 @@ from dqliteclient.protocol import (
     DqliteProtocol,
     _validate_positive_int_or_none,
 )
+from dqlitewire import DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES
+from dqlitewire import DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS
 from dqlitewire import LEADER_ERROR_CODES as _LEADER_ERROR_CODES
 from dqlitewire import TX_AUTO_ROLLBACK_PRIMARY_CODES as _TX_AUTO_ROLLBACK_PRIMARY_CODES
 from dqlitewire import primary_sqlite_code as _primary_sqlite_code
@@ -324,8 +326,8 @@ class DqliteConnection:
         *,
         database: str = "default",
         timeout: float = 10.0,
-        max_total_rows: int | None = 10_000_000,
-        max_continuation_frames: int | None = 100_000,
+        max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
+        max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
         close_timeout: float = 0.5,
     ) -> None:

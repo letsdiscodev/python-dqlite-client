@@ -7,6 +7,12 @@ from collections.abc import Sequence
 from typing import Any
 
 from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
+from dqlitewire import (
+    DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
+)
+from dqlitewire import (
+    DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
+)
 from dqlitewire import MessageDecoder, MessageEncoder
 from dqlitewire.exceptions import (
     ProtocolError as _WireProtocolError,
@@ -94,8 +100,8 @@ class DqliteProtocol:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         timeout: float = 10.0,
-        max_total_rows: int | None = 10_000_000,
-        max_continuation_frames: int | None = 100_000,
+        max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
+        max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
         address: str | None = None,
     ) -> None:

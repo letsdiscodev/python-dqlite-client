@@ -23,6 +23,12 @@ from dqliteclient.exceptions import (
 )
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
 from dqliteclient.pool import ConnectionPool
+from dqlitewire import (
+    DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
+)
+from dqlitewire import (
+    DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
+)
 
 __version__ = "0.1.3"
 
@@ -54,8 +60,8 @@ async def connect(
     *,
     database: str = "default",
     timeout: float = 10.0,
-    max_total_rows: int | None = 10_000_000,
-    max_continuation_frames: int | None = 100_000,
+    max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
+    max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
     trust_server_heartbeat: bool = False,
     close_timeout: float = 0.5,
 ) -> DqliteConnection:
@@ -105,8 +111,8 @@ async def create_pool(
     timeout: float = 10.0,
     cluster: ClusterClient | None = None,
     node_store: NodeStore | None = None,
-    max_total_rows: int | None = 10_000_000,
-    max_continuation_frames: int | None = 100_000,
+    max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
+    max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
     trust_server_heartbeat: bool = False,
     close_timeout: float = 0.5,
 ) -> ConnectionPool:

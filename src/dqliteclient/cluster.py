@@ -17,6 +17,12 @@ from dqliteclient.exceptions import (
 from dqliteclient.node_store import MemoryNodeStore, NodeStore
 from dqliteclient.protocol import DqliteProtocol
 from dqliteclient.retry import retry_with_backoff
+from dqlitewire import (
+    DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
+)
+from dqlitewire import (
+    DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
+)
 from dqlitewire import NodeRole
 from dqlitewire.messages.responses import _sanitize_server_text as _sanitize_display_text
 
@@ -386,8 +392,8 @@ class ClusterClient:
         self,
         database: str = "default",
         *,
-        max_total_rows: int | None = 10_000_000,
-        max_continuation_frames: int | None = 100_000,
+        max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
+        max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
         close_timeout: float = 0.5,
         max_attempts: int | None = None,

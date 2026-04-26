@@ -23,6 +23,12 @@ from dqliteclient.exceptions import (
 )
 from dqliteclient.node_store import NodeStore
 from dqliteclient.protocol import _validate_positive_int_or_none
+from dqlitewire import (
+    DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
+)
+from dqlitewire import (
+    DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
+)
 
 __all__ = ["ConnectionPool"]
 
@@ -107,8 +113,8 @@ class ConnectionPool:
         timeout: float = 10.0,
         cluster: ClusterClient | None = None,
         node_store: NodeStore | None = None,
-        max_total_rows: int | None = 10_000_000,
-        max_continuation_frames: int | None = 100_000,
+        max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
+        max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
         close_timeout: float = 0.5,
     ) -> None:
