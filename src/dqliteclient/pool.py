@@ -786,6 +786,23 @@ class ConnectionPool:
                                 getattr(conn, "_address", "?"),
                                 exc_info=True,
                             )
+                        except RuntimeError:
+                            # ``RuntimeError`` from inside the shielded
+                            # close — typically ``"Event loop is closed"``
+                            # during a racing ``engine.dispose()`` — would
+                            # otherwise propagate out and SUPPLANT the
+                            # user's original exception (preserved only
+                            # via ``__context__``). Log it and absorb so
+                            # the bare ``raise`` further out re-raises
+                            # the user's original error. Narrow to
+                            # ``RuntimeError`` so programming bugs
+                            # (``AttributeError``, ``TypeError``, etc.)
+                            # still surface — see done/ISSUE-198.
+                            logger.debug(
+                                "pool.acquire cleanup: conn.close(%r) raised RuntimeError",
+                                getattr(conn, "_address", "?"),
+                                exc_info=True,
+                            )
                     finally:
                         # Always set ``_pool_released`` so a subsequent
                         # close() short-circuits and the slot accounting

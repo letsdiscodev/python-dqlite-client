@@ -108,21 +108,26 @@ async def test_acquire_cleanup_close_completes_under_outer_cancel() -> None:
 async def test_acquire_cleanup_close_failure_still_sets_pool_released() -> None:
     """If ``conn.close()`` raises an unhandled exception (not
     OSError/DqliteConnectionError), the inner ``finally`` must still
-    set ``_pool_released=True`` so subsequent close() short-circuits."""
+    set ``_pool_released=True`` so subsequent close() short-circuits.
+
+    Also pin: the user's ORIGINAL ValueError must propagate — the
+    close-time RuntimeError must NOT supplant it. The widened
+    ``except Exception`` log-and-absorb pattern preserves the user's
+    exception for the bare ``raise`` further out."""
     pool, conn = await _build_pool_with_breakable_conn()
 
     async def fake_close() -> None:
         # Simulate an unrecognised close failure (not OSError /
-        # DqliteConnectionError). Must propagate, but the finally
-        # still flips _pool_released.
-        raise RuntimeError("unexpected close failure")
+        # DqliteConnectionError). Must NOT supplant the user's
+        # original exception.
+        raise RuntimeError("simulated close-time RuntimeError")
 
     async def fake_drain_idle() -> None:
         return
 
     pool._drain_idle = fake_drain_idle
 
-    with patch.object(conn, "close", new=fake_close), pytest.raises((ValueError, RuntimeError)):
+    with patch.object(conn, "close", new=fake_close), pytest.raises(ValueError, match="user"):
         async with pool.acquire():
             _break_conn(conn)
             raise ValueError("user code error")
