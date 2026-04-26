@@ -108,7 +108,8 @@ async def test_non_auto_rollback_codes_keep_tx_flags(code: int, description: str
 @pytest.mark.asyncio
 async def test_leader_class_codes_invalidate_and_clear_flags() -> None:
     """Leader-class codes still invalidate (existing behaviour) — the
-    invalidate path itself clears the tx flags via ISSUE-693."""
+    invalidate path itself clears the tx flags AND the savepoint stack
+    AND the autobegin flag via the all-four-fields cleanup discipline."""
     conn = DqliteConnection("localhost:9001")
     conn._db_id = 1
     conn._protocol = object()  # type: ignore[assignment]
@@ -119,11 +120,15 @@ async def test_leader_class_codes_invalidate_and_clear_flags() -> None:
 
     conn._in_transaction = True
     conn._tx_owner = asyncio.current_task()
+    conn._savepoint_stack = ["sp1", "sp2"]
+    conn._savepoint_implicit_begin = True
 
     with pytest.raises(OperationalError):
         await conn._run_protocol(fake_send)
 
-    # Leader codes invalidate.
+    # Leader codes invalidate AND clear all four state fields.
     assert conn._protocol is None
     assert conn._in_transaction is False
     assert conn._tx_owner is None
+    assert conn._savepoint_stack == []
+    assert conn._savepoint_implicit_begin is False
