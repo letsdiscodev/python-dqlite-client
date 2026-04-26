@@ -1278,7 +1278,28 @@ class DqliteConnection:
             and _is_keyword_boundary(upper, len("RELEASE"))
         ):
             name = _parse_release_name(head[len("RELEASE") :])
-            if name is not None and name in self._savepoint_stack:
+            if name is None:
+                # Parser-rejected (quoted/backtick/bracketed/unicode/
+                # leading-digit) name. The server's RELEASE pops the
+                # named savepoint AND every frame above it. We don't
+                # know where the named savepoint sits on the server,
+                # so we don't know how many tracked frames to pop. Two
+                # things follow:
+                #
+                # 1. Conservative-clear ``_savepoint_stack`` — any
+                #    tracked frame may already be gone server-side. A
+                #    later RELEASE/ROLLBACK TO of a still-tracked name
+                #    would otherwise index into a ghost frame and the
+                #    server would raise "no such savepoint" with no
+                #    obvious correspondence in the user's SQL.
+                # 2. Lock ``_has_untracked_savepoint=True`` so the
+                #    pool-reset predicate keeps firing — the server
+                #    may still hold outer untracked frames or an
+                #    autobegun transaction we cannot model.
+                self._savepoint_stack.clear()
+                self._has_untracked_savepoint = True
+                return
+            if name in self._savepoint_stack:
                 # Pop everything down to and including this name —
                 # SQLite RELEASE removes the named savepoint and any
                 # frames above it. Per SQLite's documentation
@@ -1296,13 +1317,6 @@ class DqliteConnection:
                     self._in_transaction = False
                     self._tx_owner = None
                     self._savepoint_implicit_begin = False
-            # ``_has_untracked_savepoint`` is intentionally NOT cleared
-            # by a parser-rejected RELEASE: a partial release (server
-            # still holds outer untracked frames) is indistinguishable
-            # from a full release at this layer. The flag stays sticky
-            # until a definitive close (COMMIT/ROLLBACK of the outer
-            # tx, or invalidate/close of the connection) so pool reset
-            # remains the safety net for the unsupported tokenisation.
             return
         if upper.startswith("ROLLBACK"):
             after_upper = upper[len("ROLLBACK") :].lstrip(" ;")
@@ -1325,7 +1339,21 @@ class DqliteConnection:
             # open.
             if after_upper.startswith("TO"):
                 name = _parse_release_name(after_orig[len("TO") :])
-                if name is not None and name in self._savepoint_stack:
+                if name is None:
+                    # Parser-rejected savepoint name. Unlike RELEASE,
+                    # ROLLBACK TO does NOT pop the named savepoint —
+                    # it only unwinds frames ABOVE it. We can't know
+                    # which (if any) of our tracked frames sit above
+                    # the un-named target on the server, so we leave
+                    # ``_savepoint_stack`` untouched: dropping
+                    # tracked frames would over-correct in the case
+                    # where every tracked frame sits BELOW the
+                    # target. Lock ``_has_untracked_savepoint=True``
+                    # so pool reset keeps firing — the autobegun tx
+                    # (if any) is still alive on the server.
+                    self._has_untracked_savepoint = True
+                    return
+                if name in self._savepoint_stack:
                     # Reverse-search to match the most recently created
                     # savepoint with this name (SQLite's LIFO rule for
                     # duplicate names — see RELEASE branch above).
