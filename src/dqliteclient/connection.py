@@ -23,6 +23,7 @@ from dqliteclient.protocol import (
     _validate_positive_int_or_none,
 )
 from dqlitewire import LEADER_ERROR_CODES as _LEADER_ERROR_CODES
+from dqlitewire import TX_AUTO_ROLLBACK_PRIMARY_CODES as _TX_AUTO_ROLLBACK_PRIMARY_CODES
 from dqlitewire import primary_sqlite_code as _primary_sqlite_code
 from dqlitewire.exceptions import EncodeError as _WireEncodeError
 
@@ -49,11 +50,13 @@ _TRANSACTION_BEGIN_SQL = "BEGIN"
 _TRANSACTION_COMMIT_SQL = "COMMIT"
 _TRANSACTION_ROLLBACK_SQL = "ROLLBACK"
 
-# Primary SQLite error codes whose semantics imply the server-side
-# SQLite transaction was automatically rolled back. Upstream
-# ``leader.c`` polls ``sqlite3_txn_state`` after each exec and clears
-# ``active_leader`` when the engine reports ``SQLITE_TXN_NONE``, so
-# the cluster-side tx is gone for any of these primary codes:
+# ``_TX_AUTO_ROLLBACK_PRIMARY_CODES`` is imported above from ``dqlitewire``
+# (canonical home for SQLite-side constants). It contains the primary
+# SQLite codes whose semantics imply the server-side transaction was
+# automatically rolled back. Upstream ``leader.c`` polls
+# ``sqlite3_txn_state`` after each exec and clears ``active_leader`` when
+# the engine reports ``SQLITE_TXN_NONE``, so the cluster-side tx is gone
+# for any of these primary codes:
 #
 #   * SQLITE_ABORT (4) — operation aborted, e.g. via sqlite3_interrupt.
 #   * SQLITE_INTERRUPT (9) — query interrupted via INTERRUPT.
@@ -69,7 +72,6 @@ _TRANSACTION_ROLLBACK_SQL = "ROLLBACK"
 # Python side reports True for ``in_transaction`` while the server
 # reports tx-none, and the next user statement implicitly auto-begins
 # a fresh transaction whose boundary the user code does not know about.
-_TX_AUTO_ROLLBACK_PRIMARY_CODES = frozenset({4, 9, 10, 11, 13})
 
 
 def _parse_savepoint_name(after_keyword: str) -> str | None:
