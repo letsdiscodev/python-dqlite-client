@@ -524,3 +524,136 @@ class TestKeywordBoundaryUnderscoreAndAlnum:
         conn._update_tx_flags_from_sql("SAVEPOINT.foo")
         assert conn._savepoint_stack == []
         assert conn._in_transaction is False
+
+
+class TestMultiStatementExecTracker:
+    """Pin: ``_update_tx_flags_from_sql`` walks ``;``-separated pieces.
+
+    The dqlite server's EXEC path iterates the statement list, so a
+    single ``execute("SAVEPOINT a; SAVEPOINT b;")`` pushes both names
+    server-side. Without per-piece classification at the tracker, the
+    local stack would push only ``a`` — desyncing from the server.
+    """
+
+    def test_savepoint_savepoint_pushes_both_frames(self, conn: DqliteConnection) -> None:
+        conn._update_tx_flags_from_sql("SAVEPOINT a; SAVEPOINT b;")
+        assert conn._savepoint_stack == ["a", "b"]
+        assert conn._in_transaction is True
+        assert conn._savepoint_implicit_begin is True
+
+    def test_begin_then_savepoint_in_one_call(self, conn: DqliteConnection) -> None:
+        conn._update_tx_flags_from_sql("BEGIN; SAVEPOINT inner;")
+        assert conn._in_transaction is True
+        # SAVEPOINT inside an explicit BEGIN does not flip the
+        # implicit-begin flag.
+        assert conn._savepoint_implicit_begin is False
+        assert conn._savepoint_stack == ["inner"]
+
+    def test_savepoint_then_release_clears_correctly(self, conn: DqliteConnection) -> None:
+        conn._update_tx_flags_from_sql("SAVEPOINT sp; RELEASE sp;")
+        # SAVEPOINT autobegan, RELEASE ended the autobegun tx.
+        assert conn._savepoint_stack == []
+        assert conn._in_transaction is False
+        assert conn._savepoint_implicit_begin is False
+
+    def test_string_literal_with_semicolon_not_split(self, conn: DqliteConnection) -> None:
+        """A ``;`` inside ``'...'`` must NOT split the statement —
+        otherwise we'd misclassify the string-literal tail as a
+        separate statement and drift the tracker."""
+        conn._update_tx_flags_from_sql(
+            "INSERT INTO t VALUES ('payload; SAVEPOINT injected'); SAVEPOINT real;"
+        )
+        # Only the trailing real SAVEPOINT must register.
+        assert conn._savepoint_stack == ["real"]
+
+    def test_double_quoted_identifier_with_semicolon_not_split(
+        self, conn: DqliteConnection
+    ) -> None:
+        """A ``;`` inside ``"..."`` must NOT split."""
+        conn._update_tx_flags_from_sql('SELECT * FROM "weird;name"; BEGIN;')
+        assert conn._in_transaction is True
+
+    def test_block_comment_with_semicolon_not_split(self, conn: DqliteConnection) -> None:
+        """A ``;`` inside ``/* ... */`` must NOT split."""
+        conn._update_tx_flags_from_sql("/* one ; two */ BEGIN; SAVEPOINT inner;")
+        assert conn._in_transaction is True
+        assert conn._savepoint_stack == ["inner"]
+
+    def test_line_comment_with_semicolon_not_split(self, conn: DqliteConnection) -> None:
+        """A ``;`` inside ``--`` to end-of-line must NOT split."""
+        conn._update_tx_flags_from_sql("BEGIN -- a ; b\n; SAVEPOINT inner;")
+        assert conn._in_transaction is True
+        assert conn._savepoint_stack == ["inner"]
+
+    def test_no_semicolon_takes_fast_path(self, conn: DqliteConnection) -> None:
+        """Single-statement SQL with no ``;`` exercises the existing
+        prefix-sniff branch unchanged — pin that the splitter doesn't
+        regress the fast path."""
+        conn._update_tx_flags_from_sql("SAVEPOINT solo")
+        assert conn._savepoint_stack == ["solo"]
+        assert conn._in_transaction is True
+
+    def test_trailing_semicolon_only_takes_fast_path(self, conn: DqliteConnection) -> None:
+        """A single statement followed by ``;`` produces one piece —
+        must classify identically to the no-semicolon form."""
+        conn._update_tx_flags_from_sql("SAVEPOINT solo;")
+        assert conn._savepoint_stack == ["solo"]
+
+
+class TestSplitTopLevelStatements:
+    """Direct tests for the splitter — easier to pin tokenisation
+    edge-cases here than through the tracker."""
+
+    def test_doubled_single_quote_inside_string(self) -> None:
+        from dqliteclient.connection import _split_top_level_statements
+
+        assert _split_top_level_statements("SELECT 'a''b;c'; BEGIN") == [
+            "SELECT 'a''b;c'",
+            "BEGIN",
+        ]
+
+    def test_doubled_double_quote_inside_identifier(self) -> None:
+        from dqliteclient.connection import _split_top_level_statements
+
+        assert _split_top_level_statements('SELECT "a""b;c"; BEGIN') == [
+            'SELECT "a""b;c"',
+            "BEGIN",
+        ]
+
+    def test_square_bracket_identifier_terminates_only_at_close(self) -> None:
+        from dqliteclient.connection import _split_top_level_statements
+
+        # Square-bracket identifiers don't escape — first ``]`` ends.
+        assert _split_top_level_statements("SELECT [a;b]; BEGIN") == [
+            "SELECT [a;b]",
+            "BEGIN",
+        ]
+
+    def test_backtick_identifier_with_doubled_escape(self) -> None:
+        from dqliteclient.connection import _split_top_level_statements
+
+        assert _split_top_level_statements("SELECT `a``b;c`; BEGIN") == [
+            "SELECT `a``b;c`",
+            "BEGIN",
+        ]
+
+    def test_unterminated_string_literal_eats_to_eof(self) -> None:
+        from dqliteclient.connection import _split_top_level_statements
+
+        # Defensive: malformed input must not crash, even if the result
+        # is "the whole tail is one statement".
+        assert _split_top_level_statements("SELECT 'unterminated; BEGIN") == [
+            "SELECT 'unterminated; BEGIN"
+        ]
+
+    def test_empty_pieces_dropped(self) -> None:
+        from dqliteclient.connection import _split_top_level_statements
+
+        assert _split_top_level_statements(";;BEGIN;;") == ["BEGIN"]
+
+    def test_empty_input_returns_empty_list(self) -> None:
+        from dqliteclient.connection import _split_top_level_statements
+
+        assert _split_top_level_statements("") == []
+        assert _split_top_level_statements("   ") == []
+        assert _split_top_level_statements(";;") == []

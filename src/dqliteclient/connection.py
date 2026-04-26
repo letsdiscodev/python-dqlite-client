@@ -95,6 +95,95 @@ def _is_keyword_boundary(s: str, kw_len: int) -> bool:
     return len(s) == kw_len or s[kw_len] not in _BARE_IDENT_REST
 
 
+def _split_top_level_statements(sql: str) -> list[str]:
+    """Split SQL on top-level ``;`` boundaries.
+
+    The dqlite server's EXEC path supports multi-statement input — it
+    iterates the statement list, executing each in turn (see
+    ``dqlite-upstream/src/gateway.c`` ``handle_exec_sql_done_cb``). The
+    transaction tracker's prefix-sniff sees only the leading verb, so
+    ``execute("SAVEPOINT a; SAVEPOINT b;")`` would push only ``a``
+    locally while the server pushes both. Splitting here lets the
+    tracker re-classify each piece independently.
+
+    SQLite tokenisation skipped while scanning for a top-level ``;``:
+
+    * ``'...'`` single-quoted string literal (``''`` is an escaped ``'``)
+    * ``"..."`` double-quoted identifier (``""`` is an escaped ``"``)
+    * ``[...]`` square-bracket identifier (no escape — terminated by ``]``)
+    * `````...````` backtick identifier (`````` is an escaped `````)
+    * ``--`` to end-of-line — line comment
+    * ``/* ... */`` — block comment
+
+    Returns whitespace-stripped non-empty pieces. Keep this small and
+    self-contained — adding a real tokeniser is out of scope.
+    """
+    out: list[str] = []
+    start = 0
+    i = 0
+    n = len(sql)
+    while i < n:
+        c = sql[i]
+        if c == "'":
+            i += 1
+            while i < n:
+                if sql[i] == "'":
+                    if i + 1 < n and sql[i + 1] == "'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == '"':
+            i += 1
+            while i < n:
+                if sql[i] == '"':
+                    if i + 1 < n and sql[i + 1] == '"':
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "[":
+            i += 1
+            while i < n and sql[i] != "]":
+                i += 1
+            if i < n:
+                i += 1
+            continue
+        if c == "`":
+            i += 1
+            while i < n:
+                if sql[i] == "`":
+                    if i + 1 < n and sql[i + 1] == "`":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "-" and i + 1 < n and sql[i + 1] == "-":
+            nl = sql.find("\n", i + 2)
+            i = n if nl == -1 else nl + 1
+            continue
+        if c == "/" and i + 1 < n and sql[i + 1] == "*":
+            end = sql.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        if c == ";":
+            piece = sql[start:i].strip()
+            if piece:
+                out.append(piece)
+            start = i + 1
+        i += 1
+    tail = sql[start:].strip()
+    if tail:
+        out.append(tail)
+    return out
+
+
 def _strip_leading_comments(sql: str) -> str:
     """Strip leading SQL comments (``--`` and ``/* */``) and whitespace.
 
@@ -998,7 +1087,25 @@ class DqliteConnection:
         ``ROLLBACK TO [SAVEPOINT] name`` leaves ``name`` active per
         SQLite spec; frames above ``name`` are popped, and
         ``_in_transaction`` is unchanged.
+
+        Multi-statement EXEC: the dqlite server iterates the statement
+        list (see ``gateway.c`` ``handle_exec_sql_done_cb``). When the
+        SQL contains a top-level ``;``, split and recurse so each piece
+        gets its own classification — otherwise ``execute("SAVEPOINT a;
+        SAVEPOINT b;")`` would push only ``a`` locally while the server
+        pushes both, desyncing the tracker.
         """
+        # Cheap fast path: no semicolon, no need to walk the splitter.
+        if ";" in sql:
+            pieces = _split_top_level_statements(sql)
+            if len(pieces) > 1:
+                for piece in pieces:
+                    self._update_tx_flags_from_sql(piece)
+                return
+            # len <= 1: either zero pieces (whitespace / comments only)
+            # or a single piece whose tail ``;`` was stripped — fall
+            # through to the single-statement classifier below.
+            sql = pieces[0] if pieces else ""
         # Strip leading SQL comments and whitespace so the prefix
         # sniff sees past annotations like ``/* xact id */ BEGIN`` or
         # ``-- comment\nSAVEPOINT sp``. Without this, a comment-prefixed
