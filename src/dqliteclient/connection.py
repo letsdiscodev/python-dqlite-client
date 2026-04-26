@@ -1330,8 +1330,15 @@ class DqliteConnection:
                     self._savepoint_implicit_begin = False
             return
         if upper.startswith("ROLLBACK"):
-            after_upper = upper[len("ROLLBACK") :].lstrip(" ;")
-            after_orig = head[len("ROLLBACK") :].lstrip(" ;")
+            # Use bare ``lstrip()`` to consume any whitespace SQLite's
+            # tokenizer accepts between keywords (space, tab, newline,
+            # carriage return, form-feed). The previous ``lstrip(" ;")``
+            # missed tab / CR / FF and would misclassify
+            # ``ROLLBACK\tTO sp`` as a full ROLLBACK. ``;`` cannot
+            # legitimately appear here because ``_split_top_level_statements``
+            # has already split on top-level ``;``.
+            after_upper = upper[len("ROLLBACK") :].lstrip()
+            after_orig = head[len("ROLLBACK") :].lstrip()
             # SQLite grammar: ROLLBACK [TRANSACTION] [TO [SAVEPOINT]
             # name]. The TRANSACTION keyword is optional in BOTH the
             # full-rollback and the rollback-to-savepoint forms; strip
@@ -1348,7 +1355,7 @@ class DqliteConnection:
             # frames above the named savepoint but leaves the
             # named savepoint active; the outer transaction stays
             # open.
-            if after_upper.startswith("TO"):
+            if after_upper.startswith("TO") and _is_keyword_boundary(after_upper, 2):
                 name = _parse_release_name(after_orig[len("TO") :])
                 if name is None:
                     # Parser-rejected savepoint name. Unlike RELEASE,

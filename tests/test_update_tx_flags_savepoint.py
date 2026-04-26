@@ -511,6 +511,48 @@ class TestKeywordBoundaryUnderscoreAndAlnum:
         assert conn._savepoint_stack == []
         assert conn._in_transaction is False
 
+    def test_rollback_to_underscore_identifier_not_misclassified(
+        self, conn: DqliteConnection
+    ) -> None:
+        """``ROLLBACK TO_FOO`` is a bareword tail — the ``TO`` prefix
+        check must respect the keyword boundary, otherwise the parser
+        would treat ``_FOO`` as a savepoint name and pop frames the
+        server never touched. SQLite parse-rejects this shape; the
+        tracker should fall through to the plain-ROLLBACK path."""
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        conn._update_tx_flags_from_sql("ROLLBACK TO_FOO")
+        # Plain-ROLLBACK semantics: full clear.
+        assert conn._savepoint_stack == []
+        assert conn._in_transaction is False
+
+    def test_rollback_with_tab_separator_recognised_as_savepoint_form(
+        self, conn: DqliteConnection
+    ) -> None:
+        """SQLite's tokenizer treats tab as whitespace anywhere between
+        keywords. ``ROLLBACK\\tTO sp`` must be classified as a savepoint
+        rollback (only frames above sp popped, ``_in_transaction``
+        unchanged), matching the space-separated form."""
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT outer")
+        conn._update_tx_flags_from_sql("SAVEPOINT inner")
+        conn._update_tx_flags_from_sql("ROLLBACK\tTO outer")
+        # ROLLBACK TO popped frames above ``outer``; ``outer`` stays.
+        assert conn._savepoint_stack == ["outer"]
+        assert conn._in_transaction is True
+
+    def test_rollback_with_newline_separator_recognised_as_savepoint_form(
+        self, conn: DqliteConnection
+    ) -> None:
+        """Newline between keywords also classifies as savepoint
+        rollback, mirroring SQLite's whitespace tolerance."""
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT outer")
+        conn._update_tx_flags_from_sql("SAVEPOINT inner")
+        conn._update_tx_flags_from_sql("ROLLBACK\nTO outer")
+        assert conn._savepoint_stack == ["outer"]
+        assert conn._in_transaction is True
+
     def test_savepoint_dollar_or_dot_still_split_correctly(self, conn: DqliteConnection) -> None:
         """Negative pin: ``$`` and ``.`` are NOT identifier characters
         in SQLite, so ``SAVEPOINT$foo`` / ``SAVEPOINT.foo`` are still
