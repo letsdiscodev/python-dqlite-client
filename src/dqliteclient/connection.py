@@ -589,6 +589,13 @@ class DqliteConnection:
         self._tx_owner = None
         self._savepoint_stack.clear()
         self._savepoint_implicit_begin = False
+        # Clear the loop binding so a subsequent ``connect()`` on a
+        # different event loop is accepted by ``_check_in_use``. The
+        # failed-connect path already clears this in ``connect()``'s
+        # finally block, but the successful-close path was missing the
+        # symmetry. Mirrors the loop-reset done by the dbapi-async
+        # adapter on close (``done/ISSUE-159``).
+        self._bound_loop = None
         if self._protocol is None:
             return
         protocol = self._protocol

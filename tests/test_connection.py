@@ -975,6 +975,17 @@ class TestDqliteConnection:
         # Would previously raise InterfaceError("returned to the pool").
         await conn.close()
 
+    async def test_close_clears_bound_loop_for_cross_loop_reuse(self, connected_connection) -> None:
+        """close() must reset the loop binding so a subsequent connect()
+        on a different event loop is not rejected by _check_in_use with
+        "bound to a different event loop". Symmetric with the dbapi-async
+        adapter's loop reset on close (done/ISSUE-159) and the existing
+        failed-connect path's clear in connect()'s finally block."""
+        conn, _, _ = connected_connection
+        assert conn._bound_loop is not None
+        await conn.close()
+        assert conn._bound_loop is None
+
     async def test_commit_failure_invalidates_connection(self, connected_connection) -> None:
         """A failed COMMIT leaves server-side state ambiguous; the connection
         must be invalidated so the pool doesn't recycle it to another caller
