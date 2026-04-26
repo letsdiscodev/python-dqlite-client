@@ -106,6 +106,62 @@ async def test_non_auto_rollback_codes_keep_tx_flags(code: int, description: str
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_busy_with_checkpoint_message_clears_tx_state() -> None:
+    """SQLITE_BUSY (5) with the upstream gateway's "checkpoint in
+    progress" wording is a Raft-side BUSY where the tx-state-clear is
+    safe — the in-flight write was not accepted, so the local tracker
+    must mirror the server's view."""
+    conn = DqliteConnection("localhost:9001")
+    conn._db_id = 1
+    conn._protocol = object()  # type: ignore[assignment]
+
+    async def fake_send(protocol, db_id):
+        raise OperationalError(5, "checkpoint in progress")
+
+    conn._in_transaction = True
+    conn._tx_owner = asyncio.current_task()
+    conn._savepoint_stack = ["sp"]
+    conn._savepoint_implicit_begin = True
+
+    with pytest.raises(OperationalError):
+        await conn._run_protocol(fake_send)
+
+    assert conn._protocol is not None  # not invalidated
+    assert conn._in_transaction is False
+    assert conn._tx_owner is None
+    assert conn._savepoint_stack == []
+    assert conn._savepoint_implicit_begin is False
+
+
+@pytest.mark.asyncio
+async def test_busy_with_engine_message_preserves_tx_state() -> None:
+    """SQLITE_BUSY (5) with the standard SQLite-engine wording
+    ("database is locked") is engine-side; the user can retry. The
+    tracker stays in sync with the still-open tx."""
+    conn = DqliteConnection("localhost:9001")
+    conn._db_id = 1
+    conn._protocol = object()  # type: ignore[assignment]
+
+    async def fake_send(protocol, db_id):
+        raise OperationalError(5, "database is locked")
+
+    owner = asyncio.current_task()
+    conn._in_transaction = True
+    conn._tx_owner = owner
+    conn._savepoint_stack = ["sp"]
+    conn._savepoint_implicit_begin = False
+
+    with pytest.raises(OperationalError):
+        await conn._run_protocol(fake_send)
+
+    assert conn._protocol is not None
+    assert conn._in_transaction is True
+    assert conn._tx_owner is owner
+    assert conn._savepoint_stack == ["sp"]
+    assert conn._savepoint_implicit_begin is False
+
+
 async def test_leader_class_codes_invalidate_and_clear_flags() -> None:
     """Leader-class codes still invalidate (existing behaviour) — the
     invalidate path itself clears the tx flags AND the savepoint stack

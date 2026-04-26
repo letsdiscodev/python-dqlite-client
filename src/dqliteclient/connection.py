@@ -885,6 +885,30 @@ class DqliteConnection:
                 self._tx_owner = None
                 self._savepoint_stack.clear()
                 self._savepoint_implicit_begin = False
+            elif (
+                _primary_sqlite_code(e.code) == 5
+                and "checkpoint in progress" in (e.message or "").lower()
+            ):
+                # SQLITE_BUSY (5) has two distinct origins in dqlite:
+                # SQLite-engine-side BUSY (the user can retry the
+                # failing statement and continue the same tx) AND
+                # Raft-side BUSY translated by the server's gateway
+                # (the in-flight write was not accepted; the server-
+                # side tx may already be gone). The two cases
+                # surface with the SAME primary code; the only
+                # reliable distinguisher is the server's message
+                # text. The "checkpoint in progress" wording emitted
+                # by upstream ``dqlite-upstream/src/gateway.c`` for
+                # checkpoint-contention BUSY is the one Raft-side
+                # case where we know the tx-state-clear is safe.
+                # Other Raft-BUSY paths (RAFT_BUSY → bare
+                # ``sqlite3_errstr(SQLITE_BUSY)`` = "database is
+                # locked") are indistinguishable from engine-BUSY
+                # at the Python layer; users must retry explicitly.
+                self._in_transaction = False
+                self._tx_owner = None
+                self._savepoint_stack.clear()
+                self._savepoint_implicit_begin = False
             raise
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as e:
             # Interrupted mid-operation; we don't know how much of the
