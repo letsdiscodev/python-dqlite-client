@@ -684,7 +684,16 @@ class DqliteConnection:
             # ``_invalidate`` fires between the snapshot read and
             # the second caller's resumption — verified by code
             # review, not coverage.
-            with contextlib.suppress(Exception):
+            #
+            # Suppress ``BaseException`` (not just ``Exception``) so a
+            # ``CancelledError`` delivered during ``await pending``
+            # does not propagate out of close() before the protocol
+            # tear-down at lines below runs — leaking ``_protocol``.
+            # Symmetric with ``connect()``'s pending-retire path which
+            # already uses ``BaseException``. The user's outer cancel
+            # gets re-delivered at the next await boundary inside
+            # close (e.g., ``writer.wait_closed`` below).
+            with contextlib.suppress(BaseException):
                 await pending
         # Mirror ``_invalidate``'s atomic clear of the transaction
         # bookkeeping. Without this, a raw ``BEGIN`` followed by an
