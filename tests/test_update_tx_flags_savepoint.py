@@ -231,3 +231,55 @@ class TestSavepointNameParserBareIdentifierShape:
         assert conn._savepoint_stack == []
         assert conn._in_transaction is False
         assert conn._savepoint_implicit_begin is False
+
+
+class TestRollbackTransactionKeyword:
+    """Pin SQLite grammar's optional TRANSACTION keyword in ROLLBACK
+    statements. Per https://www.sqlite.org/lang_transaction.html the
+    rollback grammar is:
+
+        ROLLBACK [TRANSACTION] [TO [SAVEPOINT] name]
+
+    The TRANSACTION keyword is optional in BOTH the full-rollback and
+    the rollback-to-savepoint forms. The tracker must classify each
+    form correctly or the local stack desyncs from the server."""
+
+    def test_rollback_transaction_to_savepoint_keeps_outer_tx_open(
+        self, conn: DqliteConnection
+    ) -> None:
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        assert conn._in_transaction is True
+        assert conn._savepoint_stack == ["sp"]
+        # ROLLBACK TRANSACTION TO SAVEPOINT sp: rolls back to sp without
+        # removing it; outer transaction remains open.
+        conn._update_tx_flags_from_sql("ROLLBACK TRANSACTION TO SAVEPOINT sp")
+        assert conn._in_transaction is True
+        assert conn._savepoint_stack == ["sp"]
+
+    def test_rollback_transaction_to_savepoint_no_savepoint_keyword(
+        self, conn: DqliteConnection
+    ) -> None:
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        conn._update_tx_flags_from_sql("ROLLBACK TRANSACTION TO sp")
+        assert conn._in_transaction is True
+        assert conn._savepoint_stack == ["sp"]
+
+    def test_rollback_transaction_full_clears(self, conn: DqliteConnection) -> None:
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        # ROLLBACK TRANSACTION (no TO clause): full rollback.
+        conn._update_tx_flags_from_sql("ROLLBACK TRANSACTION")
+        assert conn._in_transaction is False
+        assert conn._savepoint_stack == []
+        assert conn._savepoint_implicit_begin is False
+
+    def test_rollback_transaction_unwinds_inner_savepoints(self, conn: DqliteConnection) -> None:
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT outer")
+        conn._update_tx_flags_from_sql("SAVEPOINT inner")
+        # ROLLBACK TRANSACTION TO outer: removes inner, keeps outer.
+        conn._update_tx_flags_from_sql("ROLLBACK TRANSACTION TO outer")
+        assert conn._savepoint_stack == ["outer"]
+        assert conn._in_transaction is True

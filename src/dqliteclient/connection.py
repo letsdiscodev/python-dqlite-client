@@ -958,14 +958,26 @@ class DqliteConnection:
                     self._savepoint_implicit_begin = False
             return
         if upper.startswith("ROLLBACK"):
-            after = upper[len("ROLLBACK") :].lstrip(" ;")
+            after_upper = upper[len("ROLLBACK") :].lstrip(" ;")
+            after_orig = head[len("ROLLBACK") :].lstrip(" ;")
+            # SQLite grammar: ROLLBACK [TRANSACTION] [TO [SAVEPOINT]
+            # name]. The TRANSACTION keyword is optional in BOTH the
+            # full-rollback and the rollback-to-savepoint forms; strip
+            # it before testing for ``TO`` so ``ROLLBACK TRANSACTION
+            # TO SAVEPOINT sp`` is correctly classified as a savepoint
+            # rollback, not a full ROLLBACK.
+            tx_kw_len = len("TRANSACTION")
+            if after_upper[:tx_kw_len] == "TRANSACTION" and (
+                len(after_upper) == tx_kw_len or not after_upper[tx_kw_len].isalnum()
+            ):
+                after_upper = after_upper[tx_kw_len:].lstrip()
+                after_orig = after_orig[tx_kw_len:].lstrip()
             # ``ROLLBACK TO`` / ``ROLLBACK TO SAVEPOINT`` unwinds
             # frames above the named savepoint but leaves the
             # named savepoint active; the outer transaction stays
             # open.
-            if after.startswith("TO"):
-                rest = head[len("ROLLBACK") :].lstrip()[len("TO") :]
-                name = _parse_release_name(rest)
+            if after_upper.startswith("TO"):
+                name = _parse_release_name(after_orig[len("TO") :])
                 if name is not None and name in self._savepoint_stack:
                     idx = self._savepoint_stack.index(name)
                     del self._savepoint_stack[idx + 1 :]
