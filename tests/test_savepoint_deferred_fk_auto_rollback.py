@@ -91,6 +91,26 @@ async def test_end_with_deferred_fk_violation_clears_tracker() -> None:
 
 
 @pytest.mark.asyncio
+async def test_commit_with_constraint_failure_outside_tx_does_not_clear() -> None:
+    """Negative pin: a SQLITE_CONSTRAINT (code 19) on a COMMIT issued
+    outside an active transaction must NOT trigger the deferred-FK
+    auto-rollback clear. The classifier requires ``_in_transaction``
+    to be True so the failure path's full-clear is symmetric with the
+    RELEASE branch's stack-precondition."""
+    conn = DqliteConnection("localhost:9001")
+    conn._db_id = 1
+    conn._protocol = object()  # type: ignore[assignment]
+    conn._in_transaction = False
+    # Confirm directly via the classifier (bypassing the failure path).
+    assert conn._sql_is_outermost_release_or_commit("COMMIT") is False
+    assert conn._sql_is_outermost_release_or_commit("END TRANSACTION") is False
+    # And in_transaction True returns True.
+    conn._in_transaction = True
+    assert conn._sql_is_outermost_release_or_commit("COMMIT") is True
+    assert conn._sql_is_outermost_release_or_commit("END TRANSACTION") is True
+
+
+@pytest.mark.asyncio
 async def test_release_inner_savepoint_with_constraint_failure_keeps_tracker() -> None:
     """Negative pin: RELEASE of an INNER (non-outermost) savepoint
     with constraint failure does NOT auto-rollback the outer tx, so

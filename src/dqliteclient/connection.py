@@ -1182,10 +1182,16 @@ class DqliteConnection:
             return False
         upper = head.upper()
         # Plain COMMIT or END (with optional TRANSACTION keyword).
+        # Gate on ``_in_transaction`` for symmetry with the RELEASE
+        # branch's stack precondition: a code-19 reply to a COMMIT
+        # outside an active tx is implausible (the server emits
+        # SQLITE_ERROR "no transaction is active" instead), so
+        # claiming the deferred-FK auto-rollback fired here would
+        # zero state without a real precondition.
         if upper.startswith("COMMIT") and _is_keyword_boundary(upper, len("COMMIT")):
-            return True
+            return self._in_transaction
         if upper.startswith("END") and _is_keyword_boundary(upper, len("END")):
-            return True
+            return self._in_transaction
         # RELEASE [SAVEPOINT] <outermost>.
         if upper.startswith("RELEASE") and _is_keyword_boundary(upper, len("RELEASE")):
             name = _parse_release_name(head[len("RELEASE") :])
