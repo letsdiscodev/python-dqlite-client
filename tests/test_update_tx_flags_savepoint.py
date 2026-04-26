@@ -689,9 +689,7 @@ class TestSavepointEmbeddedComment:
         assert conn._savepoint_stack == ["sp"]
         assert conn._in_transaction is True
 
-    def test_release_with_embedded_block_comment_pops_frame(
-        self, conn: DqliteConnection
-    ) -> None:
+    def test_release_with_embedded_block_comment_pops_frame(self, conn: DqliteConnection) -> None:
         conn._update_tx_flags_from_sql("SAVEPOINT sp")
         conn._update_tx_flags_from_sql("RELEASE /* x */ sp")
         assert conn._savepoint_stack == []
@@ -705,9 +703,7 @@ class TestSavepointEmbeddedComment:
         conn._update_tx_flags_from_sql("RELEASE /* x */ SAVEPOINT sp")
         assert conn._savepoint_stack == []
 
-    def test_rollback_to_with_embedded_block_comment_unwinds(
-        self, conn: DqliteConnection
-    ) -> None:
+    def test_rollback_to_with_embedded_block_comment_unwinds(self, conn: DqliteConnection) -> None:
         conn._update_tx_flags_from_sql("SAVEPOINT outer")
         conn._update_tx_flags_from_sql("SAVEPOINT inner")
         conn._update_tx_flags_from_sql("ROLLBACK TO /* x */ outer")
