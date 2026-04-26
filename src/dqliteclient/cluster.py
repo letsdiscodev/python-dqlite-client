@@ -507,7 +507,22 @@ class ClusterClient:
                     raise ClusterPolicyError(
                         f"Server redirected to invalid leader address: {e}"
                     ) from e
-                await conn.connect()
+                try:
+                    await conn.connect()
+                except BaseException:
+                    # CancelledError, KeyboardInterrupt, SystemExit, or
+                    # an unexpected exception during handshake. The conn
+                    # was constructed and may have published _protocol
+                    # before _run_protocol's CancelledError arm
+                    # invalidated and scheduled a _pending_drain task
+                    # strong-referenced on the conn. Without an explicit
+                    # close here, the conn falls out of scope and the
+                    # drain task is GC'd mid-flight, producing a
+                    # "Task was destroyed but it is pending" warning
+                    # at interpreter shutdown.
+                    with contextlib.suppress(BaseException):
+                        await asyncio.shield(conn.close())
+                    raise
                 return conn
             except (OSError, DqliteConnectionError, ClusterError) as exc:
                 # Narrow catch: these are the transport- and cluster-level
