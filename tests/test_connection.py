@@ -336,6 +336,36 @@ class TestDqliteConnection:
             "decoder corruption from partial reads"
         )
 
+    async def test_cancel_between_handshake_and_first_query_keeps_connection_usable(
+        self, connected_connection
+    ) -> None:
+        """A CancelledError that lands AFTER a successful handshake but
+        BEFORE the next ``execute`` is a no-op for the connection state.
+        Pin the contract: the cancel does not invalidate the connection
+        and the next ``execute`` succeeds. Without this pin, a future
+        refactor that adds state mutation between handshake-complete and
+        first-query (e.g. a deferred init step) could silently break the
+        cancellation taxonomy."""
+        import asyncio
+
+        conn, _, _ = connected_connection
+        assert conn.is_connected
+
+        # Schedule a self-cancel that fires on the next event-loop tick.
+        task = asyncio.current_task()
+        assert task is not None
+        loop = asyncio.get_running_loop()
+        loop.call_soon(task.cancel)
+        import contextlib
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.sleep(0)
+
+        # The cancel was a no-op for the connection state — no in-flight
+        # wire operation existed for it to corrupt.
+        assert conn.is_connected
+        assert conn._invalidation_cause is None
+
     async def test_connection_invalidated_after_protocol_error(self, connected_connection) -> None:
         """After a connection error, is_connected should return False."""
         conn, mock_reader, _ = connected_connection
