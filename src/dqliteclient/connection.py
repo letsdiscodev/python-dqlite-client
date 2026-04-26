@@ -79,6 +79,35 @@ _BARE_IDENT_FIRST = frozenset(string.ascii_letters + "_")
 _BARE_IDENT_REST = frozenset(string.ascii_letters + string.digits + "_")
 
 
+def _strip_leading_comments(sql: str) -> str:
+    """Strip leading SQL comments (``--`` and ``/* */``) and whitespace.
+
+    SQLite accepts both comment styles as leading whitespace and runs
+    the post-comment statement normally. The transaction tracker's
+    prefix-sniff classifier needs to see past leading comments or it
+    silently misses BEGIN / COMMIT / ROLLBACK / SAVEPOINT / RELEASE
+    statements wrapped in annotations, leaving the local state out of
+    step with the server. This helper is duplicated from the dbapi
+    cursor's identical helper rather than introducing an inter-package
+    import — the parser is small and stable.
+    """
+    s = sql.strip()
+    while True:
+        if s.startswith("--"):
+            newline = s.find("\n")
+            if newline == -1:
+                return ""
+            s = s[newline + 1 :].strip()
+        elif s.startswith("/*"):
+            end = s.find("*/")
+            if end == -1:
+                return s
+            s = s[end + 2 :].strip()
+        else:
+            break
+    return s
+
+
 def _parse_savepoint_name(after_keyword: str) -> str | None:
     """Extract a savepoint name from text following ``SAVEPOINT``.
 
@@ -903,9 +932,12 @@ class DqliteConnection:
         SQLite spec; frames above ``name`` are popped, and
         ``_in_transaction`` is unchanged.
         """
-        # Strip leading whitespace and a possible trailing semicolon
-        # so the simple prefix match handles the common shapes.
-        head = sql.lstrip()
+        # Strip leading SQL comments and whitespace so the prefix
+        # sniff sees past annotations like ``/* xact id */ BEGIN`` or
+        # ``-- comment\nSAVEPOINT sp``. Without this, a comment-prefixed
+        # transaction-control statement runs server-side but the local
+        # tracker never sees the keyword and silently drifts.
+        head = _strip_leading_comments(sql)
         if not head:
             return
         upper = head.upper()

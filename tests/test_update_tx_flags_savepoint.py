@@ -283,3 +283,54 @@ class TestRollbackTransactionKeyword:
         conn._update_tx_flags_from_sql("ROLLBACK TRANSACTION TO outer")
         assert conn._savepoint_stack == ["outer"]
         assert conn._in_transaction is True
+
+
+class TestTxFlagsCommentPrefixed:
+    """Pin the tracker's recognition of transaction-control statements
+    preceded by SQL comments. SQLite accepts both ``--`` and ``/* */``
+    comments as leading whitespace and runs the post-comment statement.
+    Without comment stripping, a comment-prefixed BEGIN / COMMIT /
+    SAVEPOINT silently bypasses the tracker — pool poisoning surface."""
+
+    def test_block_comment_before_savepoint_starts_tx(self, conn: DqliteConnection) -> None:
+        conn._update_tx_flags_from_sql("/* annotation */ SAVEPOINT s1")
+        assert conn._in_transaction is True
+        assert conn._savepoint_stack == ["s1"]
+
+    def test_line_comment_before_savepoint_starts_tx(self, conn: DqliteConnection) -> None:
+        conn._update_tx_flags_from_sql("-- header\nSAVEPOINT s1")
+        assert conn._in_transaction is True
+        assert conn._savepoint_stack == ["s1"]
+
+    def test_block_comment_before_begin_sets_in_transaction(self, conn: DqliteConnection) -> None:
+        conn._update_tx_flags_from_sql("/* x */ BEGIN")
+        assert conn._in_transaction is True
+
+    def test_block_comment_before_commit_clears_in_transaction(
+        self, conn: DqliteConnection
+    ) -> None:
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("/* x */ COMMIT")
+        assert conn._in_transaction is False
+
+    def test_block_comment_before_release_pops_stack(self, conn: DqliteConnection) -> None:
+        conn._update_tx_flags_from_sql("SAVEPOINT s1")
+        conn._update_tx_flags_from_sql("/* x */ RELEASE s1")
+        assert conn._savepoint_stack == []
+        assert conn._in_transaction is False
+
+    def test_block_comment_before_rollback_to_targets_correct_frame(
+        self, conn: DqliteConnection
+    ) -> None:
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT outer")
+        conn._update_tx_flags_from_sql("SAVEPOINT inner")
+        conn._update_tx_flags_from_sql("/* x */ ROLLBACK TO outer")
+        assert conn._savepoint_stack == ["outer"]
+        assert conn._in_transaction is True
+
+    def test_no_op_when_only_comments(self, conn: DqliteConnection) -> None:
+        # All-comment input is no-op (matches the dbapi cursor behaviour).
+        conn._update_tx_flags_from_sql("-- only a comment")
+        conn._update_tx_flags_from_sql("/* only a comment */")
+        assert conn._in_transaction is False
