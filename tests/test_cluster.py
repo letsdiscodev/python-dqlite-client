@@ -134,6 +134,46 @@ class TestClusterClient:
         ):
             await client.find_leader()
 
+    async def test_find_leader_all_nodes_no_leader_message_lists_them(self) -> None:
+        """When every node responds with the legitimate ``(node_id=0,
+        address="")`` no-leader-yet reply, the raised ``ClusterError``
+        message must enumerate the responding nodes — operators need
+        to distinguish "cluster reachable, no leader elected" from
+        "all nodes unreachable", and the strict pre-fix ``Errors: ``
+        empty list was uninformative."""
+        store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
+        client = ClusterClient(store)
+
+        mock_reader = AsyncMock()
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+
+        # Each node consumed independently — the connect handler is
+        # called twice and replays the same Welcome+NoLeader pair.
+        def fresh_no_leader_responses() -> list[bytes]:
+            return [
+                WelcomeResponse(heartbeat_timeout=15000).encode(),
+                LeaderResponse(node_id=0, address="").encode(),
+            ]
+
+        responses = fresh_no_leader_responses() + fresh_no_leader_responses()
+        mock_reader.read.side_effect = responses
+
+        with (
+            patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
+            pytest.raises(ClusterError) as excinfo,
+        ):
+            await client.find_leader()
+
+        msg = str(excinfo.value)
+        assert "localhost:9001" in msg, msg
+        assert "localhost:9002" in msg, msg
+        assert "no leader known" in msg, msg
+
     async def test_find_leader_node_hangs_after_connect(self) -> None:
         """A node that accepts TCP but hangs on handshake should be timed out."""
         import asyncio

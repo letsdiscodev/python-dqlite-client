@@ -236,6 +236,21 @@ class ClusterClient:
                     if leader_address != node.address:
                         self._check_redirect(leader_address)
                     return leader_address
+                # ``_query_leader`` returns ``None`` for the legitimate
+                # ``(node_id=0, address="")`` "no leader known yet" reply.
+                # Without this branch the ``errors`` list silently stays
+                # empty and the final raise produces an uninformative
+                # ``"Could not find leader. Errors: "`` message — the
+                # operator cannot tell "all nodes returned no-leader"
+                # from "all nodes failed unreachable".
+                logger.debug(
+                    "find_leader: %s reports no leader known (%d/%d)",
+                    node.address,
+                    idx + 1,
+                    total_nodes,
+                )
+                errors.append(f"{node.address}: no leader known")
+                continue
             except TimeoutError as e:
                 logger.debug(
                     "find_leader: %s timed out after %.3fs (%d/%d)",
