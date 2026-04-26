@@ -1006,7 +1006,8 @@ class DqliteConnection:
                 self._has_untracked_savepoint = False
             elif (
                 _primary_sqlite_code(e.code) == 5
-                and "checkpoint in progress" in (e.message or "").lower()
+                and "checkpoint in progress"
+                in (getattr(e, "raw_message", None) or e.message or "").lower()
             ):
                 # SQLITE_BUSY (5) has two distinct origins in dqlite:
                 # SQLite-engine-side BUSY (the user can retry the

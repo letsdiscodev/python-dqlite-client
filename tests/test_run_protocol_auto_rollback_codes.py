@@ -188,3 +188,43 @@ async def test_leader_class_codes_invalidate_and_clear_flags() -> None:
     assert conn._tx_owner is None
     assert conn._savepoint_stack == []
     assert conn._savepoint_implicit_begin is False
+
+
+@pytest.mark.asyncio
+async def test_busy_with_checkpoint_substring_only_in_raw_message_clears_tx_state() -> None:
+    """The "checkpoint in progress" substring scan must read
+    ``raw_message`` so a >1024-byte server message whose canonical
+    wording is shifted past the truncation boundary on ``message``
+    still classifies as Raft-BUSY. Without this, the tracker stays in
+    the (wrong) engine-BUSY state and the user's local
+    ``_in_transaction`` flag lies about server state."""
+    conn = DqliteConnection("localhost:9001")
+    conn._db_id = 1
+    conn._protocol = object()  # type: ignore[assignment]
+
+    # Build a >1024-byte message: a long context prefix with the
+    # canonical wording at the tail. ``OperationalError.__init__``
+    # truncates ``message`` to 1024 chars + "... [truncated, N bytes]"
+    # but preserves the full text on ``raw_message``.
+    long_prefix = "context: " + ("X" * 1100)
+    full = f"{long_prefix} checkpoint in progress"
+    err = OperationalError(5, full)
+    assert "checkpoint in progress" not in err.message.lower()
+    assert "checkpoint in progress" in err.raw_message.lower()
+
+    async def fake_send(protocol, db_id):
+        raise err
+
+    conn._in_transaction = True
+    conn._tx_owner = asyncio.current_task()
+    conn._savepoint_stack = ["sp"]
+    conn._savepoint_implicit_begin = True
+
+    with pytest.raises(OperationalError):
+        await conn._run_protocol(fake_send)
+
+    assert conn._protocol is not None  # not invalidated
+    assert conn._in_transaction is False
+    assert conn._tx_owner is None
+    assert conn._savepoint_stack == []
+    assert conn._savepoint_implicit_begin is False
