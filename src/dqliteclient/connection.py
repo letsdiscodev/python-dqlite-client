@@ -598,8 +598,18 @@ class DqliteConnection:
 
     @property
     def in_transaction(self) -> bool:
-        """Check if a transaction is active."""
-        return self._in_transaction
+        """Check if a transaction is active.
+
+        Returns True when an explicit ``BEGIN`` / SAVEPOINT-autobegin
+        is in flight OR when a parser-rejected SAVEPOINT (quoted,
+        backtick, square-bracketed, unicode, leading-digit) auto-
+        began a transaction the local stack tracker cannot model.
+        Mirrors stdlib ``sqlite3.Connection.in_transaction`` semantics
+        and aligns the property with the pool-reset predicate so
+        callers branching on the property cannot leak the autobegun
+        tx by skipping a ``commit()`` / ``rollback()``.
+        """
+        return self._in_transaction or self._has_untracked_savepoint
 
     async def connect(self) -> None:
         """Establish connection to the database."""

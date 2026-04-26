@@ -165,6 +165,19 @@ class TestSavepointAutobeginTracking:
         # Untracked-savepoint flag survives the inner push.
         assert conn._has_untracked_savepoint is True
 
+    def test_in_transaction_property_true_after_quoted_savepoint(
+        self, conn: DqliteConnection
+    ) -> None:
+        # The property reports True when the server has auto-begun a
+        # transaction even though the local stack tracker cannot
+        # model the frame. Aligns with stdlib sqlite3 semantics and
+        # the pool-reset predicate; protects callers that branch on
+        # ``in_transaction`` to decide whether to skip a commit.
+        conn._update_tx_flags_from_sql('SAVEPOINT "Foo"')
+        assert conn._in_transaction is False
+        assert conn._has_untracked_savepoint is True
+        assert conn.in_transaction is True
+
     def test_release_inner_tracked_after_untracked_outer_keeps_untracked_flag(
         self, conn: DqliteConnection
     ) -> None:
