@@ -1395,9 +1395,14 @@ class DqliteConnection:
                 self._has_untracked_savepoint = False
             else:
                 # ROLLBACK without an active transaction is a no-op on
-                # the server, but if an untracked SAVEPOINT was issued
-                # the server's autobegun tx is now gone — clear the
-                # flag so pool reset doesn't fire a redundant ROLLBACK.
+                # the server. The invariant "non-empty stack implies
+                # _in_transaction" should keep the stack empty here,
+                # but defensively clear all four state fields so a
+                # future state-machine bug cannot let stale stack
+                # entries leak through. Mirrors the discipline at
+                # close() / _invalidate / the auto-rollback branch.
+                self._savepoint_stack.clear()
+                self._savepoint_implicit_begin = False
                 self._has_untracked_savepoint = False
             return
         if upper.startswith("COMMIT") or upper.startswith("END"):

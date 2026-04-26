@@ -531,6 +531,24 @@ class TestKeywordBoundaryUnderscoreAndAlnum:
         assert conn._savepoint_stack == []
         assert conn._in_transaction is False
 
+    def test_rollback_no_tx_defensively_clears_stack(self, conn: DqliteConnection) -> None:
+        """The else-branch of the no-tx ROLLBACK clear was previously
+        zeroing only ``_has_untracked_savepoint``. Defensive symmetry
+        with the if-branch and with close()/_invalidate: clear all
+        three of stack / implicit-begin / untracked-flag so a future
+        state-machine drift (e.g., a code path that pushes without
+        flipping ``_in_transaction``) does not leak stale state past
+        a ROLLBACK."""
+        # Hypothetical drift state: stack populated but tx flag false.
+        conn._savepoint_stack = ["x"]
+        conn._savepoint_implicit_begin = True
+        conn._has_untracked_savepoint = True
+        conn._in_transaction = False
+        conn._update_tx_flags_from_sql("ROLLBACK")
+        assert conn._savepoint_stack == []
+        assert conn._savepoint_implicit_begin is False
+        assert conn._has_untracked_savepoint is False
+
     def test_rollback_to_underscore_identifier_not_misclassified(
         self, conn: DqliteConnection
     ) -> None:
