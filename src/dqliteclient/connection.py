@@ -184,8 +184,19 @@ def _split_top_level_statements(sql: str) -> list[str]:
     return out
 
 
-_TX_CONTROL_VERBS: frozenset[str] = frozenset(
-    {"BEGIN", "SAVEPOINT", "RELEASE", "ROLLBACK", "COMMIT", "END"}
+# Fixed-order tuple instead of a frozenset: iteration order is
+# hash-seeded for frozensets, which would let a future verb that shares
+# a prefix with an existing one (e.g. ``BEGINEXCLUSIVE``) produce
+# order-dependent classification. Longest-first ordering keeps any
+# future prefix-sharing safe — ``startswith`` matches the longest
+# candidate first.
+_TX_CONTROL_VERBS: tuple[str, ...] = (
+    "SAVEPOINT",
+    "ROLLBACK",
+    "RELEASE",
+    "COMMIT",
+    "BEGIN",
+    "END",
 )
 
 
