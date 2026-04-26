@@ -385,3 +385,39 @@ class TestSavepointDuplicateNameLIFO:
         conn._update_tx_flags_from_sql("ROLLBACK TO sp")
         assert conn._savepoint_stack == ["sp", "sp"]
         assert conn._in_transaction is True
+
+    def test_release_with_single_element_stack_clears_stack(self, conn: DqliteConnection) -> None:
+        conn._update_tx_flags_from_sql("SAVEPOINT only")
+        assert conn._savepoint_stack == ["only"]
+        conn._update_tx_flags_from_sql("RELEASE only")
+        assert conn._savepoint_stack == []
+        # Autobegin path: the implicit tx ends.
+        assert conn._in_transaction is False
+        assert conn._savepoint_implicit_begin is False
+
+    def test_rollback_to_with_three_duplicate_names_targets_innermost(
+        self, conn: DqliteConnection
+    ) -> None:
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        # ROLLBACK TO sp targets the innermost (index 2). The matched
+        # frame stays; deeper frames go (none here). Result: same stack.
+        conn._update_tx_flags_from_sql("ROLLBACK TO sp")
+        assert conn._savepoint_stack == ["sp", "sp", "sp"]
+        assert conn._in_transaction is True
+
+    def test_release_with_mixed_names_and_inner_duplicate_pops_correct_range(
+        self, conn: DqliteConnection
+    ) -> None:
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT a")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        conn._update_tx_flags_from_sql("SAVEPOINT b")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        # RELEASE sp targets the innermost (index 3) and pops it +
+        # all frames above (none above). Result: ["a", "sp", "b"].
+        conn._update_tx_flags_from_sql("RELEASE sp")
+        assert conn._savepoint_stack == ["a", "sp", "b"]
+        assert conn._in_transaction is True
