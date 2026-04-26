@@ -33,8 +33,11 @@ from dqliteclient.exceptions import OperationalError
 @pytest.mark.asyncio
 async def test_auto_rollback_codes_clear_tx_flags(code: int, description: str) -> None:
     """Each auto-rollback primary code (or its extended variants)
-    must clear _in_transaction / _tx_owner without invalidating
-    the connection itself."""
+    must clear _in_transaction / _tx_owner / savepoint stack /
+    autobegin flag without invalidating the connection itself.
+    Server-side SQLite engine has discarded the transaction including
+    every savepoint frame; the local tracker must mirror that.
+    """
     conn = DqliteConnection("localhost:9001")
     conn._db_id = 1
     conn._protocol = object()  # type: ignore[assignment]
@@ -42,18 +45,25 @@ async def test_auto_rollback_codes_clear_tx_flags(code: int, description: str) -
     async def fake_send(protocol, db_id):
         raise OperationalError(code, f"simulated {description}")
 
-    # Set tx flags so we can observe them being cleared.
+    # Set tx + savepoint state so we can observe them being cleared.
     conn._in_transaction = True
     conn._tx_owner = asyncio.current_task()
+    conn._savepoint_stack = ["sp1", "sp2"]
+    conn._savepoint_implicit_begin = True
 
     with pytest.raises(OperationalError):
         await conn._run_protocol(fake_send)
 
     # Connection must NOT be invalidated.
     assert conn._protocol is not None, f"{description}: connection unexpectedly invalidated"
-    # tx flags must be cleared.
+    # All four state fields must be cleared atomically — mirror the
+    # cleanup discipline already enforced by _invalidate / close.
     assert conn._in_transaction is False, f"{description}: _in_transaction still True"
     assert conn._tx_owner is None, f"{description}: _tx_owner not cleared"
+    assert conn._savepoint_stack == [], f"{description}: _savepoint_stack not cleared"
+    assert conn._savepoint_implicit_begin is False, (
+        f"{description}: _savepoint_implicit_begin not cleared"
+    )
 
 
 @pytest.mark.parametrize(
@@ -79,14 +89,20 @@ async def test_non_auto_rollback_codes_keep_tx_flags(code: int, description: str
     owner = asyncio.current_task()
     conn._in_transaction = True
     conn._tx_owner = owner
+    conn._savepoint_stack = ["sp1"]
+    conn._savepoint_implicit_begin = False
 
     with pytest.raises(OperationalError):
         await conn._run_protocol(fake_send)
 
     assert conn._protocol is not None
     # Flags preserved — user code must call ROLLBACK explicitly.
+    # The savepoint stack and autobegin flag are also preserved
+    # because the SQLite engine did NOT roll back the transaction.
     assert conn._in_transaction is True
     assert conn._tx_owner is owner
+    assert conn._savepoint_stack == ["sp1"]
+    assert conn._savepoint_implicit_begin is False
 
 
 @pytest.mark.asyncio

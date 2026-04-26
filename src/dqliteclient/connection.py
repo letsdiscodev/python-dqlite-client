@@ -870,9 +870,14 @@ class DqliteConnection:
                 # not lie to downstream layers (PEP 249 dbapi, SA
                 # dialect) and so the next statement does not run
                 # under a stale "we're still inside the user's tx"
-                # assumption.
+                # assumption. Also clear the savepoint stack and the
+                # autobegin flag — server-side auto-rollback discards
+                # all savepoints in the rolled-back tx, mirroring the
+                # cleanup discipline of ``_invalidate`` and ``close``.
                 self._in_transaction = False
                 self._tx_owner = None
+                self._savepoint_stack.clear()
+                self._savepoint_implicit_begin = False
             raise
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as e:
             # Interrupted mid-operation; we don't know how much of the
