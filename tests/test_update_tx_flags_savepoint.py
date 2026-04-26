@@ -209,12 +209,32 @@ class TestSavepointNameParserBareIdentifierShape:
 
         assert _parse_savepoint_name("αβγ") is None  # αβγ
 
-    def test_unicode_in_middle_truncates_at_ascii_only(self) -> None:
+    def test_unicode_in_middle_rejected(self) -> None:
         from dqliteclient.connection import _parse_savepoint_name
 
-        # ASCII prefix, unicode suffix: parser stops at the boundary
-        # rather than swallowing the unicode tail through ``isalnum``.
-        assert _parse_savepoint_name("fooé") == "foo"
+        # ASCII prefix followed by a unicode suffix is trailing garbage
+        # — SQLite would parse-reject this shape too, so the tracker
+        # falls through to the parser-rejected branch (None) rather
+        # than silently accepting the ASCII prefix.
+        assert _parse_savepoint_name("fooé") is None
+
+    def test_trailing_garbage_after_identifier_rejected(self) -> None:
+        from dqliteclient.connection import _parse_savepoint_name
+
+        # Forward-defence: extra non-whitespace, non-comment tokens
+        # after a valid identifier mean the input is not a clean
+        # SAVEPOINT statement.
+        assert _parse_savepoint_name("foo extra junk") is None
+        assert _parse_savepoint_name("foo()") is None
+
+    def test_trailing_whitespace_and_comment_accepted(self) -> None:
+        from dqliteclient.connection import _parse_savepoint_name
+
+        # SQLite tolerates whitespace and comments at the statement
+        # tail; the parser should agree.
+        assert _parse_savepoint_name("foo  ") == "foo"
+        assert _parse_savepoint_name("foo /* x */") == "foo"
+        assert _parse_savepoint_name("foo -- comment") == "foo"
 
     def test_ascii_uppercase_lowercased(self) -> None:
         from dqliteclient.connection import _parse_savepoint_name

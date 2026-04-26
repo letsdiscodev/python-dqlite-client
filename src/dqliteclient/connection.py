@@ -289,6 +289,15 @@ def _parse_savepoint_name(after_keyword: str) -> str | None:
     end = 1
     while end < len(s) and s[end] in _BARE_IDENT_REST:
         end += 1
+    # Reject trailing garbage after the identifier. SQLite tolerates
+    # whitespace and comments at this position but parse-rejects any
+    # other trailing token; the success-only update at the call site
+    # masks the runtime impact today, but lenient parsing here is a
+    # forward-defence concern (a future caller using this helper
+    # outside ``_update_tx_flags_from_sql`` would silently accept
+    # ``foo extra junk`` as ``foo``).
+    if _strip_leading_comments(s[end:]):
+        return None
     return s[:end].lower()
 
 
