@@ -345,7 +345,7 @@ class ClusterClient:
                     "query_leader: %s returned malformed redirect (node_id=%s, address=%r)",
                     address,
                     node_id,
-                    leader_addr,
+                    _sanitize_display_text(leader_addr),
                 )
                 raise ProtocolError(
                     f"server {_sanitize_display_text(address)} returned "
@@ -361,7 +361,7 @@ class ClusterClient:
                 logger.debug(
                     "query_leader: %s returned malformed redirect (node_id=0, address=%r)",
                     address,
-                    leader_addr,
+                    _sanitize_display_text(leader_addr),
                 )
                 raise ProtocolError(
                     f"server {_sanitize_display_text(address)} returned "
