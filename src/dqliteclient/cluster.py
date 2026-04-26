@@ -228,7 +228,19 @@ class ClusterClient:
     async def _find_leader_impl(self, *, trust_server_heartbeat: bool) -> str:
         """Perform the actual leader discovery sweep. See ``find_leader``
         for the public contract — this method is the single-flight
-        backing implementation."""
+        backing implementation.
+
+        Error-accumulator note: per-node failures (DqliteConnectionError,
+        ProtocolError, OperationalError, OSError, TimeoutError) are
+        captured into the ``errors`` list so the final ClusterError
+        message names every probed node. ``ClusterPolicyError`` raised
+        by ``_check_redirect`` is NOT in that catch tuple and propagates
+        directly out of the loop, dropping any accumulated probe
+        history. That's intentional: policy rejections are deterministic
+        configuration errors, so the same policy would apply to every
+        later node and the probe history is not actionable. Operators
+        triaging a policy short-circuit see only the policy decision.
+        """
         nodes = await self._node_store.get_nodes()
 
         if not nodes:
