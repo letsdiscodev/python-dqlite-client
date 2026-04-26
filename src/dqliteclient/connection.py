@@ -1285,6 +1285,15 @@ class DqliteConnection:
                             self._address,
                             id(self),
                         )
+                        # Server reports no transaction is active — the
+                        # savepoint stack is necessarily gone too. Mirror
+                        # the all-four-clear discipline enforced at
+                        # _invalidate / close / _run_protocol's
+                        # auto-rollback branch so the pool-reset
+                        # predicate doesn't see a stale stack and
+                        # re-issue another (also benign) ROLLBACK.
+                        self._savepoint_stack.clear()
+                        self._savepoint_implicit_begin = False
                     else:
                         logger.debug(
                             "transaction(address=%s, id=%s): rollback failed "
@@ -1311,5 +1320,14 @@ class DqliteConnection:
                     self._invalidate()
             raise
         finally:
+            # Defence-in-depth: the success path's COMMIT and the
+            # failure-path branches above all clear the four tx fields
+            # before reaching here, but clearing again here keeps the
+            # invariant local to transaction()'s exit so a future
+            # refactor that splits COMMIT from state-update cannot
+            # silently regress. Idempotent — already-cleared fields stay
+            # cleared.
             self._tx_owner = None
             self._in_transaction = False
+            self._savepoint_stack.clear()
+            self._savepoint_implicit_begin = False
