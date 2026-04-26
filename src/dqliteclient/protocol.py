@@ -605,7 +605,20 @@ class DqliteProtocol:
         return _failure_message(response.message, self._addr_suffix())
 
     def _operation_deadline(self) -> float:
-        """Deadline (monotonic seconds) for a single protocol operation."""
+        """Deadline (monotonic seconds) for a single protocol operation.
+
+        Note on multi-phase RPCs: ``timeout`` bounds each phase
+        independently — a phase-1 ``_send`` followed by a phase-2
+        ``_read_response`` followed by a continuation drain can
+        cumulatively take up to ``timeout`` per phase. Worst-case
+        wall-clock for a single ``query_sql`` is therefore on the
+        order of ``2 × timeout`` (send + read+drain), and a fresh
+        ``connect → query`` flow can stack ``handshake`` +
+        ``open_database`` + ``query_sql`` for proportionally more.
+        Callers needing an absolute end-to-end bound should wrap the
+        outer call in ``asyncio.timeout`` / ``asyncio.wait_for``.
+        This matches go-dqlite's per-phase budgeting.
+        """
         return asyncio.get_running_loop().time() + self._timeout
 
     async def _read_continuation(self, deadline: float | None = None) -> RowsResponse:
