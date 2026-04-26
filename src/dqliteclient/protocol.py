@@ -695,6 +695,23 @@ class DqliteProtocol:
             # by code review, not coverage.
             raise ProtocolError(f"Failed to decode message{self._addr_suffix()}")
 
+        # Hostile-server hardening: a ``FailureResponse`` is always
+        # terminal per the dqlite wire spec — one request, one
+        # response. If the decoder still has another frame buffered
+        # after extracting a FailureResponse, the server emitted
+        # extra bytes (or two coalesced replies arrived in one TCP
+        # segment). Without this check the leftover frame would be
+        # consumed as the response to the NEXT user request,
+        # producing a misleading ``OperationalError`` against an
+        # unrelated operation. Raise ``ProtocolError`` here so
+        # ``_run_protocol`` invalidates the connection and the pool
+        # discards the slot.
+        if isinstance(message, FailureResponse) and self._decoder.has_message():
+            raise ProtocolError(
+                f"Server emitted extra response after FailureResponse"
+                f"{self._addr_suffix()} — protocol violation, invalidating connection"
+            )
+
         return message
 
     def close(self) -> None:
