@@ -501,7 +501,13 @@ class ConnectionPool:
             except asyncio.QueueEmpty:  # pragma: no cover
                 break
             try:
-                await conn.close()
+                # Shield the close so a KeyboardInterrupt / SystemExit
+                # (or a fresh cancel delivered through the lock acquire
+                # in close()) does not abort the drain mid-iteration
+                # and leak the rest of the queue's transports +
+                # reservations. The per-iteration release below uses
+                # the same shield discipline.
+                await asyncio.shield(conn.close())
             except Exception:
                 logger.debug(
                     "pool: cleanup-after-cancel close() on %r failed",
@@ -510,7 +516,7 @@ class ConnectionPool:
                 )
             finally:
                 with contextlib.suppress(asyncio.CancelledError):
-                    await self._release_reservation()
+                    await asyncio.shield(self._release_reservation())
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
@@ -689,7 +695,17 @@ class ConnectionPool:
                 conn,
                 self._pool.qsize(),
             )
-            await self._drain_idle()
+            # Wrap _drain_idle so a cancel mid-drain releases the dead
+            # conn's reservation. Without this guard, a CancelledError
+            # delivered to a checkpoint inside _drain_idle propagates
+            # out of acquire() before the _create_connection's except
+            # arm runs, leaking one reservation slot per occurrence.
+            try:
+                await self._drain_idle()
+            except BaseException:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(self._release_reservation())
+                raise
             # The dead conn's reservation is re-used for the fresh
             # connection; no counter adjustment needed. (The earlier
             # ``-= 1; += 1`` under the lock was a no-op — kept only
@@ -706,9 +722,13 @@ class ConnectionPool:
             # and a sneaky leak (user runs queries against a pool
             # the rest of the program treats as closed).
             if self._closed:
-                with contextlib.suppress(Exception):
-                    await conn.close()
-                await self._release_reservation()
+                # Shield both the close and the reservation release so
+                # an outer cancel cannot leak the freshly-built
+                # connection's transport or the reservation slot.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(conn.close())
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(self._release_reservation())
                 raise DqliteConnectionError("Pool is closed")
 
         conn._pool_released = False
