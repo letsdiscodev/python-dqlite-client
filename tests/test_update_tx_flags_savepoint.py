@@ -334,3 +334,54 @@ class TestTxFlagsCommentPrefixed:
         conn._update_tx_flags_from_sql("-- only a comment")
         conn._update_tx_flags_from_sql("/* only a comment */")
         assert conn._in_transaction is False
+
+
+class TestSavepointDuplicateNameLIFO:
+    """Pin SQLite's documented LIFO semantics for duplicate savepoint
+    names. Per https://www.sqlite.org/lang_savepoint.html the name of
+    a savepoint need not be unique; if multiple savepoints share a
+    name, SQLite uses the most recently created one. The tracker must
+    reverse-search the stack to honour this contract."""
+
+    def test_release_with_duplicate_name_pops_innermost_only(self, conn: DqliteConnection) -> None:
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        assert conn._savepoint_stack == ["sp", "sp"]
+        # RELEASE sp must remove only the innermost matching frame
+        # (and any deeper frames, of which there are none here).
+        conn._update_tx_flags_from_sql("RELEASE sp")
+        assert conn._savepoint_stack == ["sp"]
+        # Outer transaction must still be open.
+        assert conn._in_transaction is True
+
+    def test_release_with_duplicate_name_clears_tx_when_outer_released(
+        self, conn: DqliteConnection
+    ) -> None:
+        # Autobegin scenario: SAVEPOINT was the implicit outer frame.
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        assert conn._savepoint_implicit_begin is True
+        # First RELEASE pops innermost; outer sp still active.
+        conn._update_tx_flags_from_sql("RELEASE sp")
+        assert conn._savepoint_stack == ["sp"]
+        assert conn._in_transaction is True
+        # Second RELEASE pops the outer; autobegin tx ends.
+        conn._update_tx_flags_from_sql("RELEASE sp")
+        assert conn._savepoint_stack == []
+        assert conn._in_transaction is False
+
+    def test_rollback_to_with_duplicate_name_targets_innermost(
+        self, conn: DqliteConnection
+    ) -> None:
+        conn._update_tx_flags_from_sql("BEGIN")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        conn._update_tx_flags_from_sql("SAVEPOINT sp")
+        conn._update_tx_flags_from_sql("SAVEPOINT inner")
+        # ROLLBACK TO sp must target the innermost sp (index 1), not
+        # the outer one (index 0). After rollback: ["sp", "sp"] —
+        # outer sp still there, inner sp still there (matched-frame
+        # not removed by ROLLBACK TO), inner removed.
+        conn._update_tx_flags_from_sql("ROLLBACK TO sp")
+        assert conn._savepoint_stack == ["sp", "sp"]
+        assert conn._in_transaction is True

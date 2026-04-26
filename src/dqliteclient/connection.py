@@ -979,8 +979,14 @@ class DqliteConnection:
             if name is not None and name in self._savepoint_stack:
                 # Pop everything down to and including this name —
                 # SQLite RELEASE removes the named savepoint and any
-                # frames above it.
-                idx = self._savepoint_stack.index(name)
+                # frames above it. Per SQLite's documentation
+                # (https://www.sqlite.org/lang_savepoint.html) "the
+                # name of a savepoint need not be unique. If multiple
+                # savepoints have the same name, then SQLite uses the
+                # most recently created savepoint with the matching
+                # name." Reverse-search the stack so the LIFO contract
+                # holds for duplicate names.
+                idx = len(self._savepoint_stack) - 1 - self._savepoint_stack[::-1].index(name)
                 del self._savepoint_stack[idx:]
                 # If the stack is now empty AND the outer SAVEPOINT
                 # was an autobegin, the implicit transaction ends.
@@ -1011,7 +1017,10 @@ class DqliteConnection:
             if after_upper.startswith("TO"):
                 name = _parse_release_name(after_orig[len("TO") :])
                 if name is not None and name in self._savepoint_stack:
-                    idx = self._savepoint_stack.index(name)
+                    # Reverse-search to match the most recently created
+                    # savepoint with this name (SQLite's LIFO rule for
+                    # duplicate names — see RELEASE branch above).
+                    idx = len(self._savepoint_stack) - 1 - self._savepoint_stack[::-1].index(name)
                     del self._savepoint_stack[idx + 1 :]
                 return
             if self._in_transaction:
