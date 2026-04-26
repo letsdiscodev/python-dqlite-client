@@ -29,6 +29,7 @@ from dqlitewire import (
 from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
+from dqlitewire import LEADER_ERROR_CODES as _LEADER_ERROR_CODES
 
 __all__ = ["ConnectionPool"]
 
@@ -903,11 +904,24 @@ class ConnectionPool:
                     if hasattr(conn, "_has_untracked_savepoint"):
                         conn._has_untracked_savepoint = False
                     return True
-                logger.debug(
-                    "pool: dropping connection %s after ROLLBACK failure: %r",
-                    conn._address,
-                    exc,
-                )
+                # Differentiate leader-flip (normal cluster churn —
+                # DEBUG) from genuine server failure (latent bug or
+                # server fault — WARNING with traceback).
+                code = getattr(exc, "code", None)
+                if code in _LEADER_ERROR_CODES:
+                    logger.debug(
+                        "pool: dropping connection %s after leader-class "
+                        "ROLLBACK failure (code=%s)",
+                        conn._address,
+                        code,
+                    )
+                else:
+                    logger.warning(
+                        "pool: dropping connection %s after ROLLBACK failure: %r",
+                        conn._address,
+                        exc,
+                        exc_info=True,
+                    )
                 return False
             conn._in_transaction = False
             conn._tx_owner = None
