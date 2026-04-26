@@ -402,6 +402,17 @@ class DqliteConnection:
         # one), ``_in_transaction`` is flipped back to False.
         self._savepoint_stack: list[str] = []
         self._savepoint_implicit_begin = False
+        # Set to True whenever ``_update_tx_flags_from_sql`` observes a
+        # SAVEPOINT verb whose name the parser cannot represent
+        # (``_parse_savepoint_name`` returns ``None`` — quoted identifier,
+        # backtick / square-bracket, unicode, leading-digit). The local
+        # stack stays empty by design (case-sensitivity trade-off, see
+        # ``_parse_savepoint_name`` docstring), but the server has
+        # auto-begun a transaction. The pool-reset predicate ORs this
+        # flag in so the slot is rolled back on return — without it, a
+        # bare ``SAVEPOINT "Foo"`` issued without a preceding BEGIN
+        # would leak the autobegun transaction across pool acquirers.
+        self._has_untracked_savepoint = False
         self._pool_released = False
         # Cause recorded by ``_invalidate(cause=...)``; only meaningful
         # while ``_protocol is None``. ``connect()`` clears it on a
@@ -605,6 +616,7 @@ class DqliteConnection:
         self._tx_owner = None
         self._savepoint_stack.clear()
         self._savepoint_implicit_begin = False
+        self._has_untracked_savepoint = False
         # Clear the loop binding so a subsequent ``connect()`` on a
         # different event loop is accepted by ``_check_in_use``. The
         # failed-connect path already clears this in ``connect()``'s
@@ -804,6 +816,7 @@ class DqliteConnection:
         # nesting on the next caller.
         self._savepoint_stack.clear()
         self._savepoint_implicit_begin = False
+        self._has_untracked_savepoint = False
         # Preserve the FIRST cause: ``_ensure_connected`` raises a
         # synthetic ``DqliteConnectionError("Not connected")`` chained
         # from ``self._invalidation_cause`` whenever an
@@ -901,6 +914,7 @@ class DqliteConnection:
                 self._tx_owner = None
                 self._savepoint_stack.clear()
                 self._savepoint_implicit_begin = False
+                self._has_untracked_savepoint = False
             elif (
                 _primary_sqlite_code(e.code) == 5
                 and "checkpoint in progress" in (e.message or "").lower()
@@ -925,6 +939,7 @@ class DqliteConnection:
                 self._tx_owner = None
                 self._savepoint_stack.clear()
                 self._savepoint_implicit_begin = False
+                self._has_untracked_savepoint = False
             raise
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as e:
             # Interrupted mid-operation; we don't know how much of the
@@ -1023,6 +1038,17 @@ class DqliteConnection:
                     # same reason as bare BEGIN.
                     self._in_transaction = True
                     self._savepoint_implicit_begin = True
+            else:
+                # Quoted / backtick / square-bracket / unicode /
+                # leading-digit identifier — the parser deliberately
+                # returns None to avoid the case-sensitivity desync
+                # described on ``_parse_savepoint_name``. The server
+                # still creates the savepoint (and auto-begins a
+                # transaction if none was active), so the pool-reset
+                # predicate must observe the side effect via
+                # ``_has_untracked_savepoint`` even though the local
+                # stack stays empty.
+                self._has_untracked_savepoint = True
             return
         if (
             upper.startswith("RELEASE")
@@ -1048,6 +1074,13 @@ class DqliteConnection:
                     self._in_transaction = False
                     self._tx_owner = None
                     self._savepoint_implicit_begin = False
+            # ``_has_untracked_savepoint`` is intentionally NOT cleared
+            # by a parser-rejected RELEASE: a partial release (server
+            # still holds outer untracked frames) is indistinguishable
+            # from a full release at this layer. The flag stays sticky
+            # until a definitive close (COMMIT/ROLLBACK of the outer
+            # tx, or invalidate/close of the connection) so pool reset
+            # remains the safety net for the unsupported tokenisation.
             return
         if upper.startswith("ROLLBACK"):
             after_upper = upper[len("ROLLBACK") :].lstrip(" ;")
@@ -1082,6 +1115,13 @@ class DqliteConnection:
                 self._tx_owner = None
                 self._savepoint_stack.clear()
                 self._savepoint_implicit_begin = False
+                self._has_untracked_savepoint = False
+            else:
+                # ROLLBACK without an active transaction is a no-op on
+                # the server, but if an untracked SAVEPOINT was issued
+                # the server's autobegun tx is now gone — clear the
+                # flag so pool reset doesn't fire a redundant ROLLBACK.
+                self._has_untracked_savepoint = False
             return
         if upper.startswith("COMMIT") or upper.startswith("END"):
             # ``COMMIT`` / ``END`` close the outer transaction. Both
@@ -1094,6 +1134,7 @@ class DqliteConnection:
                     self._tx_owner = None
                     self._savepoint_stack.clear()
                     self._savepoint_implicit_begin = False
+                self._has_untracked_savepoint = False
                 return
 
     async def query_raw(
@@ -1303,13 +1344,14 @@ class DqliteConnection:
                         )
                         # Server reports no transaction is active — the
                         # savepoint stack is necessarily gone too. Mirror
-                        # the all-four-clear discipline enforced at
+                        # the all-clear discipline enforced at
                         # _invalidate / close / _run_protocol's
                         # auto-rollback branch so the pool-reset
                         # predicate doesn't see a stale stack and
                         # re-issue another (also benign) ROLLBACK.
                         self._savepoint_stack.clear()
                         self._savepoint_implicit_begin = False
+                        self._has_untracked_savepoint = False
                     else:
                         logger.debug(
                             "transaction(address=%s, id=%s): rollback failed "
@@ -1347,3 +1389,4 @@ class DqliteConnection:
             self._in_transaction = False
             self._savepoint_stack.clear()
             self._savepoint_implicit_begin = False
+            self._has_untracked_savepoint = False

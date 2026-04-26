@@ -228,3 +228,103 @@ class TestResetConnectionUmbrellaPredicate:
         assert conn._in_transaction is False
         assert conn._savepoint_stack == []
         assert conn._savepoint_implicit_begin is False
+
+
+@pytest.mark.asyncio
+class TestUntrackedSavepointPredicate:
+    """Pin: ``_has_untracked_savepoint`` participates in the pool-reset
+    predicate. A bare ``SAVEPOINT "Foo"`` issued without a preceding
+    BEGIN auto-begins a server-side transaction that the local stack
+    deliberately does NOT track (``_parse_savepoint_name`` returns None
+    for quoted identifiers per the case-sensitivity trade-off). Without
+    the flag, all three other predicate fields stay False/empty and the
+    pool returns the slot with a live tx — leaking across acquirers."""
+
+    async def test_quoted_savepoint_without_begin_sets_flag(self) -> None:
+        """Pin the wire-up: bare ``SAVEPOINT "Foo"`` must set
+        ``_has_untracked_savepoint=True``. All three other flags stay
+        False/empty by design."""
+        conn = DqliteConnection("localhost:9001")
+        conn._update_tx_flags_from_sql('SAVEPOINT "Foo"')
+        assert conn._has_untracked_savepoint is True
+        # Other flags stay False — case-sensitivity trade-off preserved.
+        assert conn._savepoint_stack == []
+        assert conn._savepoint_implicit_begin is False
+        assert conn._in_transaction is False
+
+    async def test_pool_reset_issues_rollback_on_untracked_flag(self) -> None:
+        """Pool reset must issue ROLLBACK when only
+        ``_has_untracked_savepoint`` is set."""
+        pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
+        conn = DqliteConnection("localhost:9001")
+        with (
+            patch.object(DqliteConnection, "is_connected", new=True),
+            patch("dqliteclient.pool._socket_looks_dead", return_value=False),
+        ):
+            conn._in_transaction = False
+            conn._savepoint_stack = []
+            conn._savepoint_implicit_begin = False
+            conn._has_untracked_savepoint = True
+            executed: list[str] = []
+
+            async def fake_execute(sql: str) -> object:
+                executed.append(sql)
+                return None
+
+            with patch.object(conn, "execute", new=fake_execute):
+                result = await pool._reset_connection(conn)
+
+        assert result is True
+        assert executed == ["ROLLBACK"]
+        assert conn._has_untracked_savepoint is False
+
+    async def test_quoted_savepoint_then_release_keeps_flag_sticky(self) -> None:
+        """``RELEASE "Foo"`` cannot be classified at this layer: it
+        might be a partial release (server still holds outer untracked
+        frames) or a full release. The flag stays sticky until a
+        definitive close (COMMIT/ROLLBACK on the outer tx, or
+        invalidate/close of the connection)."""
+        conn = DqliteConnection("localhost:9001")
+        conn._update_tx_flags_from_sql('SAVEPOINT "Foo"')
+        assert conn._has_untracked_savepoint is True
+        conn._update_tx_flags_from_sql('RELEASE "Foo"')
+        # Flag remains True — pool reset will fire the safety ROLLBACK.
+        assert conn._has_untracked_savepoint is True
+
+    async def test_commit_clears_untracked_flag(self) -> None:
+        """A definitive COMMIT clears the flag — the autobegun tx is
+        gone, no leak surface remains."""
+        conn = DqliteConnection("localhost:9001")
+        conn._update_tx_flags_from_sql('SAVEPOINT "Foo"')
+        assert conn._has_untracked_savepoint is True
+        # The user does an explicit BEGIN+COMMIT to end the tx after
+        # confusion. The COMMIT branch in the parser unconditionally
+        # clears the untracked flag (the only autobegun tx is gone).
+        conn._in_transaction = True  # simulate the BEGIN side effect
+        conn._update_tx_flags_from_sql("COMMIT")
+        assert conn._has_untracked_savepoint is False
+
+    async def test_rollback_clears_untracked_flag(self) -> None:
+        """A definitive ROLLBACK clears the flag (no active tx and no
+        untracked savepoint frames remain server-side)."""
+        conn = DqliteConnection("localhost:9001")
+        conn._in_transaction = True
+        conn._has_untracked_savepoint = True
+        conn._update_tx_flags_from_sql("ROLLBACK")
+        assert conn._has_untracked_savepoint is False
+        assert conn._in_transaction is False
+
+    async def test_invalidate_clears_untracked_flag(self) -> None:
+        """``_invalidate`` participates in the all-clear discipline."""
+        conn = DqliteConnection("localhost:9001")
+        conn._has_untracked_savepoint = True
+        conn._invalidate()
+        assert conn._has_untracked_savepoint is False
+
+    async def test_comment_prefixed_quoted_savepoint_sets_flag(self) -> None:
+        """Comment stripping must apply before the SAVEPOINT verb
+        check, so a comment-prefixed quoted savepoint also sets the
+        flag — pin the parity with the parser's leading-comment path."""
+        conn = DqliteConnection("localhost:9001")
+        conn._update_tx_flags_from_sql('/* annotation */ SAVEPOINT "Foo"')
+        assert conn._has_untracked_savepoint is True
