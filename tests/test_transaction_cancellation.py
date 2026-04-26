@@ -291,6 +291,16 @@ class TestTransactionCancellationPhases:
         assert not conn._in_transaction
         assert conn._tx_owner is None
 
+        # The cancel that triggered the invalidation must be preserved
+        # as the invalidation cause so subsequent ``_ensure_connected``
+        # raises chain back to it. Operators reading "Not connected"
+        # logs need a breadcrumb to the originating cancel.
+        assert isinstance(conn._invalidation_cause, asyncio.CancelledError), (
+            f"Expected CancelledError as invalidation cause, "
+            f"got {type(conn._invalidation_cause).__name__}: "
+            f"{conn._invalidation_cause!r}"
+        )
+
     async def test_cancel_during_rollback(self, conn_and_proto: Any) -> None:
         # Body-error ROLLBACK cancellation, framed as a phase test.
         conn, proto = await conn_and_proto()

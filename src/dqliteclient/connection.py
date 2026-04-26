@@ -1199,13 +1199,17 @@ class DqliteConnection:
             yield
             commit_attempted = True
             await self.execute(_TRANSACTION_COMMIT_SQL)
-        except BaseException:
+        except BaseException as exc:
             if commit_attempted:
                 # COMMIT was sent but failed. Server-side state is ambiguous
                 # (maybe committed, maybe still open, maybe rolled back). We
                 # cannot safely reuse this connection — invalidate so the
                 # pool discards it instead of recycling an unknown state.
-                self._invalidate()
+                # Pass the in-flight exception as the cause so subsequent
+                # ``_ensure_connected`` raises chain back to the cancel /
+                # OperationalError that triggered the invalidation, instead
+                # of dropping ``__cause__`` on the floor.
+                self._invalidate(exc)
             else:
                 # Body raised before COMMIT; try to roll back.
                 #
