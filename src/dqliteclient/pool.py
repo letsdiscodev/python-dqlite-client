@@ -854,11 +854,12 @@ class ConnectionPool:
         # fakes whose attributes are MagicMock instances (truthy by
         # default) — without the type guards, every fake-conn release
         # would unconditionally enter the ROLLBACK branch.
+        in_tx = getattr(conn, "_in_transaction", False)
         sp_stack = getattr(conn, "_savepoint_stack", None)
         implicit_begin = getattr(conn, "_savepoint_implicit_begin", False)
         untracked_sp = getattr(conn, "_has_untracked_savepoint", False)
         needs_rollback = (
-            bool(conn._in_transaction)
+            (isinstance(in_tx, bool) and in_tx)
             or (isinstance(sp_stack, list) and bool(sp_stack))
             or (isinstance(implicit_begin, bool) and implicit_begin)
             or (isinstance(untracked_sp, bool) and untracked_sp)
