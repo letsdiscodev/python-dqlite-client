@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import math
 import re
+import string
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
@@ -74,13 +75,17 @@ _TRANSACTION_ROLLBACK_SQL = "ROLLBACK"
 # a fresh transaction whose boundary the user code does not know about.
 
 
+_BARE_IDENT_FIRST = frozenset(string.ascii_letters + "_")
+_BARE_IDENT_REST = frozenset(string.ascii_letters + string.digits + "_")
+
+
 def _parse_savepoint_name(after_keyword: str) -> str | None:
     """Extract a savepoint name from text following ``SAVEPOINT``.
 
-    Handles unquoted SQLite identifiers (alphanumeric + underscore +
-    leading-non-digit) and lowercases the result so unquoted-identifier
-    matching is case-insensitive, mirroring SQLite's identifier
-    resolution for bare names.
+    Handles unquoted ASCII SQLite identifiers (ASCII letters, digits,
+    underscore; leading-non-digit) and lowercases the result so
+    unquoted-identifier matching is case-insensitive, mirroring SQLite's
+    identifier resolution for bare ASCII names.
 
     Returns ``None`` for shapes the prefix-sniff cannot reliably and
     safely parse:
@@ -94,19 +99,21 @@ def _parse_savepoint_name(after_keyword: str) -> str | None:
       the local stack untouched for the quoted frame; the autobegin
       flag also does not transition. Hand-written quoted SAVEPOINTs
       are exotic — SA generates ``sa_savepoint_N`` which is bare.
-    * Backtick / square-bracket / unicode-only identifiers.
+    * Backtick / square-bracket / unicode identifiers — Python's
+      ``str.isalnum`` returns True for non-ASCII letters, but
+      ``str.lower`` may normalise them differently than the server
+      would. Reject up front so the local stack does not desync from
+      the server's identifier-fold rules.
+    * Leading-digit identifiers — SQLite parse-rejects them, so the
+      tracker would push a name the server has not created.
     * Multi-statement input.
     """
     s = after_keyword.lstrip()
-    if not s:
+    if not s or s[0] not in _BARE_IDENT_FIRST:
         return None
-    if s[0] == '"':
-        return None
-    end = 0
-    while end < len(s) and (s[end].isalnum() or s[end] == "_"):
+    end = 1
+    while end < len(s) and s[end] in _BARE_IDENT_REST:
         end += 1
-    if end == 0:
-        return None
     return s[:end].lower()
 
 

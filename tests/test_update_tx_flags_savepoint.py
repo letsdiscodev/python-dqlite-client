@@ -181,3 +181,53 @@ class TestSavepointStateClearedOnInvalidate:
         await conn.close()
         assert conn._savepoint_stack == []
         assert conn._savepoint_implicit_begin is False
+
+
+class TestSavepointNameParserBareIdentifierShape:
+    """Pin the bare-identifier shape contract for ``_parse_savepoint_name``.
+
+    The docstring promises ASCII-only alphanumerics with a leading
+    non-digit. SQLite's tokenizer accepts unicode letters (and rejects
+    leading-digit names) but Python's ``str.isalnum`` and ``str.lower``
+    handle non-ASCII with normalisation rules that may not match the
+    server's identifier-fold. Reject up front so the local stack stays
+    in step with the server.
+    """
+
+    def test_leading_digit_returns_none(self) -> None:
+        from dqliteclient.connection import _parse_savepoint_name
+
+        assert _parse_savepoint_name("1foo") is None
+
+    def test_leading_underscore_accepted(self) -> None:
+        from dqliteclient.connection import _parse_savepoint_name
+
+        assert _parse_savepoint_name("_sp") == "_sp"
+
+    def test_unicode_letter_returns_none(self) -> None:
+        from dqliteclient.connection import _parse_savepoint_name
+
+        assert _parse_savepoint_name("αβγ") is None  # αβγ
+
+    def test_unicode_in_middle_truncates_at_ascii_only(self) -> None:
+        from dqliteclient.connection import _parse_savepoint_name
+
+        # ASCII prefix, unicode suffix: parser stops at the boundary
+        # rather than swallowing the unicode tail through ``isalnum``.
+        assert _parse_savepoint_name("fooé") == "foo"
+
+    def test_ascii_uppercase_lowercased(self) -> None:
+        from dqliteclient.connection import _parse_savepoint_name
+
+        assert _parse_savepoint_name("SP") == "sp"
+
+    def test_savepoint_with_leading_digit_does_not_mutate_tracker(
+        self, conn: DqliteConnection
+    ) -> None:
+        # End-to-end: the leading-digit name is rejected by the parser,
+        # so the tracker stays untouched even if the server were to
+        # accept it (it does not — SQLite parse-rejects).
+        conn._update_tx_flags_from_sql("SAVEPOINT 1foo")
+        assert conn._savepoint_stack == []
+        assert conn._in_transaction is False
+        assert conn._savepoint_implicit_begin is False
