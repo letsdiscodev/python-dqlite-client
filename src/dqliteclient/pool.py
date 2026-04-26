@@ -970,6 +970,22 @@ class ConnectionPool:
         exits). To ensure all connections are closed, cancel or await
         in-flight tasks before calling close().
 
+        **No drain-completion guarantee for in-flight checked-out
+        connections.** ``close()`` returns when the *idle* queue has
+        been drained, NOT when checked-out connections have been
+        returned. After ``close()`` returns, the reservation count
+        (``self._size``) may still be non-zero — the still-checked-out
+        connections close on return via ``_release``'s `_closed` branch,
+        but the caller of ``close()`` does not block on that. A second
+        ``close()`` call after the first completes also returns
+        immediately via ``_close_done`` regardless of whether
+        in-flight returns have completed. Operators expecting
+        ``engine.dispose()``-style "all connections closed" semantics
+        must cancel or await in-flight tasks first; there is no
+        ``wait_drained()`` API by design (matches go-dqlite's pool
+        which uses Go's ``database/sql.DB.Close`` close-on-return
+        model).
+
         Idempotent and concurrent-caller-safe: a second caller (or a
         re-entry after completion) waits on the first caller's drain
         via ``_close_done`` rather than racing ``_drain_idle``.

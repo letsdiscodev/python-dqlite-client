@@ -621,6 +621,42 @@ class TestConnectionPool:
         # The connection should have been closed on return (not put back in queue)
         mock_conn.close.assert_called()
 
+    async def test_close_returns_immediately_when_in_flight_held(self) -> None:
+        """Pin: ``close()`` does NOT wait for in-flight checked-out
+        connections to be returned. Documented contract — operators
+        expecting drain-completion semantics must cancel/await
+        in-flight tasks first. Matches go-dqlite's pool, which uses
+        Go's ``database/sql.DB.Close`` close-on-return model."""
+        import asyncio
+
+        pool = ConnectionPool(["localhost:9001"], max_size=2)
+        mock_conn = MagicMock()
+        mock_conn.is_connected = True
+        mock_conn.connect = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        with patch.object(pool._cluster, "connect", return_value=mock_conn):
+            await pool.initialize()
+
+        async def hold_connection() -> None:
+            async with pool.acquire():
+                # Hold for a while; close() must not wait for this.
+                await asyncio.sleep(60)
+
+        holder = asyncio.create_task(hold_connection())
+        await asyncio.sleep(0)  # let holder enter acquire
+
+        # close() returns even though `holder` is still inside acquire().
+        await asyncio.wait_for(pool.close(), timeout=2.0)
+
+        # _size > 0 confirms in-flight has not been drained.
+        assert pool._size > 0, "close() must not block on checked-out conns; documented contract"
+
+        # Cancel the holder so the conn can drain via _release's _closed path.
+        holder.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await holder
+
     async def test_user_exception_preserves_healthy_connection(self) -> None:
         """A user-code exception should not destroy a healthy connection."""
         pool = ConnectionPool(["localhost:9001"], max_size=2)
