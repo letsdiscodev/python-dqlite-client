@@ -54,6 +54,21 @@ _MAX_ERROR_MESSAGE_SNIPPET = 200
 _LEADER_PROBE_DRAIN_TIMEOUT_SECONDS = 0.1
 
 
+def _addr_equiv(a: str, b: str) -> bool:
+    """Compare host:port strings tolerating IPv6 bracketing differences.
+
+    Falls back to literal equality for unparseable inputs so a
+    malformed string never crashes the comparison. Hostname-vs-IP
+    mismatch (``localhost:9001`` vs ``127.0.0.1:9001``) is not
+    canonicalised — DNS resolution belongs elsewhere — but
+    ``[::1]:9001`` and ``::1:9001`` resolve to the same tuple.
+    """
+    try:
+        return _parse_address(a) == _parse_address(b)
+    except ValueError:
+        return a == b
+
+
 def _truncate_error(message: str) -> str:
     if len(message) <= _MAX_ERROR_MESSAGE_SNIPPET:
         return message
@@ -252,7 +267,11 @@ class ClusterClient:
                     # node.address itself need authorizing — those are
                     # real redirects. If the server returned its own
                     # address, it's the leader and already in the store.
-                    if leader_address != node.address:
+                    # Compare via the canonical (host, port) tuple so an
+                    # IPv6 bracketing difference (server reports
+                    # ``[::1]:9001`` while the node store has
+                    # ``::1:9001``) does not look like a redirect.
+                    if not _addr_equiv(leader_address, node.address):
                         self._check_redirect(leader_address)
                     return leader_address
                 # ``_query_leader`` returns ``None`` for the legitimate
