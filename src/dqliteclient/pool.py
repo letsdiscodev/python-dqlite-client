@@ -784,7 +784,27 @@ class ConnectionPool:
         session. A DEBUG log entry is emitted to help operators
         diagnose churning pools.
         """
-        if conn._in_transaction:
+        # Issue ROLLBACK if EITHER the explicit-tx flag is set OR the
+        # savepoint stack / autobegin flag is non-empty. The second
+        # condition catches cases where the server-side tx is open but
+        # the explicit-tx flag did not transition — e.g. quoted-name
+        # SAVEPOINTs (deliberately untracked at the parser per the
+        # case-sensitivity trade-off) or any future parser shape that
+        # observes a SAVEPOINT keyword the tracker does not push. The
+        # umbrella defensive ROLLBACK closes the leak surface even
+        # when the local state lies about tx ownership.
+        # Strict isinstance / type checks defend against unit-test
+        # fakes whose attributes are MagicMock instances (truthy by
+        # default) — without the type guards, every fake-conn release
+        # would unconditionally enter the ROLLBACK branch.
+        sp_stack = getattr(conn, "_savepoint_stack", None)
+        implicit_begin = getattr(conn, "_savepoint_implicit_begin", False)
+        needs_rollback = (
+            bool(conn._in_transaction)
+            or (isinstance(sp_stack, list) and bool(sp_stack))
+            or (isinstance(implicit_begin, bool) and implicit_begin)
+        )
+        if needs_rollback:
             # Cheap pre-write liveness check: if the transport is already
             # closing or the reader has seen EOF, ROLLBACK would stall on
             # _read_data until self._timeout. Bail fast instead.
@@ -816,6 +836,10 @@ class ConnectionPool:
                     )
                     conn._in_transaction = False
                     conn._tx_owner = None
+                    if hasattr(conn, "_savepoint_stack"):
+                        conn._savepoint_stack.clear()
+                    if hasattr(conn, "_savepoint_implicit_begin"):
+                        conn._savepoint_implicit_begin = False
                     return True
                 logger.debug(
                     "pool: dropping connection %s after ROLLBACK failure: %r",
@@ -825,6 +849,10 @@ class ConnectionPool:
                 return False
             conn._in_transaction = False
             conn._tx_owner = None
+            if hasattr(conn, "_savepoint_stack"):
+                conn._savepoint_stack.clear()
+            if hasattr(conn, "_savepoint_implicit_begin"):
+                conn._savepoint_implicit_begin = False
         return True
 
     async def _release(self, conn: DqliteConnection) -> None:

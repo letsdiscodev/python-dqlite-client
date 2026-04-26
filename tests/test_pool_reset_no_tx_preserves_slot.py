@@ -128,3 +128,103 @@ class TestPoolResetNoTxPreservesSlot:
                 result = await pool._reset_connection(conn)
 
         assert result is False
+
+
+class TestResetConnectionUmbrellaPredicate:
+    """Pin the umbrella defensive ROLLBACK predicate: the pool must
+    issue ROLLBACK if ANY of _in_transaction, _savepoint_stack, or
+    _savepoint_implicit_begin signals server-side state that would
+    poison the next acquirer. The strict _in_transaction-only check
+    missed cases like quoted-name SAVEPOINTs that the parser
+    deliberately does not push (case-sensitivity trade-off)."""
+
+    async def test_rollback_issued_when_only_savepoint_stack_set(self) -> None:
+        pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
+        conn = DqliteConnection("localhost:9001")
+        with (
+            patch.object(DqliteConnection, "is_connected", new=True),
+            patch("dqliteclient.pool._socket_looks_dead", return_value=False),
+        ):
+            conn._in_transaction = False
+            conn._savepoint_stack = ["sp"]
+            executed: list[str] = []
+
+            async def fake_execute(sql: str) -> object:
+                executed.append(sql)
+                return None
+
+            with patch.object(conn, "execute", new=fake_execute):
+                result = await pool._reset_connection(conn)
+
+        assert result is True
+        assert executed == ["ROLLBACK"]
+        assert conn._savepoint_stack == []
+
+    async def test_rollback_issued_when_only_implicit_begin_set(self) -> None:
+        pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
+        conn = DqliteConnection("localhost:9001")
+        with (
+            patch.object(DqliteConnection, "is_connected", new=True),
+            patch("dqliteclient.pool._socket_looks_dead", return_value=False),
+        ):
+            conn._in_transaction = False
+            conn._savepoint_implicit_begin = True
+            executed: list[str] = []
+
+            async def fake_execute(sql: str) -> object:
+                executed.append(sql)
+                return None
+
+            with patch.object(conn, "execute", new=fake_execute):
+                result = await pool._reset_connection(conn)
+
+        assert result is True
+        assert executed == ["ROLLBACK"]
+        assert conn._savepoint_implicit_begin is False
+
+    async def test_no_rollback_when_all_state_empty(self) -> None:
+        pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
+        conn = DqliteConnection("localhost:9001")
+        with (
+            patch.object(DqliteConnection, "is_connected", new=True),
+            patch("dqliteclient.pool._socket_looks_dead", return_value=False),
+        ):
+            conn._in_transaction = False
+            conn._savepoint_stack = []
+            conn._savepoint_implicit_begin = False
+            executed: list[str] = []
+
+            async def fake_execute(sql: str) -> object:
+                executed.append(sql)
+                return None
+
+            with patch.object(conn, "execute", new=fake_execute):
+                result = await pool._reset_connection(conn)
+
+        assert result is True
+        assert executed == []  # No ROLLBACK issued — clean state.
+
+    async def test_benign_no_tx_branch_clears_savepoint_state(self) -> None:
+        """The 'server already auto-rolled back' branch must clear
+        the savepoint stack and autobegin flag along with the existing
+        _in_transaction / _tx_owner clears."""
+        pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
+        conn = DqliteConnection("localhost:9001")
+        with (
+            patch.object(DqliteConnection, "is_connected", new=True),
+            patch("dqliteclient.pool._socket_looks_dead", return_value=False),
+        ):
+            conn._in_transaction = True
+            conn._savepoint_stack = ["sp"]
+            conn._savepoint_implicit_begin = True
+
+            async def fake_execute(sql: str) -> object:
+                raise OperationalError(1, "no transaction is active")
+
+            with patch.object(conn, "execute", new=fake_execute):
+                result = await pool._reset_connection(conn)
+
+        assert result is True
+        assert conn._in_transaction is False
+        assert conn._savepoint_stack == []
+        assert conn._savepoint_implicit_begin is False
