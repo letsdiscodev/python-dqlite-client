@@ -1099,7 +1099,7 @@ class DqliteConnection:
         self._validate_params(params)
         try:
             result = await self._run_protocol(lambda p, db: p.exec_sql(db, sql, params))
-        except OperationalError:
+        except OperationalError as e:
             # Multi-statement EXEC partial failure: dqlite's gateway
             # iterates the statement list, so an early statement (e.g.,
             # ``BEGIN; SAVEPOINT a; INSERT ...``) may have committed
@@ -1120,9 +1120,58 @@ class DqliteConnection:
                 pieces = _split_top_level_statements(sql)
                 if len(pieces) > 1 and any(_starts_with_tx_verb(p) for p in pieces):
                     self._has_untracked_savepoint = True
+            # Deferred-foreign-key auto-rollback: per SQLite spec
+            # (https://www.sqlite.org/lang_savepoint.html), an attempt
+            # to RELEASE the OUTERMOST savepoint after a deferred-FK
+            # error is treated as COMMIT — the engine rolls back the
+            # entire transaction. Same applies to plain COMMIT under
+            # PRAGMA defer_foreign_keys=ON. SQLITE_CONSTRAINT (primary
+            # 19) is NOT in ``_TX_AUTO_ROLLBACK_PRIMARY_CODES``
+            # (a CHECK violation on a plain INSERT does NOT auto-
+            # rollback). Verb-condition the clear: only fires when the
+            # SQL is plain COMMIT/END or a RELEASE of the OUTERMOST
+            # frame on the savepoint stack.
+            if (
+                _primary_sqlite_code(e.code) == 19  # SQLITE_CONSTRAINT
+                and self._sql_is_outermost_release_or_commit(sql)
+            ):
+                self._in_transaction = False
+                self._tx_owner = None
+                self._savepoint_stack.clear()
+                self._savepoint_implicit_begin = False
+                self._has_untracked_savepoint = False
             raise
         self._update_tx_flags_from_sql(sql)
         return result
+
+    def _sql_is_outermost_release_or_commit(self, sql: str) -> bool:
+        """True if ``sql`` is a single statement that is either:
+
+        * ``COMMIT [TRANSACTION]`` / ``END [TRANSACTION]``, or
+        * ``RELEASE [SAVEPOINT] <name>`` where ``<name>`` matches the
+          OUTERMOST frame on the savepoint stack.
+
+        Used to detect the deferred-foreign-key auto-rollback case
+        (https://www.sqlite.org/lang_savepoint.html). The deferred-FK
+        check fires at COMMIT-time or at RELEASE-of-outermost-SAVEPOINT;
+        on failure SQLite tears down the entire transaction. The
+        Python tracker must mirror that.
+        """
+        head = _strip_leading_comments(sql)
+        if not head:
+            return False
+        upper = head.upper()
+        # Plain COMMIT or END (with optional TRANSACTION keyword).
+        if upper.startswith("COMMIT") and _is_keyword_boundary(upper, len("COMMIT")):
+            return True
+        if upper.startswith("END") and _is_keyword_boundary(upper, len("END")):
+            return True
+        # RELEASE [SAVEPOINT] <outermost>.
+        if upper.startswith("RELEASE") and _is_keyword_boundary(upper, len("RELEASE")):
+            name = _parse_release_name(head[len("RELEASE") :])
+            if name is not None and self._savepoint_stack and name == self._savepoint_stack[0]:
+                return True
+        return False
 
     def _update_tx_flags_from_sql(self, sql: str) -> None:
         """Update _in_transaction / _tx_owner / savepoint stack after
