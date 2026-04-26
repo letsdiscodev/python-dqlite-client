@@ -764,15 +764,34 @@ class ConnectionPool:
                             "pool.acquire cleanup: _drain_idle failed",
                             exc_info=True,
                         )
+                    # Shield ``conn.close()`` so an outer cancel landing
+                    # mid-cleanup does not skip it — the user's
+                    # checked-out connection's transport would otherwise
+                    # stay open until GC. The ``_close_timeout`` bound
+                    # on ``wait_closed`` keeps the shielded await
+                    # bounded; ``contextlib.suppress(CancelledError)``
+                    # absorbs any nested cancel delivered after the
+                    # shield released so the original cancel still
+                    # propagates via the surrounding ``raise``.
+                    # ``_drain_idle()`` above stays bare: it protects
+                    # siblings, not the leaked conn, and shielding it
+                    # could turn outer cancel into an unbounded wait.
                     try:
-                        await conn.close()
-                    except (OSError, DqliteConnectionError):
-                        logger.debug(
-                            "pool.acquire cleanup: conn.close(%r) failed",
-                            getattr(conn, "_address", "?"),
-                            exc_info=True,
-                        )
-                    conn._pool_released = True
+                        try:
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await asyncio.shield(conn.close())
+                        except (OSError, DqliteConnectionError):
+                            logger.debug(
+                                "pool.acquire cleanup: conn.close(%r) failed",
+                                getattr(conn, "_address", "?"),
+                                exc_info=True,
+                            )
+                    finally:
+                        # Always set ``_pool_released`` so a subsequent
+                        # close() short-circuits and the slot accounting
+                        # stays consistent — landed even if the shielded
+                        # close above raised an unrecognised exception.
+                        conn._pool_released = True
             finally:
                 if not returned_to_queue:
                     # ``asyncio.shield`` already prevents an outer cancel
@@ -941,6 +960,21 @@ class ConnectionPool:
                 # takes the early-return path instead of running a
                 # redundant close against a protocol that's already
                 # None.
+                #
+                # Drain ``_pending_drain`` BEFORE setting
+                # ``_pool_released=True``: a cancel mid-ROLLBACK has
+                # ``_invalidate`` schedule a bounded ``wait_closed``
+                # drain task on the connection. ``close()`` would
+                # normally await that task at ``connection.py``'s
+                # pending-drain block, but the early-return on
+                # ``_pool_released=True`` we set below short-circuits
+                # past it. Snapshot and shield-await the drain here so
+                # the reader-task doesn't outlive the connection (no
+                # "Task was destroyed but it is pending" on shutdown).
+                pending = getattr(conn, "_pending_drain", None)
+                if pending is not None and not pending.done():
+                    with contextlib.suppress(BaseException):
+                        await asyncio.shield(pending)
                 conn._pool_released = True
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.shield(self._release_reservation())
