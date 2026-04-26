@@ -1293,12 +1293,22 @@ class DqliteConnection:
             name = _parse_savepoint_name(head[len("SAVEPOINT") :])
             if name is not None:
                 self._savepoint_stack.append(name)
-                if not self._in_transaction:
+                if not self._in_transaction and not self._has_untracked_savepoint:
                     # SQLite implicit-begin: the savepoint is the
                     # outer frame of the new transaction. Mirror
                     # stdlib sqlite3's ``in_transaction = True``
                     # reporting. Leave ``_tx_owner = None`` for the
                     # same reason as bare BEGIN.
+                    #
+                    # Skip the implicit-begin transition when an outer
+                    # untracked SAVEPOINT is already in flight: the
+                    # server's autobegin happened on that outer frame,
+                    # not on this inner tracked one. Claiming ownership
+                    # here would let a subsequent RELEASE of this
+                    # tracked frame flip ``_in_transaction=False``
+                    # while the server still holds the autobegun tx,
+                    # producing a within-checkout in-task lie about
+                    # ``in_transaction``.
                     self._in_transaction = True
                     self._savepoint_implicit_begin = True
             else:

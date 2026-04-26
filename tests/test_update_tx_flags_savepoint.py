@@ -148,6 +148,39 @@ class TestSavepointAutobeginTracking:
         assert conn._savepoint_stack == []
         assert conn._in_transaction is False
 
+    def test_tracked_savepoint_after_untracked_does_not_claim_implicit_begin(
+        self, conn: DqliteConnection
+    ) -> None:
+        # The server's autobegin happened on the outer untracked
+        # ``"Foo"`` frame, not on the inner tracked ``inner``. The
+        # tracker must NOT promote ``inner`` to the autobegin frame:
+        # doing so would let a later RELEASE inner flip
+        # _in_transaction=False even though the server still holds
+        # the autobegun tx (via the outer untracked frame).
+        conn._update_tx_flags_from_sql('SAVEPOINT "Foo"')
+        assert conn._has_untracked_savepoint is True
+        conn._update_tx_flags_from_sql("SAVEPOINT inner")
+        assert conn._savepoint_stack == ["inner"]
+        assert conn._savepoint_implicit_begin is False
+        # Untracked-savepoint flag survives the inner push.
+        assert conn._has_untracked_savepoint is True
+
+    def test_release_inner_tracked_after_untracked_outer_keeps_untracked_flag(
+        self, conn: DqliteConnection
+    ) -> None:
+        # Sequence: untracked outer, tracked inner, RELEASE inner.
+        # Pool reset must still fire (untracked-flag still True), and
+        # _in_transaction should not be flipped to False purely on
+        # the basis of an empty tracked stack — the outer autobegun
+        # tx is still server-side alive.
+        conn._update_tx_flags_from_sql('SAVEPOINT "Foo"')
+        conn._update_tx_flags_from_sql("SAVEPOINT inner")
+        conn._update_tx_flags_from_sql("RELEASE inner")
+        assert conn._savepoint_stack == []
+        # _savepoint_implicit_begin stays False (was never claimed).
+        assert conn._savepoint_implicit_begin is False
+        assert conn._has_untracked_savepoint is True
+
     def test_savepoint_quoted_then_release_quoted_same_text_no_op(
         self, conn: DqliteConnection
     ) -> None:
