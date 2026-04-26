@@ -190,6 +190,19 @@ class ClusterClient:
                 # triggered a fresh probe before this callback ran.
                 if self._find_leader_tasks.get(key) is t:
                     del self._find_leader_tasks[key]
+                # Observe any exception so asyncio's GC does not log
+                # "Task exception was never retrieved" when every
+                # external ``await asyncio.shield(task)`` caller was
+                # cancelled out before the inner task resolved (e.g.
+                # an outer ``asyncio.timeout`` fired during a leader
+                # discovery cascade). ``task.exception()`` is the
+                # canonical "I've observed this" signal — non-raising
+                # on a done-not-cancelled task. ``BaseException``
+                # suppression keeps exceptions in done-callbacks from
+                # turning into "Exception in callback" log noise.
+                if not t.cancelled():
+                    with contextlib.suppress(BaseException):
+                        t.exception()
 
             task.add_done_callback(_clear_slot)
         # Shield so a caller's outer cancel does not kill the shared
