@@ -26,6 +26,7 @@ from dqliteclient.protocol import (
 from dqlitewire import DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES
 from dqlitewire import DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS
 from dqlitewire import LEADER_ERROR_CODES as _LEADER_ERROR_CODES
+from dqlitewire import SQLITE_BUSY as _SQLITE_BUSY
 from dqlitewire import TX_AUTO_ROLLBACK_PRIMARY_CODES as _TX_AUTO_ROLLBACK_PRIMARY_CODES
 from dqlitewire import primary_sqlite_code as _primary_sqlite_code
 from dqlitewire.exceptions import EncodeError as _WireEncodeError
@@ -1119,7 +1120,7 @@ class DqliteConnection:
                 self._savepoint_stack.clear()
                 self._savepoint_implicit_begin = False
                 self._has_untracked_savepoint = False
-            elif _primary_sqlite_code(e.code) == 5 and any(
+            elif _primary_sqlite_code(e.code) == _SQLITE_BUSY and any(
                 frag in (getattr(e, "raw_message", None) or e.message or "").lower()
                 for frag in _RAFT_BUSY_MESSAGE_FRAGMENTS
             ):
