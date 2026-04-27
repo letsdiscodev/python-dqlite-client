@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import secrets
+import sys
 from collections.abc import Sequence
 from typing import Any
 
@@ -107,7 +108,23 @@ class DqliteProtocol:
     ) -> None:
         self._reader = reader
         self._writer = writer
-        self._decoder = MessageDecoder(is_request=False)
+        # Forward the user's continuation caps so the codec's per-stream
+        # counters honour the configured value. Without this, a user
+        # explicitly bumping max_total_rows above the codec default
+        # silently sees DecodeError at the codec cap; conversely, ``None``
+        # ("disabled") at the protocol layer must NOT be forwarded as
+        # ``None`` (the codec rejects ``None`` / ``< 1``). Translate
+        # ``None`` to ``sys.maxsize`` so the codec never trips and the
+        # client-layer (this class) remains the sole gatekeeper.
+        decoder_max_total = max_total_rows if max_total_rows is not None else sys.maxsize
+        decoder_max_frames = (
+            max_continuation_frames if max_continuation_frames is not None else sys.maxsize
+        )
+        self._decoder = MessageDecoder(
+            is_request=False,
+            max_total_rows=decoder_max_total,
+            max_continuation_frames=decoder_max_frames,
+        )
         self._client_id = 0
         self._heartbeat_timeout = 0
         self._timeout = timeout
