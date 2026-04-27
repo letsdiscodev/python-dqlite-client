@@ -1777,8 +1777,16 @@ class DqliteConnection:
                             id(self),
                             exc_info=True,
                         )
-                        self._invalidate()
-                except Exception:
+                        # Pass the rollback failure as the cause so the
+                        # next "Not connected" diagnostic chains to it
+                        # via __cause__. Mirrors the commit-attempted
+                        # arm above (line ~1545) which already passes
+                        # ``exc``. The body exception still propagates
+                        # via ``raise`` below — this only affects the
+                        # diagnostic visible on a SUBSEQUENT call to
+                        # the invalidated connection.
+                        self._invalidate(roll_exc)
+                except Exception as roll_exc:
                     # Rollback failed for a non-OperationalError reason.
                     # Invalidate so the pool discards on return, then
                     # re-raise the ORIGINAL body exception (below)
@@ -1791,7 +1799,7 @@ class DqliteConnection:
                         id(self),
                         exc_info=True,
                     )
-                    self._invalidate()
+                    self._invalidate(roll_exc)
             raise
         finally:
             # Defence-in-depth: the success path's COMMIT and the
