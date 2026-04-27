@@ -74,6 +74,19 @@ def _socket_looks_dead(conn: DqliteConnection) -> bool:
     protocol = conn._protocol
     if protocol is None:
         return True
+    # Poisoned-decoder short-circuit: a wire desync means the next
+    # ROLLBACK round-trip would just be one more wasted RTT before
+    # _read_response raises ProtocolError → invalidate. Drop the
+    # connection now via the public is_wire_coherent accessor so the
+    # pool does not chase a doomed reset. Wrap the access in the same
+    # narrow exception filter as the transport-checks below to stay
+    # safe against test mocks with a partial protocol shape.
+    try:
+        coherent = protocol.is_wire_coherent
+    except (AttributeError, RuntimeError):
+        coherent = True
+    if isinstance(coherent, bool) and not coherent:
+        return True
     writer = getattr(protocol, "_writer", None)
     reader = getattr(protocol, "_reader", None)
     transport = getattr(writer, "transport", None) if writer is not None else None

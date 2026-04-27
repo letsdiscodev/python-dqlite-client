@@ -144,6 +144,17 @@ class DqliteProtocol:
         # a latency-SLO boundary from server-induced amplification.
         self._trust_server_heartbeat = trust_server_heartbeat
 
+    @property
+    def is_wire_coherent(self) -> bool:
+        """True if the decoder buffer has not been poisoned.
+
+        A poisoned buffer (mid-stream desync, malformed frame, etc.)
+        cannot recover without ``reset()`` + reconnect. Pool reset
+        consults this before sending ROLLBACK so a wasted round-trip
+        on an already-doomed connection is short-circuited.
+        """
+        return not self._decoder.is_poisoned
+
     async def handshake(self, client_id: int | None = None) -> int:
         """Perform protocol handshake.
 
