@@ -618,6 +618,28 @@ class DqliteConnection:
         if self._protocol is not None:
             return
 
+        # Claim _in_use synchronously so a concurrent connect() / close()
+        # on the same instance hits _check_in_use() and raises
+        # InterfaceError("another operation in progress") instead of
+        # racing through the pending-drain await below. Pool callers
+        # are already serialized via _lock; direct DqliteConnection
+        # users (calling await conn.connect() directly) need this guard
+        # to avoid concurrent-connect races that orphan one of two
+        # half-built protocols. See companion close() symmetry.
+        self._in_use = True
+        try:
+            await self._connect_impl()
+        except BaseException:
+            # On failure, clear _in_use AND _bound_loop if no protocol
+            # was published. Mirrors the original failure-path discipline.
+            self._in_use = False
+            if self._protocol is None:
+                self._bound_loop = None
+            raise
+        else:
+            self._in_use = False
+
+    async def _connect_impl(self) -> None:
         # If a prior ``_invalidate`` scheduled a bounded drain task,
         # retire it here before the slot gets reused. Leaving the
         # previous task in place would let a second invalidate at
@@ -660,88 +682,76 @@ class DqliteConnection:
             self._pending_drain = None
 
         self._bound_loop = asyncio.get_running_loop()
-        self._in_use = True
+        # ``_in_use`` was claimed synchronously in ``connect()`` above
+        # (before any await checkpoint) so concurrent connect/close
+        # calls on the same instance are rejected by ``_check_in_use``.
         try:
-            try:
-                reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(self._host, self._port),
-                    timeout=self._timeout,
-                )
-            except TimeoutError as e:
-                raise DqliteConnectionError(f"Connection to {self._address} timed out") from e
-            except OSError as e:
-                raise DqliteConnectionError(f"Failed to connect to {self._address}: {e}") from e
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self._host, self._port),
+                timeout=self._timeout,
+            )
+        except TimeoutError as e:
+            raise DqliteConnectionError(f"Connection to {self._address} timed out") from e
+        except OSError as e:
+            raise DqliteConnectionError(f"Failed to connect to {self._address}: {e}") from e
 
-            try:
-                self._protocol = DqliteProtocol(
-                    reader,
-                    writer,
-                    timeout=self._timeout,
-                    max_total_rows=self._max_total_rows,
-                    max_continuation_frames=self._max_continuation_frames,
-                    trust_server_heartbeat=self._trust_server_heartbeat,
-                    address=self._address,
-                )
-            except BaseException:
-                # Protocol construction is currently limited to argument
-                # validation, which ``DqliteConnection.__init__`` already
-                # enforces — but if it ever raises (now or through future
-                # refactors), ``_abort_protocol`` is a no-op until
-                # ``self._protocol`` is assigned, so reader/writer would
-                # be leaked. Close the transport defensively.
-                writer.close()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(writer.wait_closed(), timeout=self._close_timeout)
-                raise
+        try:
+            self._protocol = DqliteProtocol(
+                reader,
+                writer,
+                timeout=self._timeout,
+                max_total_rows=self._max_total_rows,
+                max_continuation_frames=self._max_continuation_frames,
+                trust_server_heartbeat=self._trust_server_heartbeat,
+                address=self._address,
+            )
+        except BaseException:
+            # Protocol construction is currently limited to argument
+            # validation, which ``DqliteConnection.__init__`` already
+            # enforces — but if it ever raises (now or through future
+            # refactors), ``_abort_protocol`` is a no-op until
+            # ``self._protocol`` is assigned, so reader/writer would
+            # be leaked. Close the transport defensively.
+            writer.close()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(writer.wait_closed(), timeout=self._close_timeout)
+            raise
 
-            try:
-                await self._protocol.handshake()
-                logger.debug(
-                    "connect: handshake ok address=%s client_id=%d",
-                    self._address,
-                    self._protocol._client_id,
-                )
-                self._db_id = await self._protocol.open_database(self._database)
-                logger.debug(
-                    "connect: db opened address=%s db_id=%d database=%r",
-                    self._address,
-                    self._db_id,
-                    self._database,
-                )
-                # Clear any stale cause recorded by a prior ``_invalidate``.
-                # The field is only meaningful while ``_protocol is None``;
-                # a successful reconnect supersedes it. Without this,
-                # a later silent invalidation (``_invalidate()`` with no
-                # cause) would produce "Not connected" errors whose
-                # ``__cause__`` chain points back at an unrelated historical
-                # failure — misleading operators reading logs.
-                self._invalidation_cause = None
-            except OperationalError as e:
-                await self._abort_protocol()
-                if e.code in _LEADER_ERROR_CODES:
-                    # Leader-change errors during OPEN are transport-level
-                    # problems — the caller needs to reconnect elsewhere, not
-                    # treat this as a SQL error.
-                    raise DqliteConnectionError(
-                        f"Node {self._address} is no longer leader: {e.message}"
-                    ) from e
-                raise
-            except BaseException:
-                await self._abort_protocol()
-                raise
-        finally:
-            self._in_use = False
-            # On a never-connected failure path — ``connect()`` raised
-            # before ``_protocol`` was published — the loop binding
-            # recorded above at entry is historical noise. A retry
-            # from a different event loop (legitimate in unit-test
-            # teardown or ``asyncio.run()`` re-entry) would otherwise
-            # fail ``_check_in_use`` with "bound to a different event
-            # loop" even though no successful connection ever existed.
-            # Drop the bind on the failure path so the instance stays
-            # usable.
-            if self._protocol is None:
-                self._bound_loop = None
+        try:
+            await self._protocol.handshake()
+            logger.debug(
+                "connect: handshake ok address=%s client_id=%d",
+                self._address,
+                self._protocol._client_id,
+            )
+            self._db_id = await self._protocol.open_database(self._database)
+            logger.debug(
+                "connect: db opened address=%s db_id=%d database=%r",
+                self._address,
+                self._db_id,
+                self._database,
+            )
+            # Clear any stale cause recorded by a prior ``_invalidate``.
+            # The field is only meaningful while ``_protocol is None``;
+            # a successful reconnect supersedes it. Without this,
+            # a later silent invalidation (``_invalidate()`` with no
+            # cause) would produce "Not connected" errors whose
+            # ``__cause__`` chain points back at an unrelated historical
+            # failure — misleading operators reading logs.
+            self._invalidation_cause = None
+        except OperationalError as e:
+            await self._abort_protocol()
+            if e.code in _LEADER_ERROR_CODES:
+                # Leader-change errors during OPEN are transport-level
+                # problems — the caller needs to reconnect elsewhere, not
+                # treat this as a SQL error.
+                raise DqliteConnectionError(
+                    f"Node {self._address} is no longer leader: {e.message}"
+                ) from e
+            raise
+        except BaseException:
+            await self._abort_protocol()
+            raise
 
     async def close(self) -> None:
         """Close the connection.
@@ -772,6 +782,16 @@ class DqliteConnection:
         # success, so at the race moment _protocol is None and
         # close() would silently return.
         self._check_in_use()
+        # Claim ``_in_use`` synchronously (before any await) so a
+        # concurrent ``connect()`` / ``close()`` on the same instance
+        # is rejected by ``_check_in_use``. Symmetric with ``connect()``.
+        self._in_use = True
+        try:
+            await self._close_impl()
+        finally:
+            self._in_use = False
+
+    async def _close_impl(self) -> None:
         # ``_invalidate`` may have scheduled a bounded drain task on
         # the writer it just closed. Await it so the reader task exits
         # cleanly; otherwise Python logs "Task was destroyed but it is
