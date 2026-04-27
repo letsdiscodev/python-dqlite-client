@@ -458,6 +458,47 @@ class TestClusterClient:
         counts = Counter(firsts)
         assert len(counts) >= 2, f"find_leader always probed the same node first: {counts}"
 
+    async def test_find_leader_calls_random_shuffle_on_candidate_list(self) -> None:
+        """Deterministic pin complementing the probabilistic test above:
+        ``find_leader`` invokes ``random.shuffle`` on its candidate list.
+
+        The probabilistic test catches "shuffle disabled entirely"
+        (``len(counts) == 1``) but not "shuffle replaced by some other
+        deterministic permutation that still produces ≥ 2 distinct
+        firsts" — a regression vector that would silently slip past.
+        Patching ``random.shuffle`` directly lets us assert the call
+        happens, and ``wraps=`` keeps the real shuffle behavior so
+        ``find_leader`` still terminates cleanly.
+        """
+        import random as _random
+
+        store = MemoryNodeStore(["n1:9001", "n2:9001", "n3:9001", "n4:9001"])
+        client = ClusterClient(store, timeout=0.2)
+
+        async def fail_query(address: str, **_kwargs: object) -> str | None:
+            raise DqliteConnectionError("not leader")
+
+        with (
+            patch(
+                "dqliteclient.cluster.random.shuffle",
+                wraps=_random.shuffle,
+            ) as mock_shuffle,
+            patch.object(client, "_query_leader", side_effect=fail_query),
+            contextlib.suppress(ClusterError),
+        ):
+            await client.find_leader()
+
+        assert mock_shuffle.call_count >= 1, (
+            "find_leader must invoke random.shuffle on its candidate list — "
+            "without the shuffle, parallel callers stampede the first-listed node"
+        )
+        # The first positional arg is the list being shuffled in place.
+        shuffled_arg = mock_shuffle.call_args[0][0]
+        assert isinstance(shuffled_arg, list), (
+            "shuffle must be called on a list (the per-role candidate "
+            f"slice), got {type(shuffled_arg).__name__}"
+        )
+
     async def test_find_leader_probes_voters_before_non_voters(self) -> None:
         """Non-voter nodes (standby/spare) cannot become leader; probing them
         first wastes an RTT. find_leader must prefer voters.
