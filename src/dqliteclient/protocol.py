@@ -379,6 +379,17 @@ class DqliteProtocol:
                     f"Expected EmptyResponse after Interrupt, got "
                     f"{type(response).__name__}{self._addr_suffix()}"
                 )
+            # No-progress check: a server emitting empty rows frames with
+            # has_more=True before EmptyResponse would consume up to
+            # ``max_continuation_frames`` iterations of decode work,
+            # mirroring the slow-frame DoS shape the query path
+            # already defends against. Mirror the discipline.
+            if not response.rows and response.has_more:
+                raise ProtocolError(
+                    f"ROWS continuation made no progress during INTERRUPT "
+                    f"drain: frame had 0 rows and has_more=True"
+                    f"{self._addr_suffix()}"
+                )
             frames += 1
             if self._max_continuation_frames is not None and frames > self._max_continuation_frames:
                 raise ProtocolError(
