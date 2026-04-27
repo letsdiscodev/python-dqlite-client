@@ -406,8 +406,32 @@ class ConnectionPool:
         Every ``_size -= 1`` call in the pool must go through this
         helper so the counter stays consistent against concurrent
         capacity checks in ``acquire``.
+
+        Defensive underflow guard: every reservation slot corresponds
+        to a prior ``self._size += 1`` and the only decrement path
+        is this helper, so ``_size <= 0`` here is unreachable under
+        correct accounting. The guard is intentionally cheap — a
+        future refactor that double-decrements (e.g., a missed
+        condition lands two ``_release_reservation()`` calls per
+        slot under the cancel-shielding paths) would otherwise
+        silently produce a negative ``_size`` that passes every
+        ``self._size < self._max_size`` capacity check and expands
+        the pool well beyond its bound. Log at ERROR (operators
+        should see this immediately) and refuse the decrement to
+        keep accounting non-negative; skip the state-change signal
+        because the refusal isn't a transition waiters need to
+        react to.
         """
         async with self._lock:
+            if self._size <= 0:
+                logger.error(
+                    "pool: _release_reservation called with _size=%d; "
+                    "ignoring to keep accounting non-negative. This "
+                    "indicates a double-release bug — check recent "
+                    "changes to the cancel/cleanup paths.",
+                    self._size,
+                )
+                return
             self._size -= 1
         self._signal_state_change()
 

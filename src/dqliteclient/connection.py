@@ -654,14 +654,20 @@ class DqliteConnection:
                 # that is the cancel WE delivered and must be consumed
                 # here so connect() can proceed. But an outer
                 # ``task.cancel()`` may have also landed on the current
-                # task — distinguish via ``Task.uncancel()``: if the
-                # task has zero cancels pending after we consume the
-                # one from awaiting ``pending``, the cancel was ours.
-                # Otherwise re-raise so the outer cancel reaches the
-                # next checkpoint cleanly. (Without this, ``connect()``
-                # would silently consume an outer ``task.cancel()`` and
-                # proceed to open a TCP connection the parent intended
-                # to abort.)
+                # task — distinguish via ``Task.cancelling()`` (a
+                # READ-only counter of cancels delivered to the current
+                # task). Our own ``pending.cancel()`` cancelled the
+                # *inner* drain task and propagated CancelledError up
+                # through ``await pending``, but does NOT increment the
+                # current task's own cancel count; an outer
+                # ``task.cancel()`` against this coroutine, by contrast,
+                # increments ``cancelling()`` to >= 1. If > 0, the
+                # cancel was outer; let it propagate to the next
+                # checkpoint cleanly. We deliberately do NOT call
+                # ``Task.uncancel()`` here — that decrements the
+                # counter and would consume the outer cancel, leaving
+                # ``connect()`` to silently open a TCP connection the
+                # parent intended to abort.
                 try:
                     await pending
                 except asyncio.CancelledError:

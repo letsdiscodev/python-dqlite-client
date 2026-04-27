@@ -169,6 +169,23 @@ class DqliteProtocol:
         cannot recover without ``reset()`` + reconnect. Pool reset
         consults this before sending ROLLBACK so a wasted round-trip
         on an already-doomed connection is short-circuited.
+
+        INTENTIONALLY consulted only by the pool reset path
+        (``pool.py::_socket_looks_dead``). The dbapi, the SA dialect,
+        and direct ``DqliteConnection`` callers route a wire desync
+        through the exception-based classifier chain instead:
+        wire-layer ``ProtocolError`` is wrapped to
+        ``OperationalError(code=None)`` by
+        ``dqlitedbapi.cursor._call_client``, and the SA dialect's
+        ``is_disconnect`` substring branch matches the
+        ``"wire decode failed"`` prefix the client emits. That
+        layering is deliberate — wire coherence is a hint, not a
+        liveness contract: a ``CancelledError`` mid-flight could
+        poison the buffer between this read and the next operation,
+        so a ``True`` return MUST NOT be treated as "the connection
+        is healthy". Use as a short-circuit optimisation only; do
+        not propagate this check to ``do_ping`` / pre-checkout
+        paths or to other operational classifiers.
         """
         return not self._decoder.is_poisoned
 
