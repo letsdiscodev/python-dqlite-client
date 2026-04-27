@@ -767,15 +767,26 @@ class ConnectionPool:
                     # Connection is healthy — user code raised a non-connection
                     # error. Roll back any open transaction, then return to pool.
                     if await self._reset_connection(conn):
-                        try:
-                            self._pool.put_nowait(conn)
-                        except asyncio.QueueFull:
+                        # Re-check ``_closed`` after the
+                        # ``_reset_connection`` yield: ``pool.close()``
+                        # does not take ``_lock`` and may have completed
+                        # its drain while we awaited the ROLLBACK.
+                        # Putting the conn into a drained queue would
+                        # orphan it.
+                        if self._closed:
                             with contextlib.suppress(Exception):
                                 await conn.close()
                             conn._pool_released = True
                         else:
-                            conn._pool_released = True
-                            returned_to_queue = True
+                            try:
+                                self._pool.put_nowait(conn)
+                            except asyncio.QueueFull:
+                                with contextlib.suppress(Exception):
+                                    await conn.close()
+                                conn._pool_released = True
+                            else:
+                                conn._pool_released = True
+                                returned_to_queue = True
                     else:
                         with contextlib.suppress(Exception):
                             await conn.close()
@@ -991,6 +1002,19 @@ class ConnectionPool:
                 return
 
             if not await self._reset_connection(conn):
+                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
+                    await conn.close()
+                conn._pool_released = True
+                return
+
+            # Re-check ``_closed`` after the ``_reset_connection`` yield:
+            # ``pool.close()`` does not take ``_lock``, so it may have
+            # set ``_closed=True`` and drained the queue while we were
+            # awaiting the ROLLBACK. Putting the conn into a drained
+            # queue would orphan it (acquire() raises Pool is closed,
+            # the conn is unreachable). Mirrors the close-vs-initialize
+            # symmetry fix.
+            if self._closed:
                 with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
                     await conn.close()
                 conn._pool_released = True
