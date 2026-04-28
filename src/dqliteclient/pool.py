@@ -71,7 +71,11 @@ def _socket_looks_dead(conn: DqliteConnection) -> bool:
     reader. Mocked / missing attributes default to False (assume alive) so
     the check never produces a false positive against well-behaved peers.
     """
-    protocol = conn._protocol
+    # ``getattr`` (rather than direct attribute access) so the function
+    # tolerates partial mocks that omit ``_protocol`` entirely — the
+    # acquire-path pre-ping calls this on every dequeued conn, including
+    # ones built by tests that don't set up a protocol.
+    protocol = getattr(conn, "_protocol", None)
     if protocol is None:
         return True
     # Poisoned-decoder short-circuit: a wire desync means the next
@@ -745,12 +749,31 @@ class ConnectionPool:
 
         # If connection is dead, discard and create a fresh one with leader discovery.
         # Also drain other idle connections — they likely point to the same dead server.
-        if not conn.is_connected:
+        #
+        # ``is_connected`` is the protocol-level handshake-complete flag;
+        # ``_socket_looks_dead`` is a non-blocking transport-level peek
+        # (transport.is_closing() / reader.at_eof() / poisoned-decoder
+        # short-circuit). An idle connection that has seen a clean peer
+        # FIN (leader flip with graceful close) passes ``is_connected``
+        # but trips ``_socket_looks_dead`` — without the second check,
+        # the pool hands out a zombie connection and the user's first
+        # query fails. The peek is one syscall; cheap to run on every
+        # acquire.
+        if not conn.is_connected or _socket_looks_dead(conn):
             logger.debug(
                 "pool.acquire: drain-idle triggered by stale conn=%r closing_idle=%d",
                 conn,
                 self._pool.qsize(),
             )
+            # Close the dead-but-transport-alive connection explicitly:
+            # ``_drain_idle`` only walks the idle queue, so a connection
+            # we just dequeued whose transport is half-closed (FIN seen)
+            # would otherwise leak its writer. ``close()`` is safe on a
+            # never-connected conn (``_protocol is None``) — it short-
+            # circuits to a noop. Shielded so an outer cancel does not
+            # leave the writer dangling.
+            with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
+                await asyncio.shield(conn.close())
             # Wrap _drain_idle so a cancel mid-drain releases the dead
             # conn's reservation. Without this guard, a CancelledError
             # delivered to a checkpoint inside _drain_idle propagates

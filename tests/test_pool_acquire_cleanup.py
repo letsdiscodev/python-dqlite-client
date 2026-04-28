@@ -53,6 +53,21 @@ class _BrokenConn:
         self._address = "stub:9001"
         self._close_side_effect = close_side_effect
         self.close_calls = 0
+        # Pretend healthy at acquire entry so the pre-ping does not
+        # short-circuit before the test's user-body has a chance to
+        # flip ``is_connected = False`` and exercise the broken-
+        # cleanup branch. Mirrors the slice of ``DqliteConnection``
+        # that ``_socket_looks_dead`` walks (protocol → writer/reader →
+        # transport.is_closing / reader.at_eof).
+        protocol = MagicMock()
+        protocol.is_wire_coherent = True
+        transport = MagicMock()
+        transport.is_closing.return_value = False
+        protocol._writer = MagicMock()
+        protocol._writer.transport = transport
+        protocol._reader = MagicMock()
+        protocol._reader.at_eof.return_value = False
+        self._protocol = protocol
 
     async def close(self) -> None:
         self.close_calls += 1
