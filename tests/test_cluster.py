@@ -601,7 +601,7 @@ class TestConnectMaxAttempts:
     async def test_max_attempts_zero_rejected(self) -> None:
         store = MemoryNodeStore(["localhost:1"])
         client = ClusterClient(store, timeout=0.1)
-        with pytest.raises(ValueError, match=">= 1"):
+        with pytest.raises(ValueError, match="must be at least 1"):
             await client.connect(max_attempts=0)
 
 

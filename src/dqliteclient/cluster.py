@@ -479,7 +479,10 @@ class ClusterClient:
         """
         attempts_cap = max_attempts if max_attempts is not None else _DEFAULT_CONNECT_MAX_ATTEMPTS
         if attempts_cap < 1:
-            raise ValueError(f"max_attempts must be >= 1, got {attempts_cap}")
+            # Wording mirrors ``ConnectionPool.__init__``'s validator
+            # so operator-facing error parsing matches whichever layer
+            # validated first.
+            raise ValueError(f"max_attempts must be at least 1 if provided, got {attempts_cap}")
 
         attempt_counter = [0]
 
