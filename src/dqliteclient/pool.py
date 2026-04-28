@@ -858,22 +858,37 @@ class ConnectionPool:
                         # Putting the conn into a drained queue would
                         # orphan it.
                         if self._closed:
-                            with contextlib.suppress(Exception):
+                            try:
                                 await conn.close()
+                            except _POOL_CLEANUP_EXCEPTIONS:
+                                logger.debug(
+                                    "pool: ignoring close() error during release",
+                                    exc_info=True,
+                                )
                             conn._pool_released = True
                         else:
                             try:
                                 self._pool.put_nowait(conn)
                             except asyncio.QueueFull:
-                                with contextlib.suppress(Exception):
+                                try:
                                     await conn.close()
+                                except _POOL_CLEANUP_EXCEPTIONS:
+                                    logger.debug(
+                                        "pool: ignoring close() error during release",
+                                        exc_info=True,
+                                    )
                                 conn._pool_released = True
                             else:
                                 conn._pool_released = True
                                 returned_to_queue = True
                     else:
-                        with contextlib.suppress(Exception):
+                        try:
                             await conn.close()
+                        except _POOL_CLEANUP_EXCEPTIONS:
+                            logger.debug(
+                                "pool: ignoring close() error during release",
+                                exc_info=True,
+                            )
                         conn._pool_released = True
                 else:
                     # Connection is broken (invalidated by execute/fetch error
