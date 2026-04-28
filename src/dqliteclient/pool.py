@@ -131,6 +131,7 @@ class ConnectionPool:
         max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
         close_timeout: float = 0.5,
+        max_attempts: int | None = None,
     ) -> None:
         """Initialize connection pool.
 
@@ -192,6 +193,14 @@ class ConnectionPool:
                 round-trip is slower, or decrease to tighten
                 SIGTERM-shutdown budgets. See
                 ``DqliteConnection.__init__`` for full rationale.
+            max_attempts: Maximum leader-discovery attempts per
+                ``_create_connection`` (forwarded to
+                ``ClusterClient.connect``). ``None`` (default) uses the
+                cluster client's default of 3 — covers one leader
+                change plus one transport hiccup. Increase only with
+                eyes open: hiding genuine cluster instability behind
+                a long retry loop just delays the diagnosis. Must be
+                ``>= 1`` if not ``None``.
         """
         if min_size < 0:
             raise ValueError(f"min_size must be non-negative, got {min_size}")
@@ -199,6 +208,8 @@ class ConnectionPool:
             raise ValueError(f"max_size must be at least 1, got {max_size}")
         if min_size > max_size:
             raise ValueError(f"min_size ({min_size}) must not exceed max_size ({max_size})")
+        if max_attempts is not None and max_attempts < 1:
+            raise ValueError(f"max_attempts must be at least 1 if provided, got {max_attempts}")
         _validate_timeout(timeout)
         _validate_timeout(close_timeout, name="close_timeout")
         if cluster is not None and node_store is not None:
@@ -217,6 +228,7 @@ class ConnectionPool:
         )
         self._trust_server_heartbeat = trust_server_heartbeat
         self._close_timeout = close_timeout
+        self._max_attempts = max_attempts
 
         if cluster is not None:
             self._cluster = cluster
@@ -404,6 +416,7 @@ class ConnectionPool:
             max_continuation_frames=self._max_continuation_frames,
             trust_server_heartbeat=self._trust_server_heartbeat,
             close_timeout=self._close_timeout,
+            max_attempts=self._max_attempts,
         )
 
     async def _release_reservation(self) -> None:

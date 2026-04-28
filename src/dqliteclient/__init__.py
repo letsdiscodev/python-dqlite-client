@@ -118,6 +118,7 @@ async def create_pool(
     max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
     trust_server_heartbeat: bool = False,
     close_timeout: float = 0.5,
+    max_attempts: int | None = None,
 ) -> ConnectionPool:
     """Create a connection pool with automatic leader detection.
 
@@ -148,6 +149,10 @@ async def create_pool(
             deployments where FIN/ACK round-trip is slower, or
             decrease to tighten SIGTERM-shutdown budgets. See
             ``DqliteConnection.__init__`` for full rationale.
+        max_attempts: Maximum leader-discovery attempts per pool
+            connect (forwarded to ``ClusterClient.connect``). ``None``
+            (default) uses the cluster client's default of 3. Must be
+            ``>= 1`` if not ``None``.
 
     Returns:
         An initialized ConnectionPool
@@ -164,6 +169,7 @@ async def create_pool(
         max_continuation_frames=max_continuation_frames,
         trust_server_heartbeat=trust_server_heartbeat,
         close_timeout=close_timeout,
+        max_attempts=max_attempts,
     )
     await pool.initialize()
     return pool
