@@ -70,7 +70,10 @@ async def connect(
     Args:
         address: Node address in "host:port" format
         database: Database name to open
-        timeout: Connection timeout in seconds
+        timeout: Per-RPC-phase timeout in seconds (forwarded). Each
+            phase of an operation gets the full budget independently;
+            wrap with ``asyncio.timeout(...)`` to enforce an end-to-end
+            deadline.
         max_total_rows: Cumulative row cap across continuation frames
             for a single query. Forwarded to the underlying
             DqliteConnection. None disables the cap.
@@ -124,7 +127,10 @@ async def create_pool(
         database: Database name to open
         min_size: Minimum number of connections to maintain
         max_size: Maximum number of connections
-        timeout: Connection timeout in seconds
+        timeout: Per-RPC-phase timeout in seconds (forwarded). Each
+            phase of an operation gets the full budget independently;
+            wrap with ``asyncio.timeout(...)`` to enforce an end-to-end
+            deadline.
         cluster: Externally-owned ClusterClient shared across pools.
         node_store: Externally-owned NodeStore used to build a new
             ClusterClient. Mutually exclusive with ``cluster``.

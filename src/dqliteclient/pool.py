@@ -140,7 +140,13 @@ class ConnectionPool:
             database: Database name
             min_size: Minimum connections to maintain
             max_size: Maximum connections allowed
-            timeout: Connection timeout
+            timeout: Per-RPC-phase timeout (forwarded to each pooled
+                ``DqliteConnection``). Each phase of an operation
+                (send, read, any continuation drain) gets the full
+                budget independently, so a single call can take up to
+                roughly N × ``timeout`` end-to-end. Wrap callers in
+                ``asyncio.timeout(...)`` to enforce a wall-clock
+                deadline.
             cluster: Externally-owned ClusterClient. Lets multiple pools
                 share one ClusterClient (and thus its node store, leader
                 cache, etc.) across databases or tenants.

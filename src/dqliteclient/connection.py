@@ -509,7 +509,14 @@ class DqliteConnection:
         Args:
             address: Node address in "host:port" format
             database: Database name to open
-            timeout: Connection timeout in seconds
+            timeout: Per-RPC-phase timeout in seconds. The same budget
+                is applied to each phase of an operation independently
+                (send, then read, then any continuation drain), so a
+                single high-level call (e.g. a ``query_sql`` returning
+                a large continuation-paginated result) can take up to
+                roughly N × ``timeout`` end-to-end. To enforce a true
+                end-to-end deadline, wrap the call in
+                ``asyncio.timeout(...)`` or ``asyncio.wait_for(...)``.
             max_total_rows: Cumulative row cap across continuation
                 frames for a single query. Prevents a slow-drip server
                 from keeping the client alive indefinitely within the
