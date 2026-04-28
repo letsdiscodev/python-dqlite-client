@@ -577,17 +577,37 @@ def allowlist_policy(addresses: Iterable[str]) -> RedirectPolicy:
     """Build a redirect policy that accepts only the given addresses.
 
     Useful for the common case: "only allow redirects to hosts I've
-    explicitly seed-listed." Addresses are matched by exact string
-    equality — callers that need CIDR / DNS / wildcard matching should
-    supply their own callable.
+    explicitly seed-listed." Addresses are normalized via
+    :func:`_parse_address` and compared as ``(host, port)`` tuples, so
+    bracketed and unbracketed IPv6 forms (``[::1]:9001`` vs
+    ``::1:9001``) match each other and hostname casing is irrelevant
+    (the parser lower-cases hosts). Callers that need CIDR / DNS /
+    wildcard matching should supply their own callable.
 
-    Accepts any iterable (list, set, tuple, generator, dict_keys). The
-    iterable is materialized into a frozen set once, so passing a
-    generator is safe — the returned closure doesn't re-iterate.
+    Each entry is parsed at construction time; a malformed entry
+    raises :class:`ValueError` from ``allowlist_policy`` itself, so
+    typos surface at the operator's config-load site rather than as
+    a silent rejection of a legitimate redirect later. A malformed
+    *runtime* redirect target returns ``False`` (the policy is a
+    safety filter; we do not let a hostile server crash it by
+    sending garbage).
+
+    Accepts any iterable (list, set, tuple, generator, dict_keys).
+    The iterable is materialized into a frozen set once, so passing
+    a generator is safe — the returned closure doesn't re-iterate.
     """
-    allowed = frozenset(addresses)
+    parsed: list[tuple[str, int]] = []
+    for raw in addresses:
+        try:
+            parsed.append(_parse_address(raw))
+        except ValueError as e:
+            raise ValueError(f"allowlist_policy: invalid address {raw!r} ({e})") from None
+    allowed = frozenset(parsed)
 
     def policy(addr: str) -> bool:
-        return addr in allowed
+        try:
+            return _parse_address(addr) in allowed
+        except ValueError:
+            return False
 
     return policy
