@@ -67,9 +67,27 @@ logger = logging.getLogger(__name__)
 def _socket_looks_dead(conn: DqliteConnection) -> bool:
     """Best-effort local detection of a half-closed TCP socket.
 
-    Returns True only on an affirmative bool signal from the transport or
-    reader. Mocked / missing attributes default to False (assume alive) so
-    the check never produces a false positive against well-behaved peers.
+    Returns True if any of:
+
+    * ``_protocol`` is missing or None — the connection was never
+      handshaked, or has been invalidated; we cannot peek a transport,
+      so we treat as dead so the caller drops it.
+    * ``_protocol.is_wire_coherent`` is False — wire desync from a
+      prior parse failure; the next round-trip is wasted RTT.
+    * ``transport.is_closing()`` is True — peer FIN already observed.
+    * ``reader.at_eof()`` is True — same shape, observed via reader.
+
+    Returns False otherwise. Mocked / partially-built objects whose
+    transport peek attributes (``transport``, ``reader``) are missing
+    or raise ``AttributeError`` / ``RuntimeError`` are treated as
+    alive for those individual peeks — the function only flags an
+    affirmative dead signal from the transport / reader paths.
+
+    The "missing ``_protocol`` is dead" branch is intentional: a real
+    connection always has the attribute (possibly None for never-
+    connected / invalidated state); the only way to reach this branch
+    in production is a connection that genuinely has no usable
+    protocol.
     """
     # ``getattr`` (rather than direct attribute access) so the function
     # tolerates partial mocks that omit ``_protocol`` entirely — the
