@@ -25,7 +25,7 @@ from dqliteclient.protocol import (
 )
 from dqlitewire import DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES
 from dqlitewire import DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS
-from dqlitewire import LEADER_ERROR_CODES as _LEADER_ERROR_CODES
+from dqlitewire import LEADER_ERROR_CODES
 from dqlitewire import SQLITE_BUSY as _SQLITE_BUSY
 from dqlitewire import TX_AUTO_ROLLBACK_PRIMARY_CODES as _TX_AUTO_ROLLBACK_PRIMARY_CODES
 from dqlitewire import primary_sqlite_code as _primary_sqlite_code
@@ -65,7 +65,7 @@ _TRANSACTION_ROLLBACK_SQL: Final[str] = "ROLLBACK"
 #   * SQLITE_ABORT (4) — operation aborted, e.g. via sqlite3_interrupt.
 #   * SQLITE_INTERRUPT (9) — query interrupted via INTERRUPT.
 #   * SQLITE_IOERR (10) — and most extended IOERR variants (the leader-
-#     change variants are caught earlier as ``_LEADER_ERROR_CODES`` and
+#     change variants are caught earlier as ``LEADER_ERROR_CODES`` and
 #     trigger a full ``_invalidate`` instead).
 #   * SQLITE_CORRUPT (11).
 #   * SQLITE_FULL (13).
@@ -754,7 +754,7 @@ class DqliteConnection:
             self._invalidation_cause = None
         except OperationalError as e:
             await self._abort_protocol()
-            if e.code in _LEADER_ERROR_CODES:
+            if e.code in LEADER_ERROR_CODES:
                 # Leader-change errors during OPEN are transport-level
                 # problems — the caller needs to reconnect elsewhere, not
                 # treat this as a SQL error.
@@ -1135,7 +1135,7 @@ class DqliteConnection:
             self._invalidate(e)
             raise
         except OperationalError as e:
-            if e.code in _LEADER_ERROR_CODES:
+            if e.code in LEADER_ERROR_CODES:
                 self._invalidate(e)
             elif _primary_sqlite_code(e.code) in _TX_AUTO_ROLLBACK_PRIMARY_CODES:
                 # Server-side SQLite engine auto-rolled-back the

@@ -29,7 +29,7 @@ from dqlitewire import (
 from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
-from dqlitewire import LEADER_ERROR_CODES as _LEADER_ERROR_CODES
+from dqlitewire import LEADER_ERROR_CODES
 
 __all__ = ["ConnectionPool"]
 
@@ -1036,7 +1036,7 @@ class ConnectionPool:
                 # DEBUG) from genuine server failure (latent bug or
                 # server fault — WARNING with traceback).
                 code = getattr(exc, "code", None)
-                if code in _LEADER_ERROR_CODES:
+                if code in LEADER_ERROR_CODES:
                     logger.debug(
                         "pool: dropping connection %s after leader-class "
                         "ROLLBACK failure (code=%s)",
