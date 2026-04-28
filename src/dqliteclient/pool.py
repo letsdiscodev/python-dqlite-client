@@ -6,7 +6,7 @@ import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
-from typing import Any
+from typing import Any, Final
 
 from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import (
@@ -53,7 +53,7 @@ __all__ = ["ConnectionPool"]
 # ``_check_in_use`` raise ``InterfaceError("owned by another task")``.
 # That should drop the connection, not crash the pool's release path
 # (which would leak a ``_size`` slot and eventually wedge the pool).
-_POOL_CLEANUP_EXCEPTIONS = (
+_POOL_CLEANUP_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
     OSError,
     DqliteConnectionError,
     ProtocolError,

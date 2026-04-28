@@ -5,7 +5,7 @@ import logging
 import secrets
 import sys
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Final
 
 from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
 from dqlitewire import (
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # Socket read buffer size. 4 KiB balances syscall overhead for typical
 # request/response payloads against latency for small wire messages.
-_READ_CHUNK_SIZE = 4096
+_READ_CHUNK_SIZE: Final[int] = 4096
 
 # Upper bound on how wide a server's advertised heartbeat can stretch
 # the per-read deadline on a connection that opted into
@@ -60,7 +60,7 @@ _READ_CHUNK_SIZE = 4096
 # ``trust_server_heartbeat`` docstrings at protocol.py:82 and :106,
 # connection.py:__init__ docstring, and the top-level ``connect`` /
 # ``create_pool`` docstrings in ``__init__.py``.
-_HEARTBEAT_READ_TIMEOUT_CAP_SECONDS = 300.0
+_HEARTBEAT_READ_TIMEOUT_CAP_SECONDS: Final[float] = 300.0
 
 
 def _failure_message(message: str, addr_suffix: str) -> str:

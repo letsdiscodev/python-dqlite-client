@@ -1,5 +1,7 @@
 """Exceptions for dqlite client."""
 
+from typing import ClassVar
+
 from dqlitewire.exceptions import ProtocolError as _WireProtocolError
 
 __all__ = [
@@ -81,7 +83,7 @@ class OperationalError(DqliteError):
     ``super().__init__`` keeps the raw payload on ``self.args``.
     """
 
-    _MAX_DISPLAY_MESSAGE = 1024
+    _MAX_DISPLAY_MESSAGE: ClassVar[int] = 1024
 
     code: int
     message: str

@@ -5,6 +5,7 @@ import contextlib
 import logging
 import random
 from collections.abc import Callable, Iterable
+from typing import Final
 
 from dqliteclient.connection import DqliteConnection, _parse_address, _validate_timeout
 from dqliteclient.exceptions import (
@@ -39,13 +40,13 @@ RedirectPolicy = Callable[[str], bool]
 # hiding genuine cluster instability under what looks like "a slow
 # connect". Operators can override via ClusterClient.connect(
 # max_attempts=...).
-_DEFAULT_CONNECT_MAX_ATTEMPTS = 3
+_DEFAULT_CONNECT_MAX_ATTEMPTS: Final[int] = 3
 
 # Cap per-node error messages at this length before concatenating them
 # into the final ClusterError. A failing peer that returns a multi-MB
 # FailureResponse message would otherwise produce an O(N * M) string
 # held in memory and serialised into every traceback.
-_MAX_ERROR_MESSAGE_SNIPPET = 200
+_MAX_ERROR_MESSAGE_SNIPPET: Final[int] = 200
 
 # Use OS-entropy randomness for the per-sweep node shuffle so that the
 # stampede-avoidance is not defeated by a downstream call to
@@ -53,13 +54,13 @@ _MAX_ERROR_MESSAGE_SNIPPET = 200
 # PRNG for determinism; if we used ``random.shuffle`` directly, every
 # process picking up that seed would produce the same shuffle and pile
 # onto the same node. ``SystemRandom`` ignores ``random.seed()``.
-_cluster_random = random.SystemRandom()
+_cluster_random: Final[random.Random] = random.SystemRandom()
 
 # Budget for the bounded writer-drain in ``_query_leader``. A
 # responsive peer drains FIN/ACK in microseconds; a slow peer must not
 # hold up leader discovery. 100 ms is generous for LAN and still
 # negligible against the per-probe ``self._timeout`` (typically seconds).
-_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS = 0.1
+_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS: Final[float] = 0.1
 
 
 def _addr_equiv(a: str, b: str) -> bool:

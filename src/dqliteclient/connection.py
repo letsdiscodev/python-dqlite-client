@@ -10,7 +10,7 @@ import string
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
-from typing import Any
+from typing import Any, Final
 
 from dqliteclient.exceptions import (
     DataError,
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # and Go peer clients which also emit a bare ``BEGIN``. The constant
 # pins the literal so a refactor can't silently upgrade to ``BEGIN
 # IMMEDIATE`` without showing up in review.
-_TRANSACTION_BEGIN_SQL = "BEGIN"
+_TRANSACTION_BEGIN_SQL: Final[str] = "BEGIN"
 
 # ``COMMIT`` and ``ROLLBACK`` literals are pinned for the same reason as
 # ``_TRANSACTION_BEGIN_SQL``: a refactor must not silently switch to a
@@ -51,8 +51,8 @@ _TRANSACTION_BEGIN_SQL = "BEGIN"
 # Consistency between ``transaction()`` and the pool's reset-on-return
 # path is a correctness invariant — if they diverge, a connection could
 # be returned to the pool with a still-open server-side transaction.
-_TRANSACTION_COMMIT_SQL = "COMMIT"
-_TRANSACTION_ROLLBACK_SQL = "ROLLBACK"
+_TRANSACTION_COMMIT_SQL: Final[str] = "COMMIT"
+_TRANSACTION_ROLLBACK_SQL: Final[str] = "ROLLBACK"
 
 # ``_TX_AUTO_ROLLBACK_PRIMARY_CODES`` is imported above from ``dqlitewire``
 # (canonical home for SQLite-side constants). It contains the primary
@@ -78,8 +78,8 @@ _TRANSACTION_ROLLBACK_SQL = "ROLLBACK"
 # a fresh transaction whose boundary the user code does not know about.
 
 
-_BARE_IDENT_FIRST = frozenset(string.ascii_letters + "_")
-_BARE_IDENT_REST = frozenset(string.ascii_letters + string.digits + "_")
+_BARE_IDENT_FIRST: Final[frozenset[str]] = frozenset(string.ascii_letters + "_")
+_BARE_IDENT_REST: Final[frozenset[str]] = frozenset(string.ascii_letters + string.digits + "_")
 
 # Coupled to dqlite-upstream/src/gateway.c failure() emissions for the
 # Raft-side BUSY path that means "the in-flight write was not accepted;
@@ -90,7 +90,7 @@ _BARE_IDENT_REST = frozenset(string.ascii_letters + string.digits + "_")
 # the matcher here keeps the upstream-coupling explicit so a future
 # rewording (or addition of a new Raft-BUSY message) is one-line update
 # rather than a hunt through the classifier.
-_RAFT_BUSY_MESSAGE_FRAGMENTS: tuple[str, ...] = ("checkpoint in progress",)
+_RAFT_BUSY_MESSAGE_FRAGMENTS: Final[tuple[str, ...]] = ("checkpoint in progress",)
 
 
 def _is_keyword_boundary(s: str, kw_len: int) -> bool:
