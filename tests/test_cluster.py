@@ -460,17 +460,19 @@ class TestClusterClient:
 
     async def test_find_leader_calls_random_shuffle_on_candidate_list(self) -> None:
         """Deterministic pin complementing the probabilistic test above:
-        ``find_leader`` invokes ``random.shuffle`` on its candidate list.
+        ``find_leader`` invokes the cluster shuffle on its candidate
+        list.
 
         The probabilistic test catches "shuffle disabled entirely"
         (``len(counts) == 1``) but not "shuffle replaced by some other
         deterministic permutation that still produces ≥ 2 distinct
         firsts" — a regression vector that would silently slip past.
-        Patching ``random.shuffle`` directly lets us assert the call
-        happens, and ``wraps=`` keeps the real shuffle behavior so
-        ``find_leader`` still terminates cleanly.
+        Patching the bound ``shuffle`` method on the module-level
+        ``_cluster_random`` directly lets us assert the call happens.
+        We swap to a deterministic identity-function so ``find_leader``
+        still terminates cleanly.
         """
-        import random as _random
+        from dqliteclient import cluster as cluster_module
 
         store = MemoryNodeStore(["n1:9001", "n2:9001", "n3:9001", "n4:9001"])
         client = ClusterClient(store, timeout=0.2)
@@ -479,9 +481,10 @@ class TestClusterClient:
             raise DqliteConnectionError("not leader")
 
         with (
-            patch(
-                "dqliteclient.cluster.random.shuffle",
-                wraps=_random.shuffle,
+            patch.object(
+                cluster_module._cluster_random,
+                "shuffle",
+                wraps=cluster_module._cluster_random.shuffle,
             ) as mock_shuffle,
             patch.object(client, "_query_leader", side_effect=fail_query),
             contextlib.suppress(ClusterError),
@@ -489,7 +492,7 @@ class TestClusterClient:
             await client.find_leader()
 
         assert mock_shuffle.call_count >= 1, (
-            "find_leader must invoke random.shuffle on its candidate list — "
+            "find_leader must invoke the cluster shuffle on its candidate list — "
             "without the shuffle, parallel callers stampede the first-listed node"
         )
         # The first positional arg is the list being shuffled in place.

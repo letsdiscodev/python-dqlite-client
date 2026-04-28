@@ -47,6 +47,14 @@ _DEFAULT_CONNECT_MAX_ATTEMPTS = 3
 # held in memory and serialised into every traceback.
 _MAX_ERROR_MESSAGE_SNIPPET = 200
 
+# Use OS-entropy randomness for the per-sweep node shuffle so that the
+# stampede-avoidance is not defeated by a downstream call to
+# ``random.seed(...)``. Test suites and some libraries seed the global
+# PRNG for determinism; if we used ``random.shuffle`` directly, every
+# process picking up that seed would produce the same shuffle and pile
+# onto the same node. ``SystemRandom`` ignores ``random.seed()``.
+_cluster_random = random.SystemRandom()
+
 # Budget for the bounded writer-drain in ``_query_leader``. A
 # responsive peer drains FIN/ACK in microseconds; a slow peer must not
 # hold up leader discovery. 100 ms is generous for LAN and still
@@ -258,7 +266,7 @@ class ClusterClient:
         # "fix" this toward Go's deterministic behavior without adding
         # an explicit stampede-avoidance mechanism elsewhere.
         nodes = list(nodes)
-        random.shuffle(nodes)
+        _cluster_random.shuffle(nodes)
         nodes.sort(key=lambda n: 0 if n.role == NodeRole.VOTER else 1)
 
         errors: list[str] = []
