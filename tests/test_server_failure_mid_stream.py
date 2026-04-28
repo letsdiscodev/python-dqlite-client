@@ -10,7 +10,7 @@ and the SQLite error code is flattened into a string.
 The dbapi layer then maps ``client.ProtocolError`` to
 ``InterfaceError``, breaking ``sqlalchemy-dqlite``'s ``is_disconnect``
 check which tests ``isinstance(e, OperationalError) and e.code in
-_LEADER_CHANGE_CODES``. Leadership-loss during a streaming SELECT would
+LEADER_ERROR_CODES``. Leadership-loss during a streaming SELECT would
 not trigger SA pool invalidation.
 
 Catching ``ServerFailure`` before the generic ``_WireProtocolError``

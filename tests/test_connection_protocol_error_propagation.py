@@ -4,7 +4,7 @@ reported as uncovered by ``pytest --cov``.
 Lines covered (pre-pragma):
 
 - connection.py:408 — ``connect()`` re-raises ``OperationalError``
-  whose code is NOT in ``_LEADER_ERROR_CODES`` (leader-change
+  whose code is NOT in ``LEADER_ERROR_CODES`` (leader-change
   errors translate to ``DqliteConnectionError`` for the pool's
   reconnect-elsewhere flow; non-leader errors propagate as-is).
 - connection.py:531 — ``_abort_protocol`` no-protocol early
