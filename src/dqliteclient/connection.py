@@ -1568,8 +1568,18 @@ class DqliteConnection:
                 if self._in_transaction:
                     self._in_transaction = False
                     self._tx_owner = None
-                    self._savepoint_stack.clear()
-                    self._savepoint_implicit_begin = False
+                # The autobegin-deferral path (when an outer
+                # untracked SAVEPOINT had set
+                # ``_has_untracked_savepoint=True``) deliberately
+                # allows ``stack`` non-empty AND
+                # ``_in_transaction=False``. Clear the stack and
+                # the implicit-begin flag UNCONDITIONALLY here so a
+                # COMMIT that closes the server-side autobegun tx
+                # does not leave a ghost frame in the local stack.
+                # Mirrors the defensive double-clear the symmetric
+                # ROLLBACK branch already performs in both arms.
+                self._savepoint_stack.clear()
+                self._savepoint_implicit_begin = False
                 self._has_untracked_savepoint = False
                 return
 
