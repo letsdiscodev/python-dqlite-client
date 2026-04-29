@@ -628,14 +628,56 @@ def _parse_address(address: str) -> tuple[str, int]:
     non-ASCII, empty) raise ``ValueError``.
     """
     if address.startswith("["):
-        # Bracketed IPv6: [host]:port
+        # Bracketed IPv6: [host]:port. RFC 3986 §3.2.2 reserves the
+        # bracket form for ``IP-literal = IPv6address / IPvFuture``;
+        # bracketed IPv4 / hostname / empty contents are malformed
+        # surface variants that must be rejected so log audits and
+        # allowlists do not split across two distinct strings for
+        # the same logical host.
         if "]:" not in address:
             raise ValueError(
                 f"Invalid IPv6 address format: expected '[host]:port', got {address!r}"
             )
         bracket_end = address.index("]")
         host = address[1:bracket_end]
-        port_str = address[bracket_end + 2 :]  # Skip ']:
+        port_str = address[bracket_end + 2 :]  # Skip ']:'
+
+        # RFC 6874: zone identifiers may be percent-encoded as ``%25``
+        # in URIs. Percent-decode the zone-ID portion (everything
+        # after the first ``%``) so the URI form
+        # ``[fe80::1%25eth0]`` and the application form
+        # ``[fe80::1%eth0]`` canonicalise identically. Use
+        # ``urllib.parse.unquote`` so any RFC-3986 percent-encoded
+        # octet survives correctly (in practice only ``%25`` is
+        # expected, but the unquote is harmless on already-decoded
+        # input).
+        from urllib.parse import unquote
+
+        zone_sep = host.find("%")
+        if zone_sep != -1:
+            # Decode the entire ``%...`` suffix so ``%25`` collapses
+            # to a literal ``%`` (matching the application-form zone
+            # separator). ``unquote`` leaves a literal ``%`` followed
+            # by non-hex characters intact, so the no-encoding path
+            # round-trips byte-for-byte.
+            host = host[:zone_sep] + unquote(host[zone_sep:])
+
+        # Strict bracket discipline: validate the contents are an
+        # IPv6 literal. ``ipaddress.ip_address`` does not accept
+        # the ``%zone`` suffix, so strip it before the check.
+        ipv6_part = host.split("%", 1)[0]
+        try:
+            parsed = ipaddress.ip_address(ipv6_part)
+        except ValueError as e:
+            raise ValueError(
+                f"Bracket syntax in {address!r} is reserved for IPv6 "
+                f"literals; {host!r} is not an IPv6 address"
+            ) from e
+        if not isinstance(parsed, ipaddress.IPv6Address):
+            raise ValueError(
+                f"Bracket syntax in {address!r} is reserved for IPv6 "
+                f"literals; got {type(parsed).__name__}"
+            )
     else:
         if ":" not in address:
             raise ValueError(f"Invalid address format: expected 'host:port', got {address!r}")
