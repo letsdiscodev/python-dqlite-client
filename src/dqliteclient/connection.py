@@ -243,8 +243,15 @@ def _strip_leading_comments(sql: str) -> str:
     step with the server. This helper is duplicated from the dbapi
     cursor's identical helper rather than introducing an inter-package
     import — the parser is small and stable.
+
+    Also strips a leading UTF-8 BOM (``\\ufeff``) for parity with
+    SQLite's ``sqlite3_prepare_v2``, which silently skips it. Python's
+    ``str.strip()`` does NOT consider ``\\ufeff`` whitespace, so a SQL
+    file imported via ``encoding='utf-8'`` (instead of ``utf-8-sig``)
+    or written by PowerShell ``Set-Content`` / Notepad would otherwise
+    desync the savepoint / transaction tracker.
     """
-    s = sql.strip()
+    s = sql.lstrip("﻿").strip()
     while True:
         if s.startswith("--"):
             newline = s.find("\n")
