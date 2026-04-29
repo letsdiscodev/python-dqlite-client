@@ -546,10 +546,16 @@ def _is_no_tx_rollback_error(exc: BaseException) -> bool:
 
 # RFC 1035 hostname labels are ASCII letters, digits, and hyphen. We
 # accept a dotted sequence of labels up to 253 chars total. Single
-# labels (e.g. "localhost") are also accepted.
+# labels (e.g. "localhost") are also accepted. RFC 1034 §3.1 permits a
+# single trailing dot to mark the FQDN as root-anchored (disabling
+# resolver search-list expansion); RFC 3986 §3.2.2 permits the same
+# in URI ``reg-name``. Match both forms; the canonical form drops
+# the trailing dot so two surface variants of the same FQDN
+# canonicalise identically for allowlist comparisons.
 _HOSTNAME_LABEL_RE = re.compile(
-    r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)"
-    r"(?:\.(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?))*$"
+    r"^(?=.{1,254}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)"
+    r"(?:\.(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?))*"
+    r"\.?$"
 )
 
 
@@ -585,7 +591,11 @@ def _canonicalize_host(host: str, address: str) -> str:
         raise ValueError(
             f"Invalid host in address {address!r}: {host!r} is not a valid hostname or IP literal"
         )
-    return host.lower()
+    # Strip a trailing dot from FQDNs (e.g. ``foo.example.com.``) so
+    # the rooted and unrooted forms canonicalise identically — a
+    # server-supplied redirect target and the operator's allowlist
+    # entry should match regardless of which form was written.
+    return host.rstrip(".").lower()
 
 
 def _validate_timeout(value: float, *, name: str = "timeout") -> float:
