@@ -144,8 +144,15 @@ def _split_top_level_statements(sql: str) -> list[str]:
     # ``in_trigger_body``: inside a ``CREATE TRIGGER ... BEGIN`` body.
     # ``trigger_depth``: inner BEGIN..END nesting count (for compound
     # SQLite trigger bodies, e.g. ``BEGIN ... BEGIN ... END; END;``).
+    # ``case_depth``: open ``CASE`` expressions inside the body. ``END``
+    # closes the innermost CASE first; only when no CASE is open does
+    # ``END`` decrement ``trigger_depth``. Without this counter, an
+    # inner ``CASE WHEN ... END`` would prematurely flip
+    # ``in_trigger_body`` to False and the trailing ``;`` would split
+    # the DDL mid-statement.
     in_trigger_body = False
     trigger_depth = 0
+    case_depth = 0
     # Position in the current statement piece where we last checked
     # for a CREATE TRIGGER preamble — only check ahead of, not behind,
     # to keep this O(n) per piece.
@@ -223,15 +230,24 @@ def _split_top_level_statements(sql: str) -> list[str]:
             else:
                 # Inside trigger body — track nested BEGIN..END so a
                 # compound trigger (BEGIN ... BEGIN ... END; END;)
-                # closes correctly.
+                # closes correctly. Also track CASE expressions so
+                # the inner ``END`` of ``CASE WHEN ... END`` does not
+                # decrement ``trigger_depth``.
                 if kw == "BEGIN":
                     trigger_depth += 1
                     i = kw_end
                     continue
+                if kw == "CASE":
+                    case_depth += 1
+                    i = kw_end
+                    continue
                 if kw == "END":
-                    trigger_depth -= 1
-                    if trigger_depth == 0:
-                        in_trigger_body = False
+                    if case_depth > 0:
+                        case_depth -= 1
+                    else:
+                        trigger_depth -= 1
+                        if trigger_depth == 0:
+                            in_trigger_body = False
                     i = kw_end
                     continue
             i = kw_end
@@ -256,6 +272,32 @@ def _is_word_char(c: str) -> bool:
     return c.isalnum() or c == "_"
 
 
+def _skip_ws_and_comments(sql: str, i: int, n: int) -> int:
+    """Advance past whitespace and SQL comments (``--`` line and
+    ``/* */`` block).
+
+    Used by the trigger-preamble scan so migration-tool output that
+    interleaves comments between top-level keywords (e.g.
+    ``CREATE/* migration v3 */TRIGGER``) parses correctly. Stops at
+    end-of-input or at any non-whitespace, non-comment character.
+    """
+    while i < n:
+        c = sql[i]
+        if c.isspace():
+            i += 1
+            continue
+        if c == "-" and i + 1 < n and sql[i + 1] == "-":
+            nl = sql.find("\n", i + 2)
+            i = n if nl == -1 else nl + 1
+            continue
+        if c == "/" and i + 1 < n and sql[i + 1] == "*":
+            end = sql.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        break
+    return i
+
+
 def _scan_for_trigger_begin(sql: str, after_create: int, n: int) -> int:
     """Look ahead from just after ``CREATE`` for the trigger preamble
     ``[TEMP|TEMPORARY] TRIGGER ... BEGIN`` and return the index just
@@ -269,10 +311,12 @@ def _scan_for_trigger_begin(sql: str, after_create: int, n: int) -> int:
     constructs by the time the alpha-token branch fires).
     """
     i = after_create
-    # Optional whitespace, then optional TEMP/TEMPORARY, then required
-    # TRIGGER keyword.
-    while i < n and sql[i].isspace():
-        i += 1
+    # Optional whitespace + comments, then optional TEMP/TEMPORARY,
+    # then required TRIGGER keyword. Comment-handling matches the
+    # post-TRIGGER body scan so migration-tool output that places
+    # ``/* ... */`` markers between top-level keywords parses
+    # correctly.
+    i = _skip_ws_and_comments(sql, i, n)
     if i >= n:
         return 0
     j = i
@@ -280,9 +324,7 @@ def _scan_for_trigger_begin(sql: str, after_create: int, n: int) -> int:
         j += 1
     word = sql[i:j].upper()
     if word in ("TEMP", "TEMPORARY"):
-        i = j
-        while i < n and sql[i].isspace():
-            i += 1
+        i = _skip_ws_and_comments(sql, j, n)
         j = i
         while j < n and _is_word_char(sql[j]):
             j += 1
