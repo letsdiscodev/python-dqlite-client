@@ -1306,10 +1306,6 @@ class ConnectionPool:
         re-entry after completion) waits on the first caller's drain
         via ``_close_done`` rather than racing ``_drain_idle``.
         """
-        if self._closed:
-            if self._close_done is not None:
-                await self._close_done.wait()
-            return
         # Fork-after-init: the inherited connection FDs are shared with
         # the parent. Draining and writer.close() in the child would
         # send FIN on sockets the parent still uses. Flip the closed
@@ -1317,8 +1313,18 @@ class ConnectionPool:
         # touching the wire. The child cannot acquire new connections
         # either way (pid-aware ``acquire`` rejects). Symmetric with
         # ``DqliteConnection.close``'s fork short-circuit.
+        #
+        # The fork-pid check runs BEFORE the ``_closed`` early-return
+        # so a child whose parent forked while mid-close (with
+        # ``_close_done`` set but not yet ``set()``) does not block on
+        # an Event bound to the parent's loop. Awaiting that Event in
+        # the child's fresh loop hangs forever.
         if os.getpid() != self._creator_pid:
             self._closed = True
+            return
+        if self._closed:
+            if self._close_done is not None:
+                await self._close_done.wait()
             return
         # Publish the drain-done event BEFORE flipping the closed flag
         # so any second caller observing ``_closed=True`` is guaranteed
