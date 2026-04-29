@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import os
 import random
 from collections.abc import Callable, Iterable
 from typing import Final, NoReturn
@@ -12,6 +13,7 @@ from dqliteclient.exceptions import (
     ClusterError,
     ClusterPolicyError,
     DqliteConnectionError,
+    InterfaceError,
     OperationalError,
     ProtocolError,
 )
@@ -148,6 +150,13 @@ class ClusterClient:
         # one pool out of widened heartbeats. Bounded to two slots
         # since the flag is a bool.
         self._find_leader_tasks: dict[tuple[bool], asyncio.Task[str]] = {}
+        # Fork-after-init: the slot map holds asyncio.Task instances
+        # bound to the parent's loop. A child that forks mid-sweep
+        # would observe an inherited task and ``await
+        # asyncio.shield(<parent-loop task>)`` — undefined behaviour.
+        # Symmetric with the DqliteConnection / ConnectionPool
+        # pid guards added in cycle 20.
+        self._creator_pid = os.getpid()
 
     @classmethod
     def from_addresses(
@@ -214,6 +223,15 @@ class ClusterClient:
         (re-poll the node store between probes) costs an extra await
         per probe to close a window most callers do not exercise.
         """
+        if os.getpid() != self._creator_pid:
+            # Fork-after-init: the slot map holds parent-loop tasks
+            # that the child cannot drive. Surface a clear
+            # InterfaceError instead of letting a sibling task land
+            # at ``await asyncio.shield(<parent-task>)``.
+            raise InterfaceError(
+                "ClusterClient used after fork; reconstruct from configuration "
+                "in the target process."
+            )
         key: tuple[bool] = (trust_server_heartbeat,)
         task = self._find_leader_tasks.get(key)
         if task is None or task.done():
