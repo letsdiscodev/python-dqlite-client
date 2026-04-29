@@ -2021,6 +2021,13 @@ class DqliteConnection:
         need defensive-rollback semantics against outer cancellation
         — not individual operations inside it.
         """
+        # Run the standard misuse guard first so a forked child entering
+        # transaction() sees the clear "used after fork" diagnostic
+        # instead of the misleading "owned by another task" branch
+        # below (which would render the parent's task repr in the
+        # error message). ``_check_in_use`` performs the pid check
+        # before any asyncio primitive is touched.
+        self._check_in_use()
         # An untracked SAVEPOINT (parser-rejected name issued without a
         # preceding BEGIN) auto-begins a server-side tx without flipping
         # ``_in_transaction``. Surface a dedicated diagnostic so the
