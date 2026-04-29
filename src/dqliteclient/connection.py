@@ -1097,8 +1097,26 @@ class DqliteConnection:
         # child preserves that contract for the GC / __del__ path that
         # commonly drives close in a forked worker.
         if os.getpid() != self._creator_pid:
+            # Drop every reference that crosses the fork boundary so
+            # GC in the child doesn't keep parent-loop primitives or
+            # the inherited socket FD alive. ``_pending_drain`` in
+            # particular is an ``asyncio.Task`` bound to the parent's
+            # loop; if it survives, ``Task.__del__`` later emits
+            # "Task was destroyed but it is pending" and the
+            # coroutine frame keeps the inherited writer transport
+            # (and FD) referenced indefinitely. Clearing the
+            # transaction / savepoint / loop bookkeeping also keeps
+            # the child's view of the connection self-consistent —
+            # ``in_transaction`` reads False for a closed connection.
             self._protocol = None
             self._db_id = None
+            self._pending_drain = None
+            self._in_transaction = False
+            self._tx_owner = None
+            self._savepoint_stack.clear()
+            self._savepoint_implicit_begin = False
+            self._has_untracked_savepoint = False
+            self._bound_loop = None
             return
         # Run the in-use guard BEFORE the ``_protocol is None``
         # early-return so a concurrent ``connect()`` racing with

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -105,6 +106,45 @@ def test_connection_pool_initialize_after_fork_raises_interface_error() -> None:
 
     result = _run_in_child(child_check)
     assert result == b"OK", f"child reported: {result!r}"
+
+
+def test_dqlite_connection_close_after_fork_drops_inherited_state() -> None:
+    """The fork short-circuit in ``DqliteConnection.close()`` must
+    drop every reference that crosses the fork boundary —
+    ``_pending_drain`` (parent-loop ``asyncio.Task``), transaction
+    bookkeeping, savepoint stack, and ``_bound_loop`` — so GC in
+    the child doesn't keep the inherited writer transport / socket
+    FD alive via the Task's coroutine frame, and the child's
+    ``in_transaction`` view stays self-consistent (False on a
+    closed connection)."""
+    conn = DqliteConnection("127.0.0.1:9999")
+    # Stage state that would normally be cleared by _close_impl.
+    sentinel_task = MagicMock(spec=asyncio.Task)
+    conn._pending_drain = sentinel_task
+    conn._in_transaction = True
+    conn._tx_owner = MagicMock()
+    conn._savepoint_stack.append("sp1")
+    conn._savepoint_implicit_begin = True
+    conn._has_untracked_savepoint = True
+    conn._bound_loop = MagicMock()
+    fake_parent_pid = conn._creator_pid + 1
+    conn._creator_pid = fake_parent_pid
+
+    async def run() -> None:
+        with patch("dqliteclient.connection.os.getpid", return_value=fake_parent_pid + 1):
+            await conn.close()
+
+    asyncio.run(run())
+
+    assert conn._protocol is None
+    assert conn._db_id is None
+    assert conn._pending_drain is None
+    assert conn._in_transaction is False
+    assert conn._tx_owner is None
+    assert conn._savepoint_stack == []
+    assert conn._savepoint_implicit_begin is False
+    assert conn._has_untracked_savepoint is False
+    assert conn._bound_loop is None
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
