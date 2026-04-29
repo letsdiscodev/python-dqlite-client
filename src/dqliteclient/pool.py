@@ -316,6 +316,11 @@ class ConnectionPool:
         ``return_exceptions=True`` so every task resolves, then close
         survivors explicitly before re-raising the first failure.
         """
+        if os.getpid() != self._creator_pid:
+            raise InterfaceError(
+                "Pool used after fork; reconstruct from configuration "
+                "in the target process."
+            )
         # Hold the lock across the gather so a second concurrent
         # initialize() call observes _initialized=True after the first
         # completes and returns without re-creating.
@@ -1306,6 +1311,16 @@ class ConnectionPool:
         if self._closed:
             if self._close_done is not None:
                 await self._close_done.wait()
+            return
+        # Fork-after-init: the inherited connection FDs are shared with
+        # the parent. Draining and writer.close() in the child would
+        # send FIN on sockets the parent still uses. Flip the closed
+        # flag so the child's references can be GC'd quietly without
+        # touching the wire. The child cannot acquire new connections
+        # either way (pid-aware ``acquire`` rejects). Symmetric with
+        # ``DqliteConnection.close``'s fork short-circuit.
+        if os.getpid() != self._creator_pid:
+            self._closed = True
             return
         # Publish the drain-done event BEFORE flipping the closed flag
         # so any second caller observing ``_closed=True`` is guaranteed

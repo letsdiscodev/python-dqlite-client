@@ -1087,6 +1087,19 @@ class DqliteConnection:
         # close path has already run under pool ownership.
         if self._pool_released:
             return
+        # Fork-after-init: the inherited socket FD is shared with the
+        # parent. ``writer.close()`` would send a FIN that the parent
+        # still depends on. Flip the local state to closed without
+        # touching the wire so the child can clean up its references
+        # quietly, then bail. The pid-aware ``_check_in_use`` would
+        # also raise here, but close() is documented as idempotent and
+        # silent on already-closed inputs — silently no-oping in the
+        # child preserves that contract for the GC / __del__ path that
+        # commonly drives close in a forked worker.
+        if os.getpid() != self._creator_pid:
+            self._protocol = None
+            self._db_id = None
+            return
         # Run the in-use guard BEFORE the ``_protocol is None``
         # early-return so a concurrent ``connect()`` racing with
         # ``close()`` surfaces as ``InterfaceError`` instead of a silent
