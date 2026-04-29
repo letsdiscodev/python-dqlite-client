@@ -205,7 +205,6 @@ class ClusterClient:
             task = asyncio.create_task(
                 self._find_leader_impl(trust_server_heartbeat=trust_server_heartbeat)
             )
-            self._find_leader_tasks[key] = task
 
             def _clear_slot(t: asyncio.Task[str]) -> None:
                 # Clear the slot only if it still points at THIS task —
@@ -228,7 +227,18 @@ class ClusterClient:
                     with contextlib.suppress(BaseException):
                         t.exception()
 
+            # Register the done-callback BEFORE inserting into the
+            # shared slot so a signal-driven interrupt (KI / SystemExit
+            # raised by a signal handler at any bytecode boundary)
+            # between ``create_task`` and ``add_done_callback`` cannot
+            # leave the slot pointing at a task whose completion is
+            # never observed. ``add_done_callback`` is safe on a
+            # not-yet-started task; the callback fires regardless of
+            # slot state, and ``_clear_slot``'s "only delete if it
+            # still points at us" guard handles the case where the
+            # slot was never set.
             task.add_done_callback(_clear_slot)
+            self._find_leader_tasks[key] = task
         # Shield so a caller's outer cancel does not kill the shared
         # task; the cancel still propagates to the calling coroutine
         # via ``await asyncio.shield``.
