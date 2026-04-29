@@ -1161,7 +1161,25 @@ class ConnectionPool:
                 # "Task was destroyed but it is pending" on shutdown).
                 pending = getattr(conn, "_pending_drain", None)
                 if pending is not None and not pending.done():
-                    with contextlib.suppress(BaseException):
+                    # Absorb the await-side CancelledError so a fresh
+                    # outer cancel during release does not tear down
+                    # the bounded drain (the shield itself protects
+                    # the inner task; this suppress covers the
+                    # awaiter-side raise delivered when the
+                    # surrounding scope is cancelled). Do NOT suppress
+                    # KeyboardInterrupt / SystemExit — those must
+                    # propagate. Mirrors the ``_release_reservation``
+                    # shield two lines below.
+                    #
+                    # Also suppress Exception to cover the drain task
+                    # itself raising — production drains run inside
+                    # ``_bounded_drain`` which already wraps in
+                    # ``suppress(Exception)``, but the
+                    # belt-and-braces inner suppress here keeps the
+                    # cleanup path immune to a synthetic drain failure
+                    # (and to a future refactor that drops
+                    # ``_bounded_drain``'s wrap).
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
                         await asyncio.shield(pending)
                 conn._pool_released = True
                 with contextlib.suppress(asyncio.CancelledError):
