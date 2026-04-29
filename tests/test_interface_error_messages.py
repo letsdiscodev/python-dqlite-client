@@ -31,12 +31,15 @@ from dqliteclient.exceptions import InterfaceError
 def _make_bound_connection() -> DqliteConnection:
     """A connection in the post-bind state on the running loop, with
     every other ``_check_in_use`` precondition relaxed."""
+    import os as _os
+
     conn = DqliteConnection.__new__(DqliteConnection)
     conn._pool_released = False
     conn._bound_loop = asyncio.get_running_loop()
     conn._in_use = False
     conn._in_transaction = False
     conn._tx_owner = None
+    conn._creator_pid = _os.getpid()
     return conn
 
 
@@ -65,12 +68,15 @@ def test_called_from_sync_context_branch_message_substring() -> None:
     message rather than crashing on ``get_running_loop``'s
     RuntimeError. Run as a SYNC test so the surrounding code does
     not have a running loop."""
+    import os as _os
+
     conn = DqliteConnection.__new__(DqliteConnection)
     conn._pool_released = False
     conn._bound_loop = None
     conn._in_use = False
     conn._in_transaction = False
     conn._tx_owner = None
+    conn._creator_pid = _os.getpid()
     with pytest.raises(InterfaceError, match="from within an async context"):
         conn._check_in_use()
 

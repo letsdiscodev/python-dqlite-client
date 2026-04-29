@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
@@ -265,6 +266,13 @@ class ConnectionPool:
         self._closed_event: asyncio.Event | None = None
         self._close_done: asyncio.Event | None = None
         self._initialized = False
+        # Fork-after-init is unsupported: pooled connections hold
+        # shared TCP sockets and asyncio primitives bound to the
+        # parent's loop. Store the creator pid so cross-fork
+        # ``acquire`` raises a clear ``InterfaceError`` instead of
+        # silently corrupting the wire by interleaving writes.
+        # Symmetric with ``__reduce__`` and the per-connection guard.
+        self._creator_pid = os.getpid()
 
     def __repr__(self) -> str:
         state = "closed" if self._closed else "open"
@@ -656,6 +664,11 @@ class ConnectionPool:
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
         """Acquire a connection from the pool."""
+        if os.getpid() != self._creator_pid:
+            raise InterfaceError(
+                "Pool used after fork; reconstruct from configuration "
+                "in the target process."
+            )
         if self._closed:
             raise DqliteConnectionError("Pool is closed")
 

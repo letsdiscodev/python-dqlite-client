@@ -5,6 +5,7 @@ import contextlib
 import ipaddress
 import logging
 import math
+import os
 import re
 import string
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -866,6 +867,13 @@ class DqliteConnection:
         # ``_invalidate`` so a subsequent ``close()`` can await it and
         # keep the reader task from outliving the connection.
         self._pending_drain: asyncio.Task[None] | None = None
+        # Fork-after-init is unsupported: the inherited TCP socket
+        # would be shared with the parent and writes would interleave
+        # on the wire, and asyncio primitives bound to the parent's
+        # loop are unusable in the child. Store the creator pid so
+        # cross-fork use raises a clear ``InterfaceError`` from any
+        # public method instead of silent corruption.
+        self._creator_pid = os.getpid()
 
     @property
     def address(self) -> str:
@@ -1237,6 +1245,11 @@ class DqliteConnection:
 
     def _check_in_use(self) -> None:
         """Raise on misuse: wrong event loop, concurrent access, or use after pool release."""
+        if os.getpid() != self._creator_pid:
+            raise InterfaceError(
+                "Connection used after fork; reconstruct from configuration "
+                "in the target process."
+            )
         if self._pool_released:
             raise InterfaceError(
                 "This connection has been returned to the pool and can no longer "
