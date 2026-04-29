@@ -76,6 +76,11 @@ class TestClusterClientPickleGuard:
         with pytest.raises(TypeError, match="ClusterClient"):
             copy.copy(cluster)
 
+    def test_copy_deepcopy_raises(self) -> None:
+        cluster = ClusterClient(node_store=MemoryNodeStore(["localhost:9001"]))
+        with pytest.raises(TypeError, match="ClusterClient"):
+            copy.deepcopy(cluster)
+
 
 class TestDqliteProtocolPickleGuard:
     def test_pickle_raises(self) -> None:
@@ -89,3 +94,27 @@ class TestDqliteProtocolPickleGuard:
         proto = DqliteProtocol(reader=reader, writer=writer)
         with pytest.raises(TypeError, match="DqliteProtocol"):
             pickle.dumps(proto)
+
+    def test_copy_copy_raises(self) -> None:
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from dqliteclient.protocol import DqliteProtocol
+
+        reader = MagicMock(spec=asyncio.StreamReader)
+        writer = MagicMock(spec=asyncio.StreamWriter)
+        proto = DqliteProtocol(reader=reader, writer=writer)
+        with pytest.raises(TypeError, match="DqliteProtocol"):
+            copy.copy(proto)
+
+    def test_copy_deepcopy_raises(self) -> None:
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from dqliteclient.protocol import DqliteProtocol
+
+        reader = MagicMock(spec=asyncio.StreamReader)
+        writer = MagicMock(spec=asyncio.StreamWriter)
+        proto = DqliteProtocol(reader=reader, writer=writer)
+        with pytest.raises(TypeError, match="DqliteProtocol"):
+            copy.deepcopy(proto)
