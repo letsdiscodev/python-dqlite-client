@@ -441,6 +441,48 @@ class ConnectionPool:
             max_attempts=self._max_attempts,
         )
 
+    async def _put_back_or_release_late_winner(self, conn: DqliteConnection) -> None:
+        """Put a connection back on the queue, or close + release the
+        reservation if the queue is full.
+
+        Used in two places in ``acquire()``:
+
+        1. The ``except BaseException`` arm — outer cancel raced with
+           a successful ``get_task`` (a sibling ``_release``
+           ``put_nowait`` ran between our snapshot and the cancel).
+        2. The post-wait demux's else-arm — timeout snapshot raced a
+           winning ``get_task`` during the post-wait
+           ``await closed_task``.
+
+        Without this routing, the conn is referenced only by the
+        soon-to-be-GC'd ``get_task`` and silently disappears. Its
+        reservation slot is never released because ``_release`` only
+        fires for connections that flow back through the user's
+        context manager — so the pool permanently loses one slot of
+        capacity per occurrence.
+        """
+        try:
+            self._pool.put_nowait(conn)
+        except asyncio.QueueFull:
+            # Invariant violation: reservations should track queue
+            # capacity exactly, so a full queue on return is
+            # "impossible." If it happens anyway, silently dropping
+            # the reference would leak a live reader task and a
+            # socket. Close explicitly and adjust the reservation
+            # count so the pool shrinks cleanly instead of leaking.
+            # Suppression of close's own errors is narrow — OSError on
+            # an already-dead writer is expected; anything else
+            # propagates.
+            with contextlib.suppress(OSError):
+                await conn.close()
+            # Route through the helper so the counter stays
+            # lock-protected and sibling acquirers parked on
+            # ``closed_event.wait()`` get woken via
+            # ``_signal_state_change``. Shield so a nested cancel
+            # cannot leave ``_size`` inconsistent.
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(self._release_reservation())
+
     async def _release_reservation(self) -> None:
         """Decrement ``_size`` under the lock, waking waiters.
 
@@ -704,30 +746,7 @@ class ConnectionPool:
                     # valid; return it to the queue so the next
                     # acquirer can use it instead of closing and
                     # releasing (which would shrink _size).
-                    conn_won = get_task.result()
-                    try:
-                        self._pool.put_nowait(conn_won)
-                    except asyncio.QueueFull:
-                        # Invariant violation: reservations should track
-                        # queue capacity exactly, so a full queue on
-                        # return is "impossible." If it happens anyway,
-                        # silently dropping the reference would leak a
-                        # live reader task and a socket. Close
-                        # explicitly and adjust the reservation count
-                        # so the pool shrinks cleanly instead of
-                        # leaking. Suppression of close's own errors is
-                        # narrow — OSError on an already-dead writer is
-                        # expected; anything else propagates.
-                        with contextlib.suppress(OSError):
-                            await conn_won.close()
-                        # Route through the helper so the counter
-                        # stays lock-protected and sibling acquirers
-                        # parked on ``closed_event.wait()`` get
-                        # woken via ``_signal_state_change``. Shield
-                        # so a nested cancel cannot leave ``_size``
-                        # inconsistent.
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await asyncio.shield(self._release_reservation())
+                    await self._put_back_or_release_late_winner(get_task.result())
                 elif get_task is not None and not get_task.done():
                     get_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
@@ -755,7 +774,14 @@ class ConnectionPool:
                 # must still propagate.
                 with contextlib.suppress(asyncio.CancelledError):
                     await closed_task
-            if get_task in done:
+            if get_task.done() and not get_task.cancelled() and get_task.exception() is None:
+                # Live-state check: ``done`` is the snapshot taken
+                # before the post-wait ``await closed_task`` yield
+                # above, during which a sibling ``_release`` can
+                # ``put_nowait`` and resolve ``get_task``. Trusting
+                # ``get_task in done`` would silently route the
+                # winning conn into the cancel-and-discard arm,
+                # leaking one slot of capacity per occurrence.
                 conn = get_task.result()
             else:
                 # Either close fired or the poll timer fired; either way,
@@ -763,6 +789,14 @@ class ConnectionPool:
                 get_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await get_task
+                if get_task.done() and not get_task.cancelled() and get_task.exception() is None:
+                    # Cancel raced a successful get during the await
+                    # above (a sibling ``_release`` put_nowait between
+                    # our cancel call and the cancel actually
+                    # delivering). Route the conn back via the same
+                    # put-back-or-release path the outer-cancel arm
+                    # uses, so the slot is not leaked.
+                    await self._put_back_or_release_late_winner(get_task.result())
                 continue
 
         # If connection is dead, discard and create a fresh one with leader discovery.
