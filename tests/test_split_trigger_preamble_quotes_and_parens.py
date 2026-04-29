@@ -51,48 +51,28 @@ class TestPreambleParenTracking:
 
 class TestPreambleQuotedIdentifiers:
     def test_double_quoted_table_name_in_preamble(self) -> None:
-        sql = (
-            'CREATE TRIGGER aud AFTER INSERT ON "my table" BEGIN\n'
-            "  UPDATE y SET v=1;\n"
-            "END;"
-        )
+        sql = 'CREATE TRIGGER aud AFTER INSERT ON "my table" BEGIN\n  UPDATE y SET v=1;\nEND;'
         pieces = _split_top_level_statements(sql)
         assert len(pieces) == 1, f"got {len(pieces)} pieces: {pieces!r}"
 
     def test_double_quoted_with_doubled_quote_escape(self) -> None:
         # SQLite identifier quoting: "" inside "..." is a literal "
-        sql = (
-            'CREATE TRIGGER aud AFTER INSERT ON "weird""name" BEGIN\n'
-            "  UPDATE y SET v=1;\n"
-            "END;"
-        )
+        sql = 'CREATE TRIGGER aud AFTER INSERT ON "weird""name" BEGIN\n  UPDATE y SET v=1;\nEND;'
         pieces = _split_top_level_statements(sql)
         assert len(pieces) == 1
 
     def test_bracketed_table_name_in_preamble(self) -> None:
-        sql = (
-            "CREATE TRIGGER aud AFTER INSERT ON [my table] BEGIN\n"
-            "  UPDATE y SET v=1;\n"
-            "END;"
-        )
+        sql = "CREATE TRIGGER aud AFTER INSERT ON [my table] BEGIN\n  UPDATE y SET v=1;\nEND;"
         pieces = _split_top_level_statements(sql)
         assert len(pieces) == 1
 
     def test_backtick_table_name_in_preamble(self) -> None:
-        sql = (
-            "CREATE TRIGGER aud AFTER INSERT ON `my table` BEGIN\n"
-            "  UPDATE y SET v=1;\n"
-            "END;"
-        )
+        sql = "CREATE TRIGGER aud AFTER INSERT ON `my table` BEGIN\n  UPDATE y SET v=1;\nEND;"
         pieces = _split_top_level_statements(sql)
         assert len(pieces) == 1
 
     def test_backtick_with_doubled_backtick_escape(self) -> None:
-        sql = (
-            "CREATE TRIGGER aud AFTER INSERT ON `weird``name` BEGIN\n"
-            "  UPDATE y SET v=1;\n"
-            "END;"
-        )
+        sql = "CREATE TRIGGER aud AFTER INSERT ON `weird``name` BEGIN\n  UPDATE y SET v=1;\nEND;"
         pieces = _split_top_level_statements(sql)
         assert len(pieces) == 1
 
@@ -100,19 +80,12 @@ class TestPreambleQuotedIdentifiers:
 class TestPreambleComments:
     def test_line_comment_between_trigger_and_begin(self) -> None:
         sql = (
-            "CREATE TRIGGER aud AFTER INSERT ON x -- migration v3\n"
-            "BEGIN\n"
-            "  UPDATE y SET v=1;\n"
-            "END;"
+            "CREATE TRIGGER aud AFTER INSERT ON x -- migration v3\nBEGIN\n  UPDATE y SET v=1;\nEND;"
         )
         pieces = _split_top_level_statements(sql)
         assert len(pieces) == 1
 
     def test_block_comment_between_trigger_and_begin(self) -> None:
-        sql = (
-            "CREATE TRIGGER aud AFTER INSERT ON x /* notes */ BEGIN\n"
-            "  UPDATE y SET v=1;\n"
-            "END;"
-        )
+        sql = "CREATE TRIGGER aud AFTER INSERT ON x /* notes */ BEGIN\n  UPDATE y SET v=1;\nEND;"
         pieces = _split_top_level_statements(sql)
         assert len(pieces) == 1

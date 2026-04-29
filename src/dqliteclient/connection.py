@@ -1260,8 +1260,7 @@ class DqliteConnection:
         """Raise on misuse: wrong event loop, concurrent access, or use after pool release."""
         if os.getpid() != self._creator_pid:
             raise InterfaceError(
-                "Connection used after fork; reconstruct from configuration "
-                "in the target process."
+                "Connection used after fork; reconstruct from configuration in the target process."
             )
         if self._pool_released:
             raise InterfaceError(

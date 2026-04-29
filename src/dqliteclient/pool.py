@@ -318,8 +318,7 @@ class ConnectionPool:
         """
         if os.getpid() != self._creator_pid:
             raise InterfaceError(
-                "Pool used after fork; reconstruct from configuration "
-                "in the target process."
+                "Pool used after fork; reconstruct from configuration in the target process."
             )
         # Hold the lock across the gather so a second concurrent
         # initialize() call observes _initialized=True after the first
@@ -671,8 +670,7 @@ class ConnectionPool:
         """Acquire a connection from the pool."""
         if os.getpid() != self._creator_pid:
             raise InterfaceError(
-                "Pool used after fork; reconstruct from configuration "
-                "in the target process."
+                "Pool used after fork; reconstruct from configuration in the target process."
             )
         if self._closed:
             raise DqliteConnectionError("Pool is closed")
