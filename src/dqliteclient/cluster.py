@@ -5,7 +5,7 @@ import contextlib
 import logging
 import random
 from collections.abc import Callable, Iterable
-from typing import Final
+from typing import Final, NoReturn
 
 from dqliteclient.connection import DqliteConnection, _parse_address, _validate_timeout
 from dqliteclient.exceptions import (
@@ -160,6 +160,21 @@ class ClusterClient:
         """Create cluster client from list of addresses."""
         store = MemoryNodeStore(addresses)
         return cls(store, timeout=timeout, redirect_policy=redirect_policy)
+
+    def __reduce__(self) -> NoReturn:
+        # Holds a per-client single-flight slot map keyed by loop-bound
+        # asyncio.Task instances and a NodeStore that may itself hold
+        # mutable address state. Pickling produces a duplicate detached
+        # from any loop and from the original NodeStore's lifecycle —
+        # any use yields opaque corruption. Surface a clear
+        # driver-level TypeError instead. Symmetric with the
+        # ConnectionPool / DqliteConnection guards.
+        raise TypeError(
+            f"cannot pickle {type(self).__name__!r} object — holds a "
+            f"loop-bound single-flight slot map and a NodeStore "
+            f"reference; reconstruct from configuration in the target "
+            f"process instead."
+        )
 
     def _check_redirect(self, address: str) -> None:
         """Reject leader-redirect targets that fail the configured policy."""

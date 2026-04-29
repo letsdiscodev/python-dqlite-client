@@ -6,7 +6,7 @@ import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import (
@@ -278,6 +278,21 @@ class ConnectionPool:
             f"ConnectionPool(addresses={addrs_repr}, "
             f"size={self._size}, min_size={self._min_size}, "
             f"max_size={self._max_size}, {state})"
+        )
+
+    def __reduce__(self) -> "NoReturn":
+        # ``asyncio.Queue`` and ``asyncio.Lock`` became pickleable in
+        # Python 3.10+, so a naive ``pickle.dumps(pool)`` SILENTLY
+        # produces a "live"-looking duplicate — detached from any
+        # running loop, with fresh internal locks and queue. Any use
+        # of the duplicate yields opaque corruption. Surface a clear
+        # driver-level TypeError instead. Symmetric with the dbapi
+        # Connection / Cursor guards.
+        raise TypeError(
+            f"cannot pickle {type(self).__name__!r} object — holds "
+            f"loop-bound asyncio.Queue / asyncio.Lock / asyncio.Event "
+            f"and live worker tasks; reconstruct from configuration "
+            f"in the target process instead."
         )
 
     async def initialize(self) -> None:

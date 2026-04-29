@@ -5,7 +5,7 @@ import logging
 import secrets
 import sys
 from collections.abc import Sequence
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
 from dqlitewire import (
@@ -160,6 +160,20 @@ class DqliteProtocol:
         # is authoritative. Opt-in protects operators whose timeout is
         # a latency-SLO boundary from server-induced amplification.
         self._trust_server_heartbeat = trust_server_heartbeat
+
+    def __reduce__(self) -> NoReturn:
+        # Wraps a live ``asyncio.StreamReader`` / ``StreamWriter``
+        # (loop-bound), a ``MessageDecoder`` with internal buffer
+        # state, and per-stream cap counters that mean nothing
+        # post-deserialise. Surface a clear driver-level TypeError
+        # instead of leaking the underlying ``cannot pickle
+        # 'asyncio.streams.StreamReader'``.
+        raise TypeError(
+            f"cannot pickle {type(self).__name__!r} object — wraps "
+            f"loop-bound StreamReader / StreamWriter and a stateful "
+            f"MessageDecoder; reconstruct from a fresh wire handshake "
+            f"in the target process instead."
+        )
 
     @property
     def is_wire_coherent(self) -> bool:

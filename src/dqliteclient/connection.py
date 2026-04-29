@@ -10,7 +10,7 @@ import string
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 from dqliteclient.exceptions import (
     DataError,
@@ -786,6 +786,22 @@ class DqliteConnection:
     def __repr__(self) -> str:
         state = "connected" if self._protocol is not None else "disconnected"
         return f"<DqliteConnection address={self._address!r} database={self._database!r} {state}>"
+
+    def __reduce__(self) -> NoReturn:
+        # ``DqliteConnection`` holds a live socket, an event-loop-bound
+        # asyncio.Lock, and a WeakSet of registered cursors — none of
+        # which survive serialization. Surface a clear driver-level
+        # TypeError instead of leaking the underlying ``cannot pickle
+        # '_thread.lock'`` (or, worse, the cryptic
+        # ``Can't pickle local object 'WeakSet.__init__.<locals>._remove'``
+        # post-connect). Symmetric with the dbapi-layer guards on
+        # Connection / Cursor.
+        raise TypeError(
+            f"cannot pickle {type(self).__name__!r} object — holds a "
+            f"live socket, loop-bound asyncio.Lock, and weak cursor "
+            f"refs; reconstruct from configuration in the target "
+            f"process instead."
+        )
 
     @property
     def in_transaction(self) -> bool:
