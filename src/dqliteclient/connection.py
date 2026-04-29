@@ -25,7 +25,7 @@ from dqliteclient.protocol import (
 )
 from dqlitewire import DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES
 from dqlitewire import DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS
-from dqlitewire import LEADER_ERROR_CODES
+from dqlitewire import LEADER_ERROR_CODES, NO_TRANSACTION_MESSAGE_SUBSTRINGS
 from dqlitewire import SQLITE_BUSY as _SQLITE_BUSY
 from dqlitewire import TX_AUTO_ROLLBACK_PRIMARY_CODES as _TX_AUTO_ROLLBACK_PRIMARY_CODES
 from dqlitewire import primary_sqlite_code as _primary_sqlite_code
@@ -341,7 +341,8 @@ def _is_no_tx_rollback_error(exc: BaseException) -> bool:
     reply from the server during a ROLLBACK.
 
     Recognised by SQLite primary code 1 (``SQLITE_ERROR``) plus the
-    "no transaction is active" or "cannot rollback" wording. Both
+    wording fragments listed in
+    :data:`dqlitewire.NO_TRANSACTION_MESSAGE_SUBSTRINGS`. Both
     conditions must hold so a disk-full / constraint / IO error whose
     message happens to include the magic substring is not silently
     treated as benign.
@@ -349,8 +350,9 @@ def _is_no_tx_rollback_error(exc: BaseException) -> bool:
     Used by the ``transaction()`` context manager and by the pool's
     ``_reset_connection`` to distinguish "server already auto-rolled
     back; preserve the slot" from a real ROLLBACK failure that
-    requires invalidation. Centralising the check avoids drift if the
-    SQLite-error wording ever changes.
+    requires invalidation. The substring list lives in the wire layer
+    so this recogniser and the dbapi's ``_is_no_transaction_error``
+    cannot drift apart on a server-side wording change.
     """
     if not isinstance(exc, OperationalError):
         return False
@@ -358,7 +360,7 @@ def _is_no_tx_rollback_error(exc: BaseException) -> bool:
     if code is None or _primary_sqlite_code(code) != 1:  # SQLITE_ERROR
         return False
     msg = str(exc).lower()
-    return "no transaction is active" in msg or "cannot rollback" in msg
+    return any(s in msg for s in NO_TRANSACTION_MESSAGE_SUBSTRINGS)
 
 
 # RFC 1035 hostname labels are ASCII letters, digits, and hyphen. We
