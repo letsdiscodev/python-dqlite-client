@@ -127,6 +127,13 @@ def _split_top_level_statements(sql: str) -> list[str]:
     * ``--`` to end-of-line — line comment
     * ``/* ... */`` — block comment
 
+    Trigger-body block scope (``parse.y::trigger_cmd_list``): SQLite
+    treats ``;`` inside a ``CREATE [TEMP|TEMPORARY] TRIGGER ... BEGIN
+    ... END`` as inner-statement terminators that do NOT close the
+    outer DDL. Track ``BEGIN..END`` depth ONLY after seeing the
+    trigger preamble — a bare ``BEGIN`` is transaction-control and
+    must still split.
+
     Returns whitespace-stripped non-empty pieces. Keep this small and
     self-contained — adding a real tokeniser is out of scope.
     """
@@ -134,6 +141,15 @@ def _split_top_level_statements(sql: str) -> list[str]:
     start = 0
     i = 0
     n = len(sql)
+    # ``in_trigger_body``: inside a ``CREATE TRIGGER ... BEGIN`` body.
+    # ``trigger_depth``: inner BEGIN..END nesting count (for compound
+    # SQLite trigger bodies, e.g. ``BEGIN ... BEGIN ... END; END;``).
+    in_trigger_body = False
+    trigger_depth = 0
+    # Position in the current statement piece where we last checked
+    # for a CREATE TRIGGER preamble — only check ahead of, not behind,
+    # to keep this O(n) per piece.
+    trigger_scan_start = 0
     while i < n:
         c = sql[i]
         if c == "'":
@@ -184,16 +200,174 @@ def _split_top_level_statements(sql: str) -> list[str]:
             end = sql.find("*/", i + 2)
             i = n if end == -1 else end + 2
             continue
-        if c == ";":
+        # Track CREATE TRIGGER ... BEGIN entry and BEGIN..END nesting
+        # so an inner ``;`` inside a trigger body does not close the
+        # outer DDL. Only enter trigger-body mode after recognising
+        # the full preamble; a bare ``BEGIN`` (transaction-control)
+        # outside trigger mode must still permit ``;`` to split.
+        if c.isalpha() and (i == 0 or not _is_word_char(sql[i - 1])):
+            kw_end = i
+            while kw_end < n and _is_word_char(sql[kw_end]):
+                kw_end += 1
+            kw = sql[i:kw_end].upper()
+            if not in_trigger_body:
+                # Look for ``CREATE TRIGGER ... BEGIN`` with optional
+                # ``TEMP`` / ``TEMPORARY`` between CREATE and TRIGGER.
+                if kw == "CREATE" and i >= trigger_scan_start:
+                    j = _scan_for_trigger_begin(sql, kw_end, n)
+                    if j > 0:
+                        in_trigger_body = True
+                        trigger_depth = 1
+                        i = j
+                        continue
+            else:
+                # Inside trigger body — track nested BEGIN..END so a
+                # compound trigger (BEGIN ... BEGIN ... END; END;)
+                # closes correctly.
+                if kw == "BEGIN":
+                    trigger_depth += 1
+                    i = kw_end
+                    continue
+                if kw == "END":
+                    trigger_depth -= 1
+                    if trigger_depth == 0:
+                        in_trigger_body = False
+                    i = kw_end
+                    continue
+            i = kw_end
+            continue
+        if c == ";" and not in_trigger_body:
             piece = sql[start:i].strip()
             if piece:
                 out.append(piece)
             start = i + 1
+            trigger_scan_start = start
+        # When inside a trigger body, ``;`` is an inner-statement
+        # terminator and does not split the outer DDL.
         i += 1
     tail = sql[start:].strip()
     if tail:
         out.append(tail)
     return out
+
+
+def _is_word_char(c: str) -> bool:
+    """True if ``c`` is part of a SQL keyword/identifier word."""
+    return c.isalnum() or c == "_"
+
+
+def _scan_for_trigger_begin(sql: str, after_create: int, n: int) -> int:
+    """Look ahead from just after ``CREATE`` for the trigger preamble
+    ``[TEMP|TEMPORARY] TRIGGER ... BEGIN`` and return the index just
+    past the ``BEGIN`` keyword on success, or 0 (not a trigger).
+
+    Skips over quoted identifiers, comments, and parenthesised
+    sub-expressions (the ``WHEN (...)`` clause). Stops at any ``;``
+    or end-of-input. Symmetric with the splitter's quote/comment
+    handling so a ``CREATE TRIGGER`` inside a string literal is not
+    matched (the outer splitter has already advanced past those
+    constructs by the time the alpha-token branch fires).
+    """
+    i = after_create
+    # Optional whitespace, then optional TEMP/TEMPORARY, then required
+    # TRIGGER keyword.
+    while i < n and sql[i].isspace():
+        i += 1
+    if i >= n:
+        return 0
+    j = i
+    while j < n and _is_word_char(sql[j]):
+        j += 1
+    word = sql[i:j].upper()
+    if word in ("TEMP", "TEMPORARY"):
+        i = j
+        while i < n and sql[i].isspace():
+            i += 1
+        j = i
+        while j < n and _is_word_char(sql[j]):
+            j += 1
+        word = sql[i:j].upper()
+    if word != "TRIGGER":
+        return 0
+    i = j
+    # Now scan forward for the next standalone BEGIN at the same
+    # nesting level, respecting quotes / comments / parens.
+    paren_depth = 0
+    while i < n:
+        c = sql[i]
+        if c == "'":
+            i += 1
+            while i < n:
+                if sql[i] == "'":
+                    if i + 1 < n and sql[i + 1] == "'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == '"':
+            i += 1
+            while i < n:
+                if sql[i] == '"':
+                    if i + 1 < n and sql[i + 1] == '"':
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "[":
+            i += 1
+            while i < n and sql[i] != "]":
+                i += 1
+            if i < n:
+                i += 1
+            continue
+        if c == "`":
+            i += 1
+            while i < n:
+                if sql[i] == "`":
+                    if i + 1 < n and sql[i + 1] == "`":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "-" and i + 1 < n and sql[i + 1] == "-":
+            nl = sql.find("\n", i + 2)
+            i = n if nl == -1 else nl + 1
+            continue
+        if c == "/" and i + 1 < n and sql[i + 1] == "*":
+            end = sql.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        if c == "(":
+            paren_depth += 1
+            i += 1
+            continue
+        if c == ")":
+            if paren_depth > 0:
+                paren_depth -= 1
+            i += 1
+            continue
+        if c == ";":
+            # Reached the end of the would-be CREATE TRIGGER without a
+            # BEGIN — not a trigger-body DDL after all (could be a
+            # ``CREATE TRIGGER ... INSERT`` short-form trigger which
+            # sqlite also supports without BEGIN..END). Bail out.
+            return 0
+        if paren_depth == 0 and c.isalpha() and (i == 0 or not _is_word_char(sql[i - 1])):
+            j = i
+            while j < n and _is_word_char(sql[j]):
+                j += 1
+            if sql[i:j].upper() == "BEGIN":
+                return j
+            i = j
+            continue
+        i += 1
+    return 0
 
 
 # Fixed-order tuple instead of a frozenset: iteration order is
