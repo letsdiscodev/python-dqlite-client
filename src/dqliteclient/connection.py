@@ -1456,7 +1456,7 @@ class DqliteConnection:
                 # close() awaits it.
                 try:
                     self._pending_drain = loop.create_task(_bounded_drain())
-                except RuntimeError as cause:
+                except RuntimeError as schedule_err:
                     # ``loop.create_task`` raises
                     # RuntimeError("Event loop is closed") if the
                     # loop has been stopped — a real shape during
@@ -1464,10 +1464,18 @@ class DqliteConnection:
                     # Don't replace the original cancel/cause with a
                     # bare RuntimeError; log and move on with no
                     # pending drain.
+                    #
+                    # Bind to ``schedule_err`` (NOT ``cause``) so the
+                    # except's ``as`` does not shadow the function
+                    # parameter ``cause`` and leave it unbound for
+                    # the ``cause is not None`` check below — Python
+                    # deletes ``except as`` bindings at end-of-block,
+                    # so reusing the name silently breaks a sibling
+                    # reference further down.
                     logger.debug(
                         "Connection._invalidate: loop.create_task raised %s "
                         "while scheduling _bounded_drain; original cause preserved",
-                        type(cause).__name__,
+                        type(schedule_err).__name__,
                         exc_info=True,
                     )
                     self._pending_drain = None
