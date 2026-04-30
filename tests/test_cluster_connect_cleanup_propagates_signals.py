@@ -33,11 +33,11 @@ async def test_connect_cleanup_arm_does_not_swallow_unexpected_exception() -> No
     async def _fake_find_leader(**kwargs: object) -> str:
         return "localhost:9001"
 
-    cluster.find_leader = _fake_find_leader  # type: ignore[method-assign]
+    cluster.find_leader = _fake_find_leader
 
     import dqliteclient.cluster as cluster_mod
 
-    real_dc = cluster_mod.DqliteConnection
+    real_dc = cluster_mod.DqliteConnection  # type: ignore[attr-defined]
 
     class _StubDqliteConnection:
         def __init__(self, *a: object, **kw: object) -> None:
@@ -53,10 +53,10 @@ async def test_connect_cleanup_arm_does_not_swallow_unexpected_exception() -> No
             # source of the bug surfaces.
             raise AttributeError("unexpected attribute access in close()")
 
-    cluster_mod.DqliteConnection = _StubDqliteConnection  # type: ignore[assignment]
+    cluster_mod.DqliteConnection = _StubDqliteConnection  # type: ignore[assignment,attr-defined]
 
     try:
         with pytest.raises(AttributeError, match="unexpected attribute access"):
             await cluster.connect("default")
     finally:
-        cluster_mod.DqliteConnection = real_dc  # type: ignore[assignment]
+        cluster_mod.DqliteConnection = real_dc  # type: ignore[attr-defined]
