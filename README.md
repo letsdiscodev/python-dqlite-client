@@ -43,6 +43,41 @@ async with pool.acquire() as conn:
     rows = await conn.fetch("SELECT 1")
 ```
 
+The pool issues `min_size` connection handshakes in parallel during
+`initialize()`. All initial connects target whichever node the
+cluster client identifies as the current leader, so the leader
+serialises its incoming-connection acceptance — `min_size=N` does
+NOT speed up startup linearly with N. A balanced default
+(`min_size=1` or low single digits) keeps cold-start latency
+predictable; raise it only when steady-state concurrency demands
+warm connections at engine startup.
+
+## Forking and multiprocessing
+
+Connections, pools, and the cluster client are not safe to use
+across `os.fork()`. The library detects fork-after-init and raises
+`InterfaceError` from any operation in the child process; the
+inherited TCP socket would otherwise be shared with the parent
+(writes would interleave on the wire) and asyncio primitives are
+bound to the parent's event loop.
+
+Common deployment patterns that fork after import:
+
+- **gunicorn** with `--preload`: workers inherit pools created in
+  the parent. Move pool creation into a per-worker `post_fork`
+  hook (gunicorn `post_fork` config) instead of the module top
+  level.
+- **multiprocessing**: child processes must reconstruct
+  connections / pools from configuration (addresses, database
+  name) rather than receive a parent-built object.
+- **Celery prefork pool**: each worker process must create its
+  own pool inside the worker init signal, not at module load.
+
+The fork detection is best-effort (pid mismatch); silent
+double-FIN on the parent's socket is a real risk if the guard is
+bypassed (e.g. via `__new__` to skip `__init__`). Just create the
+pool / connection in the child process you intend to use it from.
+
 ## Layering
 
 `dqlite-client` is the low-level async wire client. Most applications

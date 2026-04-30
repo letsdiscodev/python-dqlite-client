@@ -710,6 +710,26 @@ def parse_address(address: str) -> tuple[str, int]:
             # by non-hex characters intact, so the no-encoding path
             # round-trips byte-for-byte.
             host = host[:zone_sep] + unquote(host[zone_sep:])
+            # Reject pathological zone-id shapes here (rather than
+            # letting them slip past the IPv6 parse and fall through
+            # to the regex-fallback "not a valid hostname or IP
+            # literal" diagnostic, which is a different code path
+            # with a different error message). Empty zone, embedded
+            # whitespace, or path-like characters are not valid
+            # RFC 6874 zone identifiers.
+            zone = host[zone_sep + 1 :]
+            if not zone:
+                raise ValueError(
+                    f"Bracket syntax in {address!r} has an empty IPv6 zone "
+                    f"identifier (after '%'); supply a zone like '%eth0' "
+                    f"or remove the '%'"
+                )
+            if any(c.isspace() or c == "/" for c in zone):
+                raise ValueError(
+                    f"Bracket syntax in {address!r} has an invalid IPv6 "
+                    f"zone identifier {zone!r}; zone IDs must not contain "
+                    f"whitespace or '/'"
+                )
 
         # Strict bracket discipline: validate the contents are an
         # IPv6 literal. ``ipaddress.ip_address`` does not accept

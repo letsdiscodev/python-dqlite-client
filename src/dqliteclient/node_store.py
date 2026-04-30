@@ -97,9 +97,32 @@ class MemoryNodeStore(NodeStore):
             raise TypeError("Pass only one of 'addresses' or 'initial_addresses'")
         seed = addresses if addresses is not None else initial_addresses
         if seed:
+            # Strip leading/trailing whitespace and reject empty
+            # entries up front. Without this, a typoed seed like
+            # ``["localhost:9001\n"]`` (e.g. read from a config
+            # file) leaks ``ValueError`` through the sweep's narrow
+            # exception filter and surfaces deep inside
+            # ``find_leader``. Deduplicate while preserving order
+            # so a config with the same address twice doesn't
+            # double the probe count and double the per-node
+            # error lines in the failure-aggregate message.
+            seen: set[str] = set()
+            unique: list[str] = []
+            for raw in seed:
+                if not isinstance(raw, str):
+                    raise TypeError(
+                        f"NodeStore addresses must be 'host:port' strings, got {type(raw).__name__}"
+                    )
+                addr = raw.strip()
+                if not addr:
+                    raise ValueError("NodeStore addresses must be non-empty 'host:port' strings")
+                if addr in seen:
+                    continue
+                seen.add(addr)
+                unique.append(addr)
             self._nodes: tuple[NodeInfo, ...] = tuple(
                 NodeInfo(node_id=i + 1, address=addr, role=NodeRole.VOTER)
-                for i, addr in enumerate(seed)
+                for i, addr in enumerate(unique)
             )
         else:
             self._nodes = ()

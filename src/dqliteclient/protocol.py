@@ -336,6 +336,20 @@ class DqliteProtocol:
                 f"Expected StmtResponse, got {type(response).__name__}{self._addr_suffix()}"
             )
 
+        # Defense-in-depth: confirm the server's StmtResponse echoes
+        # the db_id we asked it to prepare against. A mismatch would
+        # mean the server's prepared-statement registry has drifted
+        # from the client's view, and any future exec/finalize
+        # against the returned stmt_id would target a different
+        # database. Surface this as a ProtocolError so the
+        # connection is invalidated rather than silently routing
+        # writes against the wrong DB.
+        if response.db_id != db_id:
+            raise ProtocolError(
+                f"StmtResponse db_id {response.db_id} does not match "
+                f"requested db_id {db_id}{self._addr_suffix()}"
+            )
+
         return response.stmt_id, response.num_params
 
     async def finalize(self, db_id: int, stmt_id: int) -> None:
@@ -417,6 +431,18 @@ class DqliteProtocol:
         while True:
             response = await self._read_response(deadline=deadline)
             if isinstance(response, EmptyResponse):
+                return
+            # ``ResultResponse`` is the EXEC-side terminal: when the
+            # interrupted statement was an EXEC / EXEC_SQL whose
+            # done-callback emitted RESULT before the INTERRUPT
+            # took effect, the response queue holds the RESULT
+            # before the EmptyResponse acknowledgement. Treat it as
+            # equivalent to EmptyResponse — the wire is in a
+            # coherent state and the interrupt has been honoured.
+            # Without this branch, a cancel landing on an EXEC
+            # path would hit the "Expected EmptyResponse" arm and
+            # poison the wire.
+            if isinstance(response, ResultResponse):
                 return
             if isinstance(response, FailureResponse):
                 raise OperationalError(response.code, self._failure_text(response))

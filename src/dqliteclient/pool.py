@@ -315,6 +315,17 @@ class ConnectionPool:
         succeeded — they leak as orphaned transports. Use
         ``return_exceptions=True`` so every task resolves, then close
         survivors explicitly before re-raising the first failure.
+
+        Warm-up shape: this issues ``min_size`` connection handshakes
+        IN PARALLEL via ``asyncio.gather``. Every initial connect
+        targets the current leader (after cluster discovery), so the
+        leader-side handshake acceptance is serialised and a large
+        ``min_size`` does NOT linearly speed up startup. Diverges from
+        Go-dqlite's pool which warms lazily; the parallel-warm shape
+        is a deliberate trade-off: predictable cold-start memory at
+        the cost of leader-side serialisation. Keep ``min_size`` low
+        (single digits) unless steady-state concurrency demands warm
+        connections at engine startup.
         """
         if os.getpid() != self._creator_pid:
             raise InterfaceError(

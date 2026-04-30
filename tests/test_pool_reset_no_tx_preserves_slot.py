@@ -35,11 +35,21 @@ class TestIsNoTxRollbackError:
         exc = OperationalError(1, "cannot rollback - no transaction is active")
         assert _is_no_tx_rollback_error(exc) is True
 
-    def test_classifier_matches_cannot_rollback_wording(self) -> None:
-        # The substring "cannot rollback" alone is also accepted, since
-        # the C server has historically used both wordings.
-        exc = OperationalError(1, "cannot rollback")
+    def test_classifier_matches_cannot_commit_wording(self) -> None:
+        # Both upstream wordings contain "no transaction is active"
+        # so the anchored substring covers commit and rollback
+        # equally. The bare "cannot rollback" token was previously
+        # also accepted but was too permissive.
+        exc = OperationalError(1, "cannot commit - no transaction is active")
         assert _is_no_tx_rollback_error(exc) is True
+
+    def test_classifier_rejects_bare_cannot_rollback(self) -> None:
+        # A message containing "cannot rollback" without the anchored
+        # "no transaction is active" clause must NOT match — any
+        # unrelated SQLite (or DQLITE_ERROR=1) error happening to
+        # contain those words would otherwise trigger silent-swallow.
+        exc = OperationalError(1, "cannot rollback because the disk is full")
+        assert _is_no_tx_rollback_error(exc) is False
 
     def test_classifier_rejects_no_tx_message_with_wrong_code(self) -> None:
         # SQLITE_BUSY (5) primary code with a coincidental no-tx wording

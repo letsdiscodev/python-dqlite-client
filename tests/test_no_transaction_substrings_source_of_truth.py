@@ -36,11 +36,14 @@ def test_recogniser_rejects_unrelated_message() -> None:
 
 
 def test_substring_constant_has_expected_values() -> None:
-    """Pin the canonical substring list — both clauses must be
-    present so a server-version drift that drops one but not the
-    other still triggers the recogniser. If a server change requires
-    an update, the integration pin
-    ``test_no_transaction_error_wording.py`` (in dbapi) catches it
-    against a live cluster."""
+    """Pin the canonical substring — the anchored
+    ``"no transaction is active"`` is the single source of truth.
+    Both upstream wordings (``"cannot rollback - no transaction is
+    active"`` and ``"cannot commit - no transaction is active"``)
+    contain this substring; the prior bare ``"cannot rollback"``
+    token was removed because it was too permissive (any unrelated
+    SQLite error or DQLITE_ERROR=1 message containing those words
+    could trigger the silent-swallow path). The integration pin
+    ``test_no_transaction_error_wording.py`` (in dbapi) catches a
+    server-version drift against a live cluster."""
     assert "no transaction is active" in NO_TRANSACTION_MESSAGE_SUBSTRINGS
-    assert "cannot rollback" in NO_TRANSACTION_MESSAGE_SUBSTRINGS
