@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any, Final, NoReturn
 
+from dqliteclient import connection as _conn_mod
 from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import (
     _TRANSACTION_ROLLBACK_SQL,
@@ -327,7 +328,7 @@ class ConnectionPool:
         (single digits) unless steady-state concurrency demands warm
         connections at engine startup.
         """
-        if os.getpid() != self._creator_pid:
+        if _conn_mod._current_pid != self._creator_pid:
             raise InterfaceError(
                 "Pool used after fork; reconstruct from configuration in the target process."
             )
@@ -679,7 +680,7 @@ class ConnectionPool:
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
         """Acquire a connection from the pool."""
-        if os.getpid() != self._creator_pid:
+        if _conn_mod._current_pid != self._creator_pid:
             raise InterfaceError(
                 "Pool used after fork; reconstruct from configuration in the target process."
             )
@@ -1330,7 +1331,7 @@ class ConnectionPool:
         # ``_close_done`` set but not yet ``set()``) does not block on
         # an Event bound to the parent's loop. Awaiting that Event in
         # the child's fresh loop hangs forever.
-        if os.getpid() != self._creator_pid:
+        if _conn_mod._current_pid != self._creator_pid:
             self._closed = True
             return
         if self._closed:

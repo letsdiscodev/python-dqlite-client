@@ -8,6 +8,7 @@ import random
 from collections.abc import Callable, Iterable
 from typing import Final, NoReturn
 
+from dqliteclient import connection as _conn_mod
 from dqliteclient.connection import DqliteConnection, _parse_address, _validate_timeout
 from dqliteclient.exceptions import (
     ClusterError,
@@ -222,7 +223,7 @@ class ClusterClient:
         (re-poll the node store between probes) costs an extra await
         per probe to close a window most callers do not exercise.
         """
-        if os.getpid() != self._creator_pid:
+        if _conn_mod._current_pid != self._creator_pid:
             # Fork-after-init: the slot map holds parent-loop tasks
             # that the child cannot drive. Surface a clear
             # InterfaceError instead of letting a sibling task land

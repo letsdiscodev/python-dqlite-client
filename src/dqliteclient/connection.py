@@ -36,6 +36,27 @@ __all__ = ["DqliteConnection"]
 
 logger = logging.getLogger(__name__)
 
+# Fork-aware pid cache. ``os.getpid()`` is a vDSO syscall on x86-64
+# Linux (~30 ns/call) but not on aarch64 Linux (~700 ns/call), so a
+# per-call check that fires on every public method became a measurable
+# overhead on aarch64 deployments. Cache the pid in a module-level int
+# and refresh on fork via ``os.register_at_fork(after_in_child=...)``,
+# which Python guarantees runs in the child before user code resumes.
+# Callers compare against ``_current_pid`` instead of ``os.getpid()``;
+# the comparison is a Python int-equality (~10 ns) regardless of
+# arch. ``register_at_fork`` is unavailable on Windows; fall back to
+# ``os.getpid`` there (Windows has no fork anyway).
+_current_pid: int = os.getpid()
+
+
+def _refresh_pid_cache() -> None:
+    global _current_pid
+    _current_pid = os.getpid()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_refresh_pid_cache)
+
 # Bare ``BEGIN`` opens an implicit ``DEFERRED`` transaction per SQLite's
 # grammar default. dqlite's Raft FSM serializes transactions regardless
 # of the qualifier, so DEFERRED / IMMEDIATE / EXCLUSIVE collapse to the
@@ -1128,7 +1149,7 @@ class DqliteConnection:
         # silent on already-closed inputs — silently no-oping in the
         # child preserves that contract for the GC / __del__ path that
         # commonly drives close in a forked worker.
-        if os.getpid() != self._creator_pid:
+        if _current_pid != self._creator_pid:
             # Drop every reference that crosses the fork boundary so
             # GC in the child doesn't keep parent-loop primitives or
             # the inherited socket FD alive. ``_pending_drain`` in
@@ -1311,7 +1332,7 @@ class DqliteConnection:
         use after pool release, missing async context, wrong event
         loop, concurrent operation, or transaction owned by another
         task."""
-        if os.getpid() != self._creator_pid:
+        if _current_pid != self._creator_pid:
             raise InterfaceError(
                 "Connection used after fork; reconstruct from configuration in the target process."
             )
