@@ -132,5 +132,34 @@ class MemoryNodeStore(NodeStore):
         return self._nodes
 
     async def set_nodes(self, nodes: Sequence[NodeInfo]) -> None:
-        """Update list of known nodes."""
-        self._nodes = tuple(nodes)
+        """Update list of known nodes.
+
+        Mirrors the strip / dedup / empty-rejection validation done
+        in ``__init__``. Without this, a runtime update with a
+        whitespace-laden or duplicated address would leak through
+        and surface deep inside ``find_leader`` (whitespace) or
+        inflate the probe count and per-node error lines
+        (duplicates).
+        """
+        seen: set[str] = set()
+        unique: list[NodeInfo] = []
+        for node in nodes:
+            if not isinstance(node.address, str):
+                raise TypeError(
+                    f"NodeInfo.address must be 'host:port' string, got "
+                    f"{type(node.address).__name__}"
+                )
+            addr = node.address.strip()
+            if not addr:
+                raise ValueError("NodeInfo.address must be a non-empty 'host:port' string")
+            if addr in seen:
+                continue
+            seen.add(addr)
+            if addr is node.address:
+                unique.append(node)
+            else:
+                # NodeInfo is a frozen dataclass; rebuild with the
+                # canonical (stripped) address so a downstream lookup
+                # by-address matches the canonical form.
+                unique.append(NodeInfo(node_id=node.node_id, address=addr, role=node.role))
+        self._nodes = tuple(unique)
