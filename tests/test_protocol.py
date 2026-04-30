@@ -626,6 +626,38 @@ class TestDqliteProtocol:
         assert stmt_id == 1
         assert num_params == 2
 
+    async def test_prepare_db_id_mismatch_raises_protocol_error_with_wire_decode_prefix(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """Pin: a server-emitted ``StmtResponse`` whose ``db_id``
+        does not match the prepare's ``db_id`` argument indicates
+        prepared-statement registry drift. The cycle 22 fix
+        prefixes the resulting ``ProtocolError`` with the
+        canonical ``"wire decode failed:"`` phrase so SA's
+        ``is_disconnect`` substring matcher routes it through
+        the pool-invalidate path. Without the prefix, the
+        registry-drift event would surface as a non-disconnect
+        ProtocolError and the SA pool would keep the broken
+        slot."""
+        from dqlitewire.messages import StmtResponse
+
+        # Request prepare against db_id=1 but server returns db_id=99
+        # — the registry-drift signal.
+        mock_reader.read.return_value = StmtResponse(db_id=99, stmt_id=42, num_params=0).encode()
+
+        with pytest.raises(ProtocolError) as exc_info:
+            await protocol.prepare(1, "SELECT 1")
+
+        message = str(exc_info.value)
+        assert message.startswith("wire decode failed:"), (
+            f"Cycle 22 prefix is load-bearing for SA's is_disconnect "
+            f"substring matcher. Got message: {message!r}"
+        )
+        assert "db_id 99" in message
+        assert "db_id 1" in message
+
     async def test_finalize(
         self,
         protocol: DqliteProtocol,
