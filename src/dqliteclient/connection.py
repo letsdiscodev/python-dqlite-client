@@ -1247,6 +1247,13 @@ class DqliteConnection:
         self._savepoint_stack.clear()
         self._savepoint_implicit_begin = False
         self._has_untracked_savepoint = False
+        # Drop the cached invalidation cause. The traceback chain
+        # holds frame globals / locals (potentially including the
+        # bind-parameter list of a failed executemany), pinning a
+        # large object graph across close → re-connect cycles.
+        # ``connect()``'s success path already clears it; this
+        # close-path clear handles the no-reconnect case.
+        self._invalidation_cause = None
         # Clear the loop binding so a subsequent ``connect()`` on a
         # different event loop is accepted by ``_check_in_use``. The
         # failed-connect path already clears this in ``connect()``'s
@@ -1431,9 +1438,37 @@ class DqliteConnection:
                     with contextlib.suppress(Exception):
                         await asyncio.wait_for(proto.wait_closed(), timeout=self._close_timeout)
 
+                # If a prior ``_invalidate`` already published a
+                # pending-drain task, cancel-and-detach it before
+                # overwriting. The first orphan would otherwise keep
+                # running but be unreachable through ``self``,
+                # triggering "Task was destroyed but it is pending"
+                # at GC even though ``close()`` awaited the SECOND
+                # task. ``connect()``'s pending-retire path uses the
+                # same cancel-and-detach idiom; this completes the
+                # parity.
+                prior = self._pending_drain
+                if prior is not None and not prior.done():
+                    prior.cancel()
                 # Strong-ref on self so the task is not GC'd before
                 # close() awaits it.
-                self._pending_drain = loop.create_task(_bounded_drain())
+                try:
+                    self._pending_drain = loop.create_task(_bounded_drain())
+                except RuntimeError as cause:
+                    # ``loop.create_task`` raises
+                    # RuntimeError("Event loop is closed") if the
+                    # loop has been stopped — a real shape during
+                    # interpreter shutdown / engine.dispose() races.
+                    # Don't replace the original cancel/cause with a
+                    # bare RuntimeError; log and move on with no
+                    # pending drain.
+                    logger.debug(
+                        "Connection._invalidate: loop.create_task raised %s "
+                        "while scheduling _bounded_drain; original cause preserved",
+                        type(cause).__name__,
+                        exc_info=True,
+                    )
+                    self._pending_drain = None
         self._protocol = None
         self._db_id = None
         self._in_use = False
