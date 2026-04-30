@@ -131,7 +131,7 @@ def test_dqlite_connection_close_after_fork_drops_inherited_state() -> None:
     conn._creator_pid = fake_parent_pid
 
     async def run() -> None:
-        with patch("dqliteclient.connection.os.getpid", return_value=fake_parent_pid + 1):
+        with patch("dqliteclient.connection._current_pid", fake_parent_pid + 1):
             await conn.close()
 
     asyncio.run(run())

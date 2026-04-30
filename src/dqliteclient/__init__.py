@@ -10,7 +10,7 @@ raises ``ImportError`` at import time.
 """
 
 from dqliteclient.cluster import ClusterClient, RedirectPolicy, allowlist_policy
-from dqliteclient.connection import DqliteConnection
+from dqliteclient.connection import DqliteConnection, parse_address
 from dqliteclient.exceptions import (
     ClusterError,
     ClusterPolicyError,
@@ -48,6 +48,7 @@ __all__ = [
     "OperationalError",
     "ProtocolError",
     "RedirectPolicy",
+    "parse_address",
     "__version__",
     "allowlist_policy",
     "connect",

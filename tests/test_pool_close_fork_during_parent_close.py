@@ -61,7 +61,7 @@ async def test_close_with_pid_mismatch_returns_even_when_closed_with_pending_eve
 
     # Bound the await so a regression manifests as a clean failure
     # instead of a hung test.
-    with patch("dqliteclient.pool.os.getpid", return_value=fake_parent_pid + 1):
+    with patch("dqliteclient.connection._current_pid", fake_parent_pid + 1):
         await asyncio.wait_for(pool.close(), timeout=1.0)
 
     # Local state flipped, no wait happened.
@@ -80,7 +80,7 @@ async def test_close_with_pid_mismatch_returns_even_when_closed_with_no_event() 
     fake_parent_pid = pool._creator_pid + 1
     pool._creator_pid = fake_parent_pid
 
-    with patch("dqliteclient.pool.os.getpid", return_value=fake_parent_pid + 1):
+    with patch("dqliteclient.connection._current_pid", fake_parent_pid + 1):
         await asyncio.wait_for(pool.close(), timeout=1.0)
 
     assert pool._closed is True

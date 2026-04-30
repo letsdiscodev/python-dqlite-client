@@ -40,8 +40,13 @@ async def test_transaction_after_fork_raises_fork_diagnostic_not_cross_task() ->
     fake_parent_pid = conn._creator_pid + 1
     conn._creator_pid = fake_parent_pid
 
+    # Patch the module-level pid cache so the misuse guard observes a
+    # fresh-process pid different from ``_creator_pid``. Cycle 21 moved
+    # the hot-path pid check from ``os.getpid()`` to a cached module
+    # attribute updated via ``os.register_at_fork``; patching
+    # ``os.getpid`` would be dead code.
     with (
-        patch("dqliteclient.connection.os.getpid", return_value=fake_parent_pid + 1),
+        patch("dqliteclient.connection._current_pid", fake_parent_pid + 1),
         pytest.raises(InterfaceError, match="fork") as excinfo,
     ):
         async with conn.transaction():

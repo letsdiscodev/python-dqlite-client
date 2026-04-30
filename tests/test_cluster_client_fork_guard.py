@@ -29,7 +29,7 @@ async def test_find_leader_after_fork_raises_interface_error() -> None:
     cluster._creator_pid = fake_parent_pid
 
     with (
-        patch("dqliteclient.cluster.os.getpid", return_value=fake_parent_pid + 1),
+        patch("dqliteclient.connection._current_pid", fake_parent_pid + 1),
         pytest.raises(InterfaceError, match="fork"),
     ):
         await cluster.find_leader()
