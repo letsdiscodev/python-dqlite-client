@@ -40,10 +40,12 @@ async def test_transaction_after_fork_raises_fork_diagnostic_not_cross_task() ->
     fake_parent_pid = conn._creator_pid + 1
     conn._creator_pid = fake_parent_pid
 
-    with patch("dqliteclient.connection.os.getpid", return_value=fake_parent_pid + 1):
-        with pytest.raises(InterfaceError, match="fork") as excinfo:
-            async with conn.transaction():
-                pass
+    with (
+        patch("dqliteclient.connection.os.getpid", return_value=fake_parent_pid + 1),
+        pytest.raises(InterfaceError, match="fork") as excinfo,
+    ):
+        async with conn.transaction():
+            pass
 
     # The diagnostic must be the fork message, not the cross-task one.
     msg = str(excinfo.value)

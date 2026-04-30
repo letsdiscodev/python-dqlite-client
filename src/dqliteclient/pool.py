@@ -1006,7 +1006,7 @@ class ConnectionPool:
                             # the user's original error. Narrow to
                             # ``RuntimeError`` so programming bugs
                             # (``AttributeError``, ``TypeError``, etc.)
-                            # still surface — see done/ISSUE-198.
+                            # still surface.
                             logger.debug(
                                 "pool.acquire cleanup: conn.close(%r) raised RuntimeError",
                                 getattr(conn, "_address", "?"),

@@ -57,9 +57,10 @@ _READ_CHUNK_SIZE: Final[int] = 4096
 # sane operational tuning (``config.c`` defaults to 15 s; 300 s fits
 # 20× that with plenty of headroom) while still bounding the widening
 # to a known scale. Changes here must be reflected in the
-# ``trust_server_heartbeat`` docstrings at protocol.py:82 and :106,
-# connection.py:__init__ docstring, and the top-level ``connect`` /
-# ``create_pool`` docstrings in ``__init__.py``.
+# ``trust_server_heartbeat`` docstrings on ``DqliteProtocol.__init__``
+# and ``DqliteProtocol.handshake``, ``DqliteConnection.__init__``,
+# and the top-level ``connect`` / ``create_pool`` docstrings in
+# ``__init__.py``.
 _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS: Final[float] = 300.0
 
 

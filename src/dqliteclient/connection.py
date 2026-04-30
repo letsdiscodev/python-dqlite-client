@@ -1192,7 +1192,7 @@ class DqliteConnection:
         # failed-connect path already clears this in ``connect()``'s
         # finally block, but the successful-close path was missing the
         # symmetry. Mirrors the loop-reset done by the dbapi-async
-        # adapter on close (``done/ISSUE-159``).
+        # adapter on close.
         self._bound_loop = None
         if self._protocol is None:
             return
@@ -1275,7 +1275,10 @@ class DqliteConnection:
         return self._protocol, self._db_id
 
     def _check_in_use(self) -> None:
-        """Raise on misuse: wrong event loop, concurrent access, or use after pool release."""
+        """Raise on misuse, in this order: cross-process (fork) use,
+        use after pool release, missing async context, wrong event
+        loop, concurrent operation, or transaction owned by another
+        task."""
         if os.getpid() != self._creator_pid:
             raise InterfaceError(
                 "Connection used after fork; reconstruct from configuration in the target process."
@@ -2136,7 +2139,7 @@ class DqliteConnection:
                     # server already auto-rolled-back. The connection
                     # is healthy; preserve it and re-raise the body
                     # exception. Mirrors the dbapi layer's
-                    # _NO_TX_CODES whitelist (ISSUE-696).
+                    # _NO_TX_CODES whitelist.
                     if _is_no_tx_rollback_error(roll_exc):
                         logger.debug(
                             "transaction(address=%s, id=%s): rollback "

@@ -136,8 +136,7 @@ class ClusterClient:
         # share the in-flight discovery task instead of each launching
         # an independent per-node sweep — under a leader flip with N
         # waiting acquirers, this collapses N×M handshake attempts
-        # against the failing ex-leader into M (one sweep). See
-        # ISSUE-631 for the stampede shape this closes. Slots are
+        # against the failing ex-leader into M (one sweep). Slots are
         # cleared on done-callback so a fresh probe re-runs after the
         # current task finishes; consecutive callers do NOT share a
         # cached failure.
