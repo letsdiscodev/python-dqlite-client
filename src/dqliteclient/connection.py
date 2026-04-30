@@ -604,7 +604,14 @@ def _is_no_tx_rollback_error(exc: BaseException) -> bool:
     code = getattr(exc, "code", None)
     if code is None or _primary_sqlite_code(code) != 1:  # SQLITE_ERROR
         return False
-    msg = str(exc).lower()
+    # Match against the un-truncated server text (raw_message) rather
+    # than ``str(exc)`` (truncated to _MAX_DISPLAY_MESSAGE codepoints).
+    # A long server message that has the no-tx clause beyond the
+    # truncation cap would otherwise miss the substring and fail to
+    # silent-swallow. Mirrors the BUSY-checkpoint matcher fix that
+    # established the discipline.
+    raw = getattr(exc, "raw_message", None) or str(exc)
+    msg = raw.lower()
     return any(s in msg for s in NO_TRANSACTION_MESSAGE_SUBSTRINGS)
 
 

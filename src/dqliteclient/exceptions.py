@@ -93,9 +93,13 @@ class OperationalError(DqliteError):
         self.code = code
         self.raw_message = message
         if len(message) > self._MAX_DISPLAY_MESSAGE:
+            # ``len(message)`` and the slice cap count Python codepoints,
+            # not UTF-8 bytes. Match the unit in the marker so an
+            # operator inspecting a truncated message can compute the
+            # original size without converting between units.
             overflow = len(message) - self._MAX_DISPLAY_MESSAGE
             self.message = (
-                f"{message[: self._MAX_DISPLAY_MESSAGE]}... [truncated, {overflow} bytes]"
+                f"{message[: self._MAX_DISPLAY_MESSAGE]}... [truncated, {overflow} codepoints]"
             )
         else:
             self.message = message

@@ -768,7 +768,10 @@ class DqliteProtocol:
             # Server-authored failure mid-stream: surface the SQLite code
             # so sqlalchemy's is_disconnect and dbapi's code-to-exception
             # map can classify correctly (leader flip, constraint, etc.).
-            raise OperationalError(e.code, e.message) from e
+            # Append the addr suffix so the operator log shows which
+            # peer emitted the failure — matching the eight sibling
+            # ``raise OperationalError`` sites in this module.
+            raise OperationalError(e.code, f"{e.message}{self._addr_suffix()}") from e
         except _WireProtocolError as e:
             raise ProtocolError(f"Wire decode failed{self._addr_suffix()}: {e}") from e
 
