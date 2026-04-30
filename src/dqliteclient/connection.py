@@ -1217,15 +1217,17 @@ class DqliteConnection:
             # the second caller's resumption — verified by code
             # review, not coverage.
             #
-            # Suppress ``BaseException`` (not just ``Exception``) so a
-            # ``CancelledError`` delivered during ``await pending``
-            # does not propagate out of close() before the protocol
-            # tear-down at lines below runs — leaking ``_protocol``.
-            # Symmetric with ``connect()``'s pending-retire path which
-            # already uses ``BaseException``. The user's outer cancel
-            # gets re-delivered at the next await boundary inside
-            # close (e.g., ``writer.wait_closed`` below).
-            with contextlib.suppress(BaseException):
+            # Narrow suppress to ``(Exception, asyncio.CancelledError)``
+            # so KeyboardInterrupt and SystemExit propagate. Cycle 23
+            # noted that the previous ``BaseException`` suppress was
+            # mis-justified as "symmetric with connect()" — connect's
+            # pending-retire path actually uses NARROW catches
+            # (``except asyncio.CancelledError`` + ``except Exception``).
+            # asyncio cancellation gets re-delivered at the next await
+            # boundary (Python 3.11+ ``Task.cancelling()`` re-arm
+            # contract), but signal-driven KI/SE are one-shot and
+            # would be lost forever if absorbed here.
+            with contextlib.suppress(Exception, asyncio.CancelledError):
                 await pending
         # Mirror ``_invalidate``'s atomic clear of the transaction
         # bookkeeping. Without this, a raw ``BEGIN`` followed by an
@@ -1489,6 +1491,14 @@ class DqliteConnection:
         self._savepoint_stack.clear()
         self._savepoint_implicit_begin = False
         self._has_untracked_savepoint = False
+        # Clear the loop binding so a subsequent ``connect()`` after
+        # invalidation can bind to a different loop without tripping
+        # the ``_check_in_use`` cross-loop guard. ``_close_impl``
+        # already clears this; without it here, an invalidated
+        # connection (where every other state field has been
+        # scrubbed) is still rejected as "bound to a different
+        # event loop" on a fresh-loop reconnect.
+        self._bound_loop = None
         # Preserve the FIRST cause: ``_ensure_connected`` raises a
         # synthetic ``DqliteConnectionError("Not connected")`` chained
         # from ``self._invalidation_cause`` whenever an

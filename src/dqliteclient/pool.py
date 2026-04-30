@@ -601,6 +601,15 @@ class ConnectionPool:
                     # Verified by code review, not coverage.
                     break
                 try:
+                    # Clear ``_pool_released`` BEFORE close so the
+                    # close path actually runs. The release flag is
+                    # set when the conn was put back into the queue
+                    # in ``_release``; ``DqliteConnection.close()``
+                    # early-returns on True (user-side close on a
+                    # checked-in conn must be a no-op). Without this
+                    # clear, the pool's drain-side close would be
+                    # silently absorbed and the writer would leak.
+                    conn._pool_released = False
                     # Shield each per-connection close against an outer
                     # ``asyncio.timeout(pool.close())``. Without the shield,
                     # a cancel that lands mid-``wait_closed`` propagates out
@@ -867,6 +876,14 @@ class ConnectionPool:
             # never-connected conn (``_protocol is None``) — it short-
             # circuits to a noop. Shielded so an outer cancel does not
             # leave the writer dangling.
+            #
+            # Clear ``_pool_released`` BEFORE close so the close
+            # actually runs. ``DqliteConnection.close()`` early-returns
+            # when ``_pool_released`` is True (so user-side close on a
+            # checked-in conn is a no-op); without this clear, the
+            # pool-side close on a dead conn we just dequeued would
+            # be silently absorbed and the writer would leak.
+            conn._pool_released = False
             with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
                 await asyncio.shield(conn.close())
             # Wrap _drain_idle so a cancel mid-drain releases the dead

@@ -60,10 +60,11 @@ def test_refresh_pid_cache_is_callable_zero_arg() -> None:
     registration's call shape) is caught."""
     saved = conn_mod._current_pid
     try:
-        result = conn_mod._refresh_pid_cache()
+        # ``register_at_fork`` calls the function with no arguments;
+        # this raises TypeError if a refactor adds a parameter.
+        conn_mod._refresh_pid_cache()
     finally:
         conn_mod._current_pid = saved
-    assert result is None  # PEP 257-style: side-effect function returns None
 
 
 def test_after_in_child_fork_actually_refreshes_cache() -> None:
