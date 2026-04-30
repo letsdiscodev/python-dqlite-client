@@ -662,13 +662,19 @@ def _validate_timeout(value: float, *, name: str = "timeout") -> float:
     return float(value)
 
 
-def _parse_address(address: str) -> tuple[str, int]:
+def parse_address(address: str) -> tuple[str, int]:
     """Parse a host:port address string, handling IPv6 brackets.
 
     Returns ``(canonical_host, port)``. IP literals are returned in
     ``ipaddress.ip_address``'s canonical form; hostnames are
     lowercased. Invalid hosts (credentials-like '@', whitespace/CRLF,
     non-ASCII, empty) raise ``ValueError``.
+
+    Public surface: stable across releases. Cross-package consumers
+    (e.g. the ``sqlalchemy-dqlite`` URL pre-validator) import the
+    address parser directly so a typoed DSN is rejected at
+    ``create_engine`` time rather than inside a SA retry loop. The
+    legacy underscore alias is kept for backwards compatibility.
     """
     if address.startswith("["):
         # Bracketed IPv6: [host]:port. RFC 3986 §3.2.2 reserves the
@@ -758,6 +764,12 @@ def _parse_address(address: str) -> tuple[str, int]:
 
     host = _canonicalize_host(host, address)
     return host, port
+
+
+# Backwards-compatible alias for callers that imported the
+# leading-underscore name. Kept indefinitely; new callers should
+# import ``parse_address``.
+_parse_address = parse_address
 
 
 class DqliteConnection:
