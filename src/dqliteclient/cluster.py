@@ -51,6 +51,17 @@ _DEFAULT_CONNECT_MAX_ATTEMPTS: Final[int] = 3
 # held in memory and serialised into every traceback.
 _MAX_ERROR_MESSAGE_SNIPPET: Final[int] = 200
 
+# Cap the aggregate-of-all-per-node-errors payload before raising the
+# final ``ClusterError``. The per-node cap above bounds the M axis, but
+# the N axis (configured node-store size) is still operator-controlled
+# and unbounded — a 500-node store all returning hostile-cap-sized
+# messages produces ~100 KB of error text held in the ClusterError's
+# args, in every traceback render, and in every ``__cause__`` walk.
+# 16 KiB / 200 codepoints/snippet ≈ 80 nodes' worth of detail before
+# truncation, which is enough for diagnostic utility on any realistic
+# cluster while keeping the exception payload bounded.
+_MAX_AGGREGATE_ERROR_PAYLOAD: Final[int] = 16 * 1024
+
 # Use OS-entropy randomness for the per-sweep node shuffle so that the
 # stampede-avoidance is not defeated by a downstream call to
 # ``random.seed(...)``. Test suites and some libraries seed the global
@@ -389,7 +400,13 @@ class ClusterClient:
                 last_exc = e
                 continue
 
-        raise ClusterError(f"Could not find leader. Errors: {'; '.join(errors)}") from last_exc
+        joined = "; ".join(errors)
+        if len(joined) > _MAX_AGGREGATE_ERROR_PAYLOAD:
+            kept = len(joined) - _MAX_AGGREGATE_ERROR_PAYLOAD
+            joined = (
+                joined[:_MAX_AGGREGATE_ERROR_PAYLOAD] + f"... [aggregate truncated, {kept} chars]"
+            )
+        raise ClusterError(f"Could not find leader. Errors: {joined}") from last_exc
 
     async def _query_leader(
         self, address: str, *, trust_server_heartbeat: bool = False
