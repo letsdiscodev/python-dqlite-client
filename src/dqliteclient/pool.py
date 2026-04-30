@@ -350,13 +350,44 @@ class ConnectionPool:
                 # and closes the unqueued survivors.
                 unqueued = self._min_size
                 unqueued_survivors: list[DqliteConnection] = []
+                # Build child tasks explicitly (not via the ``gather`` *
+                # expression form) so a CancelledError raised out of
+                # ``gather`` itself — outer ``asyncio.timeout`` / a
+                # TaskGroup sibling failure / ``task.cancel()`` —
+                # leaves the finally with a handle on every child's
+                # ``_result``. The expression form discards the
+                # already-completed children's results into the
+                # gather's local frame; once gather raises, those
+                # results are unreachable and the live conns are
+                # orphaned (transports leaked until GC).
+                #
+                # This is the symmetric resource-discipline fix to
+                # the ``_size`` accounting fix (ISSUE-240) — that fix
+                # moved the bookkeeping into the finally; the
+                # connection-close sweep now does the same by
+                # walking the explicit task list.
+                create_tasks: list[asyncio.Task[DqliteConnection]] = [
+                    asyncio.create_task(self._create_connection())
+                    for _ in range(self._min_size)
+                ]
+                # Track whether ``gather`` returned normally; if it
+                # raised CancelledError, the post-gather assignment
+                # to ``unqueued_survivors`` (and the put-loop's pop)
+                # never ran, so the finally must walk the explicit
+                # task list to recover completed children's
+                # results. When gather DID return normally, the
+                # existing pop-based discipline already tracked the
+                # un-queued tail precisely; walking tasks again
+                # would re-add already-queued conns and double-close.
+                gather_returned = False
                 try:
                     # Create min_size connections concurrently so startup
                     # latency doesn't scale with min_size × per-connect RTT.
                     results = await asyncio.gather(
-                        *(self._create_connection() for _ in range(self._min_size)),
+                        *create_tasks,
                         return_exceptions=True,
                     )
+                    gather_returned = True
                     successes: list[DqliteConnection] = []
                     failures: list[BaseException] = []
                     for r in results:
@@ -447,6 +478,32 @@ class ConnectionPool:
                     # but never into the queue. Under a clean success
                     # this list is empty; on partial put-loop cancel it
                     # holds the unqueued tail.
+                    #
+                    # Cancel-during-gather recovery: ``gather``
+                    # propagates CancelledError when its caller is
+                    # cancelled, but children that already completed
+                    # have their results sitting in their tasks'
+                    # ``_result`` slot. The post-gather assignment to
+                    # ``unqueued_survivors`` did not run, so this
+                    # loop iterates an empty list. Walk
+                    # ``create_tasks`` to recover those results.
+                    # Already-failed / not-yet-done / cancelled tasks
+                    # are skipped — only successful results need
+                    # closing here. Only walks the task list if
+                    # ``gather`` raised before returning; once the
+                    # post-gather code ran, the pop-based
+                    # discipline already tracked the un-queued tail
+                    # precisely (walking again would double-close
+                    # conns already in the queue).
+                    if not gather_returned:
+                        for t in create_tasks:
+                            if not t.done() or t.cancelled():
+                                continue
+                            try:
+                                r = t.result()
+                            except BaseException:
+                                continue
+                            unqueued_survivors.append(r)
                     for conn in unqueued_survivors:
                         try:
                             await conn.close()

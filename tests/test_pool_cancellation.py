@@ -169,6 +169,73 @@ class TestInitializePartialFailureClosesSurvivors:
         )
 
 
+class TestInitializeCancelDuringGatherDoesNotLeakCompletedConns:
+    """An outer cancel landing while ``asyncio.gather`` inside
+    ``initialize`` still has children pending must close the
+    children that already completed. Today the
+    ``unqueued_survivors`` list is populated AFTER gather returns,
+    so a CancelledError raised out of gather skips the assignment
+    and the finally iterates an empty list — leaking every
+    completed conn's transport.
+    """
+
+    async def test_initialize_cancel_during_gather_closes_completed_conns(self) -> None:
+        completed: list[_FakeConn] = []
+        call_idx = [0]
+        completed_event = asyncio.Event()
+
+        async def _half_fast_half_slow(**kwargs: Any) -> _FakeConn:
+            i = call_idx[0]
+            call_idx[0] += 1
+            if i < 5:
+                # Fast path: completes before the timeout fires.
+                c = _FakeConn(name=f"c{i}")
+                completed.append(c)
+                if len(completed) == 5:
+                    completed_event.set()
+                return c
+            # Slow path: hangs forever (cancelled by the timeout).
+            await asyncio.sleep(60)
+            raise RuntimeError("unreachable")
+
+        cluster = MagicMock(spec=ClusterClient)
+        cluster.connect = _half_fast_half_slow
+        pool = ConnectionPool(
+            addresses=["localhost:9001"],
+            min_size=10,
+            max_size=10,
+            timeout=5.0,
+            cluster=cluster,
+        )
+
+        async def _wrapped() -> None:
+            await pool.initialize()
+
+        # Drive the timeout / cancel while the slow children are
+        # still pending. Wait for the fast 5 to complete first so
+        # the leak is deterministic.
+        init_task = asyncio.create_task(_wrapped())
+        await completed_event.wait()
+        await asyncio.sleep(0.01)  # let gather observe the 5 results
+        init_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await init_task
+
+        # Every conn that completed before the cancel must have
+        # been effectively closed. Today (without the fix), the
+        # unqueued_survivors list is empty in the finally because
+        # the assignment happens AFTER gather returns.
+        unclosed = [c for c in completed if not c.close_effective]
+        assert not unclosed, (
+            f"Cancel-during-gather leaked {len(unclosed)} of {len(completed)} "
+            f"completed conns: {[c.name for c in unclosed]}. The pool's "
+            "finally must walk gather's child tasks (not just the post-gather "
+            "successes list) to reach completed-but-unqueued conns."
+        )
+        # _size must also be drained (the existing ISSUE-240 fix).
+        assert pool._size == 0
+
+
 class TestAcquireCancellationRestoresSize:
     """A caller cancelled while parked in acquire() must not leak the
     pool reservation. If a connection was pulled off the queue and
