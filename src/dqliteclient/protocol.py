@@ -345,9 +345,17 @@ class DqliteProtocol:
         # connection is invalidated rather than silently routing
         # writes against the wrong DB.
         if response.db_id != db_id:
+            # Prefix with the canonical "wire decode failed" phrase so
+            # SA's ``is_disconnect`` substring matcher routes this
+            # through the pool-invalidate path. Without the prefix,
+            # the registry-drift event would surface as a non-
+            # disconnect ProtocolError and the SA pool would keep the
+            # broken slot. The prefix matches the wire-decode
+            # invalidation already wired into
+            # ``sqlalchemy-dqlite._dqlite_disconnect_messages``.
             raise ProtocolError(
-                f"StmtResponse db_id {response.db_id} does not match "
-                f"requested db_id {db_id}{self._addr_suffix()}"
+                f"wire decode failed: StmtResponse db_id {response.db_id} "
+                f"does not match requested db_id {db_id}{self._addr_suffix()}"
             )
 
         return response.stmt_id, response.num_params
