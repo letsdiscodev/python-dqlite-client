@@ -367,8 +367,7 @@ class ConnectionPool:
                 # connection-close sweep now does the same by
                 # walking the explicit task list.
                 create_tasks: list[asyncio.Task[DqliteConnection]] = [
-                    asyncio.create_task(self._create_connection())
-                    for _ in range(self._min_size)
+                    asyncio.create_task(self._create_connection()) for _ in range(self._min_size)
                 ]
                 # Track whether ``gather`` returned normally; if it
                 # raised CancelledError, the post-gather assignment
