@@ -351,7 +351,16 @@ class ClusterClient:
                     idx + 1,
                     total_nodes,
                 )
-                errors.append(f"{node.address}: no leader known")
+                # Sanitise the address before interpolating into the
+                # aggregate error so a hostile leader cannot inject
+                # CRLF / control-chars / line separators into log
+                # output. ``node.address`` flows through
+                # ``LeaderResponse.address`` which is deliberately NOT
+                # sanitised at wire decode (allowlist semantics) —
+                # sanitisation must happen at the user-facing error
+                # boundary.
+                _safe_addr = _sanitize_display_text(node.address)
+                errors.append(f"{_safe_addr}: no leader known")
                 continue
             except TimeoutError as e:
                 logger.debug(
@@ -361,7 +370,7 @@ class ClusterClient:
                     idx + 1,
                     total_nodes,
                 )
-                errors.append(f"{node.address}: timed out")
+                errors.append(f"{_sanitize_display_text(node.address)}: timed out")
                 last_exc = e
                 continue
             except (DqliteConnectionError, ProtocolError, OperationalError, OSError) as e:
@@ -376,7 +385,7 @@ class ClusterClient:
                     idx + 1,
                     total_nodes,
                 )
-                errors.append(f"{node.address}: {_truncate_error(str(e))}")
+                errors.append(f"{_sanitize_display_text(node.address)}: {_truncate_error(str(e))}")
                 last_exc = e
                 continue
 

@@ -233,8 +233,17 @@ class DqliteProtocol:
             # server-reported code and peer address so log aggregators
             # can group on the numeric code (DQLITE_PARSE,
             # DQLITE_NOTLEADER, etc.) rather than on text alone.
+            # Truncate the failure body so a hostile-or-buggy peer
+            # cannot inflate the handshake error into a multi-KiB
+            # log line — the rest of the protocol module's
+            # OperationalError raise sites get this for free via
+            # ``OperationalError._MAX_DISPLAY_MESSAGE``; the raw
+            # ProtocolError shape doesn't.
+            from dqliteclient.cluster import _truncate_error
+
             raise ProtocolError(
-                f"Handshake failed: [{response.code}] {self._failure_text(response)}"
+                f"Handshake failed: [{response.code}] "
+                f"{_truncate_error(self._failure_text(response))}"
             )
 
         if not isinstance(response, WelcomeResponse):
@@ -699,8 +708,22 @@ class DqliteProtocol:
 
         Returns an empty string when the address is unknown — keeping
         error messages clean for callers that don't thread it in.
+
+        Sanitises the address through ``_sanitize_server_text`` to
+        strip control characters / CR / LF / U+2028 / U+2029 before
+        interpolating it into an exception message. The address can
+        be server-controlled in the leader-redirect reconnect path
+        (LeaderResponse.address is intentionally NOT sanitised at
+        decode time — sanitising would split allowlist sets — so the
+        user-facing error/log boundary must do it instead). Without
+        this, a hostile leader could inject CRLF into the address
+        and produce log lines that splice across rows.
         """
-        return f" to {self._address}" if self._address else ""
+        if not self._address:
+            return ""
+        from dqlitewire.messages.responses import _sanitize_server_text
+
+        return f" to {_sanitize_server_text(self._address)}"
 
     def _failure_text(self, response: FailureResponse) -> str:
         """Render a FailureResponse as the body string for an
