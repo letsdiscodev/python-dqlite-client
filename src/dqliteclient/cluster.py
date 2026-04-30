@@ -584,8 +584,31 @@ class ClusterClient:
                     # drain task is GC'd mid-flight, producing a
                     # "Task was destroyed but it is pending" warning
                     # at interpreter shutdown.
-                    with contextlib.suppress(BaseException):
-                        await asyncio.shield(conn.close())
+                    #
+                    # Mirrors ``pool.py``'s shielded-cleanup
+                    # discipline:
+                    #
+                    # * CancelledError absorbed (canonical asyncio
+                    #   pattern — asyncio re-delivers at the next
+                    #   await; the bare ``raise`` below re-delivers
+                    #   the original handshake exception).
+                    # * OSError / DqliteConnectionError caught and
+                    #   logged (transport-class teardown failures
+                    #   on a half-built conn are expected).
+                    # * KI / SystemExit / unexpected Exception
+                    #   subclasses propagate — a wide
+                    #   ``suppress(BaseException)`` here would
+                    #   silently swallow signal-class shutdowns and
+                    #   programming bugs alike, supplanting the
+                    #   original handshake exception.
+                    try:
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.shield(conn.close())
+                    except (OSError, DqliteConnectionError):
+                        logger.debug(
+                            "ClusterClient.connect cleanup: conn.close() failed",
+                            exc_info=True,
+                        )
                     raise
                 return conn
             except (OSError, DqliteConnectionError, ClusterError) as exc:
