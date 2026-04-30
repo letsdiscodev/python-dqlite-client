@@ -1432,6 +1432,19 @@ class ConnectionPool:
             await self._drain_idle()
         finally:
             self._close_done.set()
+            # Drop the signalled-and-now-useless wakeup event
+            # so it can be GC'd alongside the pool's other
+            # once-used loop-bound primitives (``_async_conn``,
+            # ``_protocol``, ``_connect_lock``, ``_op_lock``,
+            # ``_loop_ref`` are all nulled at the end of their
+            # close paths). ``_close_done`` stays — the
+            # second-caller arm above awaits it; clearing in
+            # the second-caller arm would be TOCTOU and clearing
+            # here while siblings might still be parked is wrong.
+            # ``_closed_event`` has no remaining waiters once
+            # ``set()`` runs (the pool is closed; new acquirers
+            # short-circuit before parking) so it is safe to drop.
+            self._closed_event = None
 
         # In-use connections are closed by acquire()'s cleanup when they
         # return — the else branch checks _closed and closes instead of
