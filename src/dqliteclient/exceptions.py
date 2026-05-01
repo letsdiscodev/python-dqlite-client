@@ -101,10 +101,10 @@ class OperationalError(DqliteError):
         # un-suffixed). Callers compose the display ``message`` with
         # peer-address suffix / "Failed to connect:" prefix etc. and
         # pass the unadorned server text as ``raw_message=`` so the
-        # cycle-21 "raw_message is the bytes the server actually sent"
-        # contract is preserved through the dbapi-layer plumbing. Old
-        # call sites that omit the kwarg still get the previous
-        # behaviour (``raw_message`` defaults to ``message``).
+        # contract that raw_message is the verbatim server text is
+        # preserved through the dbapi-layer plumbing. Old call sites
+        # that omit the kwarg still get the previous behaviour
+        # (``raw_message`` defaults to ``message``).
         self.raw_message = message if raw_message is None else raw_message
         if len(message) > self._MAX_DISPLAY_MESSAGE:
             # ``len(message)`` and the slice cap count Python codepoints,

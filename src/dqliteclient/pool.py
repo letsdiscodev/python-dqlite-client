@@ -385,10 +385,10 @@ class ConnectionPool:
                 # orphaned (transports leaked until GC).
                 #
                 # This is the symmetric resource-discipline fix to
-                # the ``_size`` accounting fix (ISSUE-240) — that fix
-                # moved the bookkeeping into the finally; the
-                # connection-close sweep now does the same by
-                # walking the explicit task list.
+                # the prior ``_size`` accounting fix that moved the
+                # bookkeeping into the finally; the connection-close
+                # sweep now does the same by walking the explicit
+                # task list.
                 create_tasks: list[asyncio.Task[DqliteConnection]] = [
                     asyncio.create_task(self._create_connection()) for _ in range(self._min_size)
                 ]

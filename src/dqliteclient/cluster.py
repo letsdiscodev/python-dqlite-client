@@ -170,7 +170,7 @@ class ClusterClient:
         # would observe an inherited task and ``await
         # asyncio.shield(<parent-loop task>)`` — undefined behaviour.
         # Symmetric with the DqliteConnection / ConnectionPool
-        # pid guards added in cycle 20.
+        # pid guards.
         self._creator_pid = os.getpid()
 
     @classmethod
