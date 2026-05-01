@@ -48,11 +48,11 @@ __all__ = [
     "OperationalError",
     "ProtocolError",
     "RedirectPolicy",
-    "parse_address",
     "__version__",
     "allowlist_policy",
     "connect",
     "create_pool",
+    "parse_address",
 ]
 
 
