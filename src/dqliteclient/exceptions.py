@@ -89,9 +89,23 @@ class OperationalError(DqliteError):
     message: str
     raw_message: str
 
-    def __init__(self, code: int, message: str) -> None:
+    def __init__(
+        self,
+        code: int,
+        message: str,
+        *,
+        raw_message: str | None = None,
+    ) -> None:
         self.code = code
-        self.raw_message = message
+        # ``raw_message`` is the verbatim server text (un-truncated,
+        # un-suffixed). Callers compose the display ``message`` with
+        # peer-address suffix / "Failed to connect:" prefix etc. and
+        # pass the unadorned server text as ``raw_message=`` so the
+        # cycle-21 "raw_message is the bytes the server actually sent"
+        # contract is preserved through the dbapi-layer plumbing. Old
+        # call sites that omit the kwarg still get the previous
+        # behaviour (``raw_message`` defaults to ``message``).
+        self.raw_message = message if raw_message is None else raw_message
         if len(message) > self._MAX_DISPLAY_MESSAGE:
             # ``len(message)`` and the slice cap count Python codepoints,
             # not UTF-8 bytes. Match the unit in the marker so an
@@ -103,10 +117,12 @@ class OperationalError(DqliteError):
             )
         else:
             self.message = message
-        # Pass ``code`` and the RAW message through as separate args so
-        # ``self.args == (code, raw_message)``; pickle / deepcopy
-        # reconstruct via ``OperationalError(*args)`` and re-run the
-        # truncation, preserving both fields losslessly.
+        # Pass ``code`` and the display ``message`` through as separate
+        # args so ``self.args == (code, message)``; pickle / deepcopy
+        # reconstruct via ``OperationalError(*args)``. The
+        # ``raw_message`` kwarg is keyword-only and lossy on pickle —
+        # but the dbapi layer is the consumer and reconstructs from
+        # ``e.raw_message`` directly, not from ``args``.
         super().__init__(code, message)
 
     def __str__(self) -> str:

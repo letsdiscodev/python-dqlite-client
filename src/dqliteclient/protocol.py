@@ -296,7 +296,9 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, self._failure_text(response))
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
 
         if not isinstance(response, LeaderResponse):
             raise ProtocolError(
@@ -317,7 +319,9 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, self._failure_text(response))
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
 
         if not isinstance(response, DbResponse):
             raise ProtocolError(
@@ -338,7 +342,9 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, self._failure_text(response))
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
 
         if not isinstance(response, StmtResponse):
             raise ProtocolError(
@@ -378,7 +384,9 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, self._failure_text(response))
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
 
         if not isinstance(response, EmptyResponse):
             raise ProtocolError(
@@ -462,7 +470,9 @@ class DqliteProtocol:
             if isinstance(response, ResultResponse):
                 return
             if isinstance(response, FailureResponse):
-                raise OperationalError(response.code, self._failure_text(response))
+                raise OperationalError(
+                    response.code, self._failure_text(response), raw_message=response.message
+                )
             # RowsResponse mid-drain is expected: the server's in-flight
             # continuation may land before the interrupt takes effect.
             # Other message types indicate stream desync.
@@ -510,7 +520,9 @@ class DqliteProtocol:
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, self._failure_text(response))
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
 
         if not isinstance(response, ResultResponse):
             raise ProtocolError(
@@ -534,7 +546,9 @@ class DqliteProtocol:
         deadline = self._operation_deadline()
         response = await self._read_response(deadline=deadline)
         if isinstance(response, FailureResponse):
-            raise OperationalError(response.code, self._failure_text(response))
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
         if not isinstance(response, RowsResponse):
             raise ProtocolError(
                 f"Expected RowsResponse, got {type(response).__name__}{self._addr_suffix()}"
@@ -810,7 +824,9 @@ class DqliteProtocol:
             # Append the addr suffix so the operator log shows which
             # peer emitted the failure — matching the eight sibling
             # ``raise OperationalError`` sites in this module.
-            raise OperationalError(e.code, f"{e.message}{self._addr_suffix()}") from e
+            raise OperationalError(
+                e.code, f"{e.message}{self._addr_suffix()}", raw_message=e.message
+            ) from e
         except _WireProtocolError as e:
             raise ProtocolError(f"Wire decode failed{self._addr_suffix()}: {e}") from e
 
