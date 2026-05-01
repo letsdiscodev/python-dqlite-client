@@ -78,13 +78,17 @@ _LEADER_PROBE_DRAIN_TIMEOUT_SECONDS: Final[float] = 0.1
 
 
 def _addr_equiv(a: str, b: str) -> bool:
-    """Compare host:port strings tolerating IPv6 bracketing differences.
+    """Compare host:port strings via the canonical ``(host, port)``
+    tuple shape produced by :func:`_parse_address`.
 
     Falls back to literal equality for unparseable inputs so a
     malformed string never crashes the comparison. Hostname-vs-IP
     mismatch (``localhost:9001`` vs ``127.0.0.1:9001``) is not
-    canonicalised — DNS resolution belongs elsewhere — but
-    ``[::1]:9001`` and ``::1:9001`` resolve to the same tuple.
+    canonicalised — DNS resolution belongs elsewhere. Note that
+    ``_parse_address`` rejects unbracketed IPv6 (per the strict-
+    validation hardening), so ``[::1]:9001`` and ``::1:9001`` do
+    NOT compare equal — the unbracketed form raises ``ValueError``
+    and the fallback compares literal strings.
     """
     try:
         return _parse_address(a) == _parse_address(b)
