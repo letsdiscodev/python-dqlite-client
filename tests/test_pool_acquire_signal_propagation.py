@@ -84,7 +84,7 @@ async def test_baseexception_during_cleanup_propagates() -> None:
     ``BaseException`` from the cancelled-task drain must propagate.
     The cleanup may not silently swallow them — only ``CancelledError``
     is meant to be drained."""
-    pool = ConnectionPool("localhost:9001", min_size=0, max_size=1, timeout=5.0)  # type: ignore[arg-type]
+    pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1, timeout=5.0)
     _force_at_capacity(pool, _SentinelBaseException("signal"))
 
     with pytest.raises(_SentinelBaseException, match="signal"):

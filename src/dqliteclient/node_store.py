@@ -116,6 +116,23 @@ class MemoryNodeStore(NodeStore):
                 addr = raw.strip()
                 if not addr:
                     raise ValueError("NodeStore addresses must be non-empty 'host:port' strings")
+                # Syntactic validation via the same parser
+                # ``_query_leader`` will use later. Without this,
+                # malformed entries (unbracketed IPv6, non-numeric
+                # port, IDN, credentials shape) leak ``ValueError``
+                # through the ``find_leader`` sweep's narrow except
+                # tuple — aborting the entire sweep with the wrong
+                # exception class and no per-node attribution.
+                # Local import to avoid cluster <-> node_store
+                # circular import (cluster imports NodeStore).
+                from dqliteclient.connection import _parse_address as _parse_addr_validator
+
+                try:
+                    _parse_addr_validator(addr)
+                except ValueError as e:
+                    raise ValueError(
+                        f"NodeStore address {addr!r} is not a valid 'host:port': {e}"
+                    ) from e
                 if addr in seen:
                     continue
                 seen.add(addr)
@@ -152,6 +169,16 @@ class MemoryNodeStore(NodeStore):
             addr = node.address.strip()
             if not addr:
                 raise ValueError("NodeInfo.address must be a non-empty 'host:port' string")
+            # Same syntactic validation as ``__init__``; see rationale
+            # there. Local import to avoid the cluster import cycle.
+            from dqliteclient.connection import _parse_address as _parse_addr_validator
+
+            try:
+                _parse_addr_validator(addr)
+            except ValueError as e:
+                raise ValueError(
+                    f"NodeInfo.address {addr!r} is not a valid 'host:port': {e}"
+                ) from e
             if addr in seen:
                 continue
             seen.add(addr)
