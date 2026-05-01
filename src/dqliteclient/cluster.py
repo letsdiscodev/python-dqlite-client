@@ -206,7 +206,9 @@ class ClusterClient:
             # at DEBUG so SSRF-style attempts or policy
             # misconfigurations are traceable from logs alone,
             # not only through an exception stack.
-            logger.debug("cluster: redirect rejected by policy to=%s", address)
+            logger.debug(
+                "cluster: redirect rejected by policy to=%s", _sanitize_display_text(address)
+            )
             raise ClusterPolicyError(f"Leader redirect to {address!r} rejected by redirect_policy")
 
     async def find_leader(self, *, trust_server_heartbeat: bool = False) -> str:
@@ -356,41 +358,44 @@ class ClusterClient:
                 # ``"Could not find leader. Errors: "`` message — the
                 # operator cannot tell "all nodes returned no-leader"
                 # from "all nodes failed unreachable".
+                # Sanitise the address before interpolating into both
+                # the aggregate error AND the debug log line so a
+                # hostile leader cannot inject CRLF / control-chars /
+                # line separators into either user-facing surface.
+                # ``node.address`` flows through
+                # ``LeaderResponse.address`` which is deliberately NOT
+                # sanitised at wire decode (allowlist semantics) —
+                # sanitisation must happen at every display surface,
+                # debug logs included.
+                _safe_addr = _sanitize_display_text(node.address)
                 logger.debug(
                     "find_leader: %s reports no leader known (%d/%d)",
-                    node.address,
+                    _safe_addr,
                     idx + 1,
                     total_nodes,
                 )
-                # Sanitise the address before interpolating into the
-                # aggregate error so a hostile leader cannot inject
-                # CRLF / control-chars / line separators into log
-                # output. ``node.address`` flows through
-                # ``LeaderResponse.address`` which is deliberately NOT
-                # sanitised at wire decode (allowlist semantics) —
-                # sanitisation must happen at the user-facing error
-                # boundary.
-                _safe_addr = _sanitize_display_text(node.address)
                 errors.append(f"{_safe_addr}: no leader known")
                 continue
             except TimeoutError as e:
+                _safe_addr = _sanitize_display_text(node.address)
                 logger.debug(
                     "find_leader: %s timed out after %.3fs (%d/%d)",
-                    node.address,
+                    _safe_addr,
                     self._timeout,
                     idx + 1,
                     total_nodes,
                 )
-                errors.append(f"{_sanitize_display_text(node.address)}: timed out")
+                errors.append(f"{_safe_addr}: timed out")
                 last_exc = e
                 continue
             except (DqliteConnectionError, ProtocolError, OperationalError, OSError) as e:
                 # Narrow the catch so programming bugs (TypeError, KeyError,
                 # etc.) propagate directly instead of being stringified into
                 # a retryable ClusterError.
+                _safe_addr = _sanitize_display_text(node.address)
                 logger.debug(
                     "find_leader: %s failed with %s: %s (%d/%d)",
-                    node.address,
+                    _safe_addr,
                     type(e).__name__,
                     _truncate_error(str(e)),
                     idx + 1,
@@ -452,7 +457,7 @@ class ClusterClient:
                 # per-node probes.
                 logger.debug(
                     "query_leader: %s returned malformed redirect (node_id=%s, address=%r)",
-                    address,
+                    _sanitize_display_text(address),
                     node_id,
                     _sanitize_display_text(leader_addr),
                 )
@@ -469,7 +474,7 @@ class ClusterClient:
                 # is not trusted without a matching id.
                 logger.debug(
                     "query_leader: %s returned malformed redirect (node_id=0, address=%r)",
-                    address,
+                    _sanitize_display_text(address),
                     _sanitize_display_text(leader_addr),
                 )
                 raise ProtocolError(
