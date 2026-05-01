@@ -821,9 +821,22 @@ class ConnectionPool:
             # re-check capacity (another coroutine may have freed a slot)
             remaining = deadline - loop.time()
             if remaining <= 0:
+                # Compute saturation snapshot once for the message —
+                # ``_size`` is checked-out-plus-reserved; ``qsize`` is
+                # idle. A pool at ``checked_out == max_size`` with
+                # ``idle == 0`` is leaking; otherwise the cluster is
+                # slow. The ``pool_id`` lets operators correlate the
+                # failed acquire with the warm-up / drain log lines
+                # that already include ``id(self)``.
+                idle = self._pool.qsize()
+                checked_out = self._size - idle
                 raise DqliteConnectionError(
                     f"Timed out waiting for a connection from the pool "
-                    f"(max_size={self._max_size}, timeout={self._timeout}s)"
+                    f"(pool_id={id(self)}, max_size={self._max_size}, "
+                    f"checked_out={checked_out}, idle={idle}, "
+                    f"timeout={self._timeout}s). "
+                    f"If checked_out is at max_size, the application is "
+                    f"leaking connections; otherwise the cluster is slow."
                 )
             # Race the queue against the state-change event so any pool
             # state change (close, size decrement, drain) wakes waiters
