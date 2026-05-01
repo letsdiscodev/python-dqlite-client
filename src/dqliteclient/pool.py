@@ -7,7 +7,7 @@ import os
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
-from typing import Any, Final, NoReturn
+from typing import Any, Final, NoReturn, Self
 
 from dqliteclient import connection as _conn_mod
 from dqliteclient.cluster import ClusterClient
@@ -1503,7 +1503,7 @@ class ConnectionPool:
         # returning to the pool. Force-closing them here would race with
         # the acquire context manager and corrupt _size.
 
-    async def __aenter__(self) -> "ConnectionPool":
+    async def __aenter__(self) -> Self:
         await self.initialize()
         return self
 

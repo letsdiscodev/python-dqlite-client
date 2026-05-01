@@ -11,7 +11,7 @@ import string
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
-from typing import Any, Final, NoReturn
+from typing import Any, Final, NoReturn, Self
 
 from dqliteclient.exceptions import (
     DataError,
@@ -1325,7 +1325,7 @@ class DqliteConnection:
                 exc_info=True,
             )
 
-    async def __aenter__(self) -> "DqliteConnection":
+    async def __aenter__(self) -> Self:
         await self.connect()
         return self
 
