@@ -1523,7 +1523,7 @@ class DqliteConnection:
             self._invalidation_cause = cause
 
     @staticmethod
-    def _validate_params(params: Sequence[Any] | None) -> None:
+    def _validate_params(params: object) -> None:
         """Reject non-sequence / scalar-iterable param containers.
 
         The qmark paramstyle wants an ordered sequence of positional

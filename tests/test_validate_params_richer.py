@@ -32,15 +32,15 @@ class TestClientValidateParamsRichRejections:
 
     def test_rejects_dict(self) -> None:
         with pytest.raises(DataError, match="mapping"):
-            _make_conn()._validate_params({"a": 1})  # type: ignore[arg-type]
+            _make_conn()._validate_params({"a": 1})
 
     def test_rejects_set(self) -> None:
         with pytest.raises(DataError, match="set"):
-            _make_conn()._validate_params({1, 2, 3})  # type: ignore[arg-type]
+            _make_conn()._validate_params({1, 2, 3})
 
     def test_rejects_frozenset(self) -> None:
         with pytest.raises(DataError, match="set"):
-            _make_conn()._validate_params(frozenset({1, 2, 3}))  # type: ignore[arg-type]
+            _make_conn()._validate_params(frozenset({1, 2, 3}))
 
     def test_str_and_bytes_still_rejected(self) -> None:
         with pytest.raises(DataError, match="str"):
