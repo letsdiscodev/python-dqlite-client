@@ -794,7 +794,16 @@ class ConnectionPool:
                 try:
                     conn = await self._create_connection()
                 except BaseException:
-                    await self._release_reservation()
+                    # Shield the release so an outer cancel re-arming
+                    # on the await checkpoint does not bypass the
+                    # decrement; without the shield, each
+                    # cancel-mid-create leaks one ``_size`` slot and
+                    # the pool eventually wedges at max_size with no
+                    # checked-out connections. Mirrors the existing
+                    # ``await asyncio.shield(self._release_reservation())``
+                    # in ``_drain_idle`` failure paths.
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(self._release_reservation())
                     raise
                 break
 
@@ -973,7 +982,11 @@ class ConnectionPool:
             try:
                 conn = await self._create_connection()
             except BaseException:
-                await self._release_reservation()
+                # Same shielded-release rationale as the new-slot
+                # arm above: outer cancel re-arming on the create-
+                # connection await must not bypass the decrement.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(self._release_reservation())
                 raise
             # close() may have run while _create_connection was
             # suspended on leader discovery / TCP handshake. Without
