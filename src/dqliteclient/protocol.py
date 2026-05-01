@@ -178,29 +178,52 @@ class DqliteProtocol:
 
     @property
     def is_wire_coherent(self) -> bool:
-        """True if the decoder buffer has not been poisoned.
+        """True if the codec-layer decoder buffer has not been poisoned.
 
-        A poisoned buffer (mid-stream desync, malformed frame, etc.)
-        cannot recover without ``reset()`` + reconnect. Pool reset
-        consults this before sending ROLLBACK so a wasted round-trip
+        Reflects ONLY the wire-codec layer (``MessageDecoder.is_poisoned``).
+        A poisoned buffer (mid-stream wire desync, malformed frame, etc.)
+        cannot recover without ``reset()`` + reconnect; the pool-reset
+        path consults this before sending ROLLBACK so a wasted round-trip
         on an already-doomed connection is short-circuited.
 
-        INTENTIONALLY consulted only by the pool reset path
-        (``pool.py::_socket_looks_dead``). The dbapi, the SA dialect,
-        and direct ``DqliteConnection`` callers route a wire desync
-        through the exception-based classifier chain instead:
-        wire-layer ``ProtocolError`` is wrapped to
-        ``OperationalError(code=None)`` by
+        Does NOT reflect client-layer ``ProtocolError`` raises that
+        detect higher-level invariant violations on top of coherent
+        bytes: ``prepare`` db_id mismatch, ``_read_response``
+        extra-frame-after-FAILURE, ``_read_continuation`` unexpected
+        EmptyResponse, ``interrupt`` drain wrong-type / no-progress /
+        frame-cap, ``_drain_continuations`` max_total_rows /
+        max_continuation_frames / no-progress. In those cases the codec
+        decoded correctly but the connection still has unread frames
+        buffered or a continuation expected; the wire IS desynchronised
+        at the next-request boundary, but ``is_wire_coherent`` returns
+        ``True``.
+
+        This narrowness is intentional. ``is_wire_coherent`` is the
+        codec-poison hint only; client-layer protocol violations route
+        through ``DqliteConnection._run_protocol``'s
+        ``ProtocolError → _invalidate`` chain, which closes the writer
+        and clears ``self._protocol`` — the pool short-circuits on
+        ``protocol is None`` before consulting this accessor at all
+        (see ``pool.py::_socket_looks_dead``).
+
+        INTENTIONALLY consulted only by the pool reset path. The
+        dbapi, the SA dialect, and direct ``DqliteConnection``
+        callers route a wire desync through the exception-based
+        classifier chain instead: wire-layer ``ProtocolError`` is
+        wrapped to ``OperationalError(code=None)`` by
         ``dqlitedbapi.cursor._call_client``, and the SA dialect's
         ``is_disconnect`` substring branch matches the
-        ``"wire decode failed"`` prefix the client emits. That
-        layering is deliberate — wire coherence is a hint, not a
-        liveness contract: a ``CancelledError`` mid-flight could
-        poison the buffer between this read and the next operation,
-        so a ``True`` return MUST NOT be treated as "the connection
-        is healthy". Use as a short-circuit optimisation only; do
-        not propagate this check to ``do_ping`` / pre-checkout
-        paths or to other operational classifiers.
+        ``"wire decode failed"`` prefix the client emits.
+
+        Wire coherence is a hint, not a liveness contract: a
+        ``CancelledError`` mid-flight could poison the buffer between
+        this read and the next operation, so a ``True`` return MUST
+        NOT be treated as "the connection is healthy". Use as a
+        short-circuit optimisation only; do not propagate this check
+        to ``do_ping`` / pre-checkout paths or to other operational
+        classifiers. Third-party harnesses that consume
+        ``DqliteProtocol`` directly should always invalidate on any
+        ``ProtocolError`` rather than reading this flag.
         """
         return not self._decoder.is_poisoned
 
