@@ -78,6 +78,27 @@ double-FIN on the parent's socket is a real risk if the guard is
 bypassed (e.g. via `__new__` to skip `__init__`). Just create the
 pool / connection in the child process you intend to use it from.
 
+## Cross-version semantic shift: NULL in BOOLEAN/DATETIME columns
+
+Upstream dqlite commit `f30fc99` (`query: preserve SQLITE_NULL type
+for NULL values`, 2026-01-25) changed the wire encoding of NULL cells
+in columns declared `BOOLEAN`, `DATE`, `DATETIME`, or `TIMESTAMP`:
+
+- **Before** `f30fc99`: a NULL cell was emitted with the column's
+  coerced type (`BOOLEAN` with value `0`, or `ISO8601` with value
+  `""`) — indistinguishable from a real `FALSE` or empty string.
+- **After** `f30fc99`: a NULL cell is emitted with `SQLITE_NULL`
+  (tag 5) and decodes to `None`.
+
+Python code that uses `if row[0] is None:` against an old-server
+cluster will silently miss NULL rows. After a cluster upgrade past
+`f30fc99`, the same code starts firing where it previously read
+`False` or `""`. There is no driver-level handshake field that
+distinguishes the two server versions; check your dqlite cluster
+version before relying on `is None` for `BOOLEAN` / `DATETIME`
+columns. The Python codec faithfully decodes whatever the server
+emits — the server, not the driver, drives this semantics shift.
+
 ## Layering
 
 `dqlite-client` is the low-level async wire client. Most applications
