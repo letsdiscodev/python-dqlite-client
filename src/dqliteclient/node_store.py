@@ -1,8 +1,8 @@
 """Node store interfaces for cluster discovery."""
 
-from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from dqlitewire import NodeRole
 
@@ -39,10 +39,18 @@ class NodeInfo:
     ``ClusterClient.find_leader`` sorts voters first before probing."""
 
 
-class NodeStore(ABC):
-    """Abstract interface for storing cluster node information."""
+@runtime_checkable
+class NodeStore(Protocol):
+    """Structural interface for storing cluster node information.
 
-    @abstractmethod
+    PEP 544 ``Protocol`` so third-party stores need only implement
+    ``get_nodes`` / ``set_nodes`` without inheriting from this class.
+    No callers in this codebase use ``isinstance(x, NodeStore)`` —
+    the contract is structural — and ``MemoryNodeStore`` is the only
+    in-tree implementation. ``@runtime_checkable`` is set so a future
+    caller that wants ``isinstance`` introspection still gets it.
+    """
+
     async def get_nodes(self) -> Sequence[NodeInfo]:
         """Return an immutable snapshot of known nodes.
 
@@ -58,7 +66,6 @@ class NodeStore(ABC):
         """
         ...
 
-    @abstractmethod
     async def set_nodes(self, nodes: Sequence[NodeInfo]) -> None:
         """Update list of known nodes.
 
