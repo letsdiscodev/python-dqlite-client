@@ -43,6 +43,26 @@ class TestInterrupt:
         # Write was issued.
         protocol._writer.write.assert_called()  # type: ignore[attr-defined]
 
+    async def test_interrupt_drains_in_flight_result_response(
+        self, protocol: DqliteProtocol
+    ) -> None:
+        """Pin the EXEC-side terminal: an INTERRUPT landing on an
+        EXEC / EXEC_SQL whose done-callback has already emitted
+        ``RESULT`` before the interrupt took effect leaves a
+        ``ResultResponse`` in the response queue ahead of the
+        ``EmptyResponse`` acknowledgement. The drain loop must
+        treat ``ResultResponse`` as equivalent to
+        ``EmptyResponse`` (wire is coherent, interrupt has been
+        honoured); without this, the "Expected EmptyResponse"
+        arm would fire and poison the wire.
+        """
+        from dqlitewire.messages import ResultResponse
+
+        result = ResultResponse(last_insert_id=42, rows_affected=1).encode()
+        protocol._reader.read = AsyncMock(side_effect=[result, b""])
+        # Must NOT raise — ResultResponse is the EXEC-side terminal.
+        await protocol.interrupt(db_id=1)
+
     async def test_interrupt_swallows_in_flight_rows(self, protocol: DqliteProtocol) -> None:
         """A RowsResponse landing after INTERRUPT (in-flight from before
         the server processed the interrupt) is dropped; the drain loop
