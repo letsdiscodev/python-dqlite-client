@@ -79,11 +79,16 @@ def _failure_message(message: str, addr_suffix: str) -> str:
     return body + addr_suffix
 
 
-def _validate_positive_int_or_none(value: int | None, name: str) -> int | None:
+def validate_positive_int_or_none(value: int | None, name: str) -> int | None:
     """Shared validation for positive-int-or-None parameters.
 
     Used for both ``max_total_rows`` and ``max_continuation_frames``.
     None disables the cap; any int value must be > 0.
+
+    Public so downstream packages (``dqlitedbapi``, ``sqlalchemy-dqlite``)
+    can apply the same construction-time validation without reaching
+    into private symbols. Same shape as the public ``parse_address`` /
+    ``allowlist_policy`` helpers in this package.
     """
     if value is None:
         return None
@@ -92,6 +97,12 @@ def _validate_positive_int_or_none(value: int | None, name: str) -> int | None:
     if value <= 0:
         raise ValueError(f"{name} must be > 0 or None, got {value}")
     return value
+
+
+# Backwards-compatibility alias for any caller that still imports the
+# leading-underscore name. Slated for removal in a future minor — the
+# public name is ``validate_positive_int_or_none``.
+_validate_positive_int_or_none = validate_positive_int_or_none
 
 
 class DqliteProtocol:

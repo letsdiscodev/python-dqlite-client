@@ -23,6 +23,7 @@ from dqliteclient.exceptions import (
 )
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
 from dqliteclient.pool import ConnectionPool
+from dqliteclient.protocol import validate_positive_int_or_none
 from dqlitewire import (
     DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "connect",
     "create_pool",
     "parse_address",
+    "validate_positive_int_or_none",
 ]
 
 
