@@ -279,6 +279,16 @@ class ConnectionPool:
         self._closed = False
         self._closed_event: asyncio.Event | None = None
         self._close_done: asyncio.Event | None = None
+        # Distinguish "first caller exited the drain phase" (signalled
+        # via ``_close_done.set()`` in the close finally, so siblings
+        # do not deadlock under cancel) from "drain ran to completion".
+        # A second caller parking on ``_close_done.wait()`` and observing
+        # the event set must NOT assume the queue was drained — the
+        # first caller may have been interrupted mid-drain by an outer
+        # cancel. Re-checking this flag after wait() returns lets the
+        # second caller run a best-effort sweep so the documented
+        # "queue drained" promise is upheld.
+        self._drain_complete: bool = False
         self._initialized = False
         # Fork-after-init is unsupported: pooled connections hold
         # shared TCP sockets and asyncio primitives bound to the
@@ -1436,6 +1446,17 @@ class ConnectionPool:
         if self._closed:
             if self._close_done is not None:
                 await self._close_done.wait()
+            # If the FIRST caller's drain was interrupted mid-flight
+            # by an outer cancel (``asyncio.timeout(pool.close())``
+            # under SIGTERM-with-budget), ``_close_done`` was set in
+            # the finally even though the queue is still under-
+            # drained. Run a best-effort sweep so the second caller's
+            # ``await pool.close()`` returns against an empty queue
+            # rather than the documented "drain completed" contract
+            # being silently broken.
+            if not self._drain_complete:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(self._drain_remaining_after_cancel())
             return
         # Publish the drain-done event BEFORE flipping the closed flag
         # so any second caller observing ``_closed=True`` is guaranteed
@@ -1456,6 +1477,11 @@ class ConnectionPool:
             if self._closed_event is not None:
                 self._closed_event.set()
             await self._drain_idle()
+            # Drain completed normally. Set BEFORE the finally so a
+            # cancel landing between the drain return and the flag
+            # assignment leaves ``_drain_complete=False`` — siblings
+            # then run the best-effort sweep above.
+            self._drain_complete = True
         finally:
             self._close_done.set()
             # Drop the signalled-and-now-useless wakeup event
