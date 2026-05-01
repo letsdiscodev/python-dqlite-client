@@ -861,6 +861,25 @@ class DqliteProtocol:
                 e.code, f"{e.message}{self._addr_suffix()}", raw_message=e.message
             ) from e
         except _WireProtocolError as e:
+            # Wire-decode failures are NOT recovered via
+            # ``MessageDecoder.skip_message``. The wire layer documents
+            # oversize-message rejection as recoverable in-place
+            # (``read_message`` raises ``DecodeError`` without poisoning
+            # so a caller can drain the over-large frame via
+            # ``skip_message`` + ``feed`` and resume on the same
+            # connection). The client layer deliberately opts out: we
+            # wrap every wire-level ProtocolError into a client-level
+            # ProtocolError, which ``_run_protocol`` routes through
+            # ``_invalidate`` to drop the connection. Rationale: a
+            # 64 MiB cap is high enough that hitting it almost always
+            # indicates an attacker, a misbehaving server, or a
+            # deeply-nested wire bug — none of which the client can
+            # safely resume from on the same socket. The pool's
+            # re-acquire path (handshake + OPEN) is the right
+            # recovery, not in-place skip. The ``skip_message`` API
+            # remains available for third-party harnesses that
+            # consume ``DqliteProtocol`` directly and want a
+            # different policy.
             raise ProtocolError(f"Wire decode failed{self._addr_suffix()}: {e}") from e
 
     async def _read_response(self, deadline: float | None = None) -> Message:
