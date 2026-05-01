@@ -423,6 +423,16 @@ class ClusterClient:
             joined = (
                 joined[:_MAX_AGGREGATE_ERROR_PAYLOAD] + f"... [aggregate truncated, {kept} chars]"
             )
+        # Aggregate-failure WARNING. Per-node probes are at DEBUG so
+        # healthy sweeps do not spam logs, but the all-nodes-failed
+        # outcome is the one event operators paged on cluster-wide
+        # unreachable need to see at default verbosity. The errors
+        # string is already capped above so the log line is bounded.
+        logger.warning(
+            "cluster: leader discovery failed across %d nodes; errors=%s",
+            total_nodes,
+            joined,
+        )
         # Chain via ``BaseExceptionGroup`` when more than one node
         # contributed a real exception (the no-leader-known arm
         # produces no exception, only an entry in ``errors``). Single-
@@ -692,19 +702,33 @@ class ClusterClient:
         # reflects a deterministic configuration mismatch (redirect
         # blocked) and is excluded: retrying would just reproduce it and
         # multiply the wall-clock cost.
-        return await retry_with_backoff(
-            try_connect,
-            max_attempts=attempts_cap,
-            # OSError subsumes TimeoutError / BrokenPipeError /
-            # ConnectionError / ConnectionResetError, so a single
-            # OSError entry covers every stdlib transport-error shape.
-            retryable_exceptions=(
-                DqliteConnectionError,
-                ClusterError,
-                OSError,
-            ),
-            excluded_exceptions=(ClusterPolicyError,),
-        )
+        try:
+            return await retry_with_backoff(
+                try_connect,
+                max_attempts=attempts_cap,
+                # OSError subsumes TimeoutError / BrokenPipeError /
+                # ConnectionError / ConnectionResetError, so a single
+                # OSError entry covers every stdlib transport-error shape.
+                retryable_exceptions=(
+                    DqliteConnectionError,
+                    ClusterError,
+                    OSError,
+                ),
+                excluded_exceptions=(ClusterPolicyError,),
+            )
+        except (DqliteConnectionError, ClusterError, OSError) as exc:
+            # Aggregate-failure WARNING. Per-attempt failures log at
+            # DEBUG (so a routine leader flip's per-attempt churn does
+            # not spam logs at default verbosity), but the
+            # all-attempts-exhausted outcome is the one event paged
+            # operators need to see at default verbosity.
+            logger.warning(
+                "cluster: connect exhausted %d attempts; last_error=%s: %s",
+                attempts_cap,
+                type(exc).__name__,
+                _truncate_error(str(exc)),
+            )
+            raise
 
 
 def allowlist_policy(addresses: Iterable[str]) -> RedirectPolicy:
