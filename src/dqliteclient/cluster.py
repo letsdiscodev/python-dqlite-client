@@ -327,7 +327,15 @@ class ClusterClient:
         nodes.sort(key=lambda n: 0 if n.role == NodeRole.VOTER else 1)
 
         errors: list[str] = []
-        last_exc: BaseException | None = None
+        # Collect every per-node BaseException so the final
+        # ``ClusterError`` can chain them all via
+        # ``BaseExceptionGroup``. Previously only the LAST iteration's
+        # exception was preserved on ``__cause__`` — code that
+        # branches on the cause class (e.g. routing security alerts
+        # for ``ProtocolError``-from-malformed-redirect) saw a non-
+        # deterministic decision based on iteration ordering. Mirrors
+        # the discipline already applied to ``ConnectionPool.initialize``.
+        per_node_excs: list[BaseException] = []
         total_nodes = len(nodes)
 
         for idx, node in enumerate(nodes):
@@ -386,7 +394,7 @@ class ClusterClient:
                     total_nodes,
                 )
                 errors.append(f"{_safe_addr}: timed out")
-                last_exc = e
+                per_node_excs.append(e)
                 continue
             except (DqliteConnectionError, ProtocolError, OperationalError, OSError) as e:
                 # Narrow the catch so programming bugs (TypeError, KeyError,
@@ -402,7 +410,7 @@ class ClusterClient:
                     total_nodes,
                 )
                 errors.append(f"{_sanitize_display_text(node.address)}: {_truncate_error(str(e))}")
-                last_exc = e
+                per_node_excs.append(e)
                 continue
 
         joined = "; ".join(errors)
@@ -411,7 +419,21 @@ class ClusterClient:
             joined = (
                 joined[:_MAX_AGGREGATE_ERROR_PAYLOAD] + f"... [aggregate truncated, {kept} chars]"
             )
-        raise ClusterError(f"Could not find leader. Errors: {joined}") from last_exc
+        # Chain via ``BaseExceptionGroup`` when more than one node
+        # contributed a real exception (the no-leader-known arm
+        # produces no exception, only an entry in ``errors``). Single-
+        # exception case keeps the narrow chain so existing callers
+        # that branch on ``e.__cause__`` type continue to work.
+        # No-exception case (every node returned no-leader-known)
+        # raises with no chain — the message itself is the
+        # diagnostic. Mirrors ``ConnectionPool.initialize``'s discipline.
+        if len(per_node_excs) > 1:
+            raise ClusterError(f"Could not find leader. Errors: {joined}") from BaseExceptionGroup(
+                "find_leader: per-node failures", per_node_excs
+            )
+        if per_node_excs:
+            raise ClusterError(f"Could not find leader. Errors: {joined}") from per_node_excs[0]
+        raise ClusterError(f"Could not find leader. Errors: {joined}")
 
     async def _query_leader(
         self, address: str, *, trust_server_heartbeat: bool = False
