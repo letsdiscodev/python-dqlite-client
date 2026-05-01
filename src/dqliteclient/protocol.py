@@ -233,17 +233,14 @@ class DqliteProtocol:
             # server-reported code and peer address so log aggregators
             # can group on the numeric code (DQLITE_PARSE,
             # DQLITE_NOTLEADER, etc.) rather than on text alone.
-            # Truncate the failure body so a hostile-or-buggy peer
-            # cannot inflate the handshake error into a multi-KiB
-            # log line — the rest of the protocol module's
-            # OperationalError raise sites get this for free via
-            # ``OperationalError._MAX_DISPLAY_MESSAGE``; the raw
-            # ProtocolError shape doesn't.
-            from dqliteclient.cluster import _truncate_error
-
+            # ``_failure_text`` already pre-truncates the body before
+            # appending the addr suffix, bounding the result at
+            # ~240 chars; do NOT wrap it in an outer ``_truncate_error``,
+            # which would re-truncate over the addr suffix and silently
+            # strip the peer attribution exactly when the operator
+            # needs it most (a long handshake failure).
             raise ProtocolError(
-                f"Handshake failed: [{response.code}] "
-                f"{_truncate_error(self._failure_text(response))}"
+                f"Handshake failed: [{response.code}] {self._failure_text(response)}"
             )
 
         if not isinstance(response, WelcomeResponse):
