@@ -48,3 +48,33 @@ def test_operational_error_truncation_preserves_raw_message_full_length() -> Non
     err = OperationalError(1, long_text, raw_message=long_text)
     assert len(err.raw_message) == 4096
     assert "[truncated," in err.message
+
+
+def test_failure_text_truncates_message_before_appending_addr_suffix() -> None:
+    """Pin: ``DqliteProtocol._failure_text`` truncates the server
+    message BEFORE appending the addr suffix so the suffix
+    survives the ``_MAX_DISPLAY_MESSAGE`` codepoint cap on the
+    exception's display ``message`` field. Without pre-
+    truncation, a 100k-char ORM-generated SQL error would
+    push the addr suffix past the cutoff and operators
+    tailing logs lose the peer-address attribution.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from dqliteclient.protocol import DqliteProtocol
+    from dqlitewire.messages import FailureResponse
+
+    proto = DqliteProtocol(
+        AsyncMock(spec=["read"]),
+        MagicMock(spec=["close", "wait_closed"]),
+        address="some-host:9001",
+    )
+    huge = "x" * 100_000
+    response = FailureResponse(code=1, message=huge)
+
+    rendered = proto._failure_text(response)
+
+    # Suffix must appear at the end of the rendered text.
+    assert rendered.endswith(" to some-host:9001"), (
+        f"Addr suffix must survive truncation; rendered ends with: {rendered[-100:]!r}"
+    )

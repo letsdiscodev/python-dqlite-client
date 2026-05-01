@@ -749,8 +749,21 @@ class DqliteProtocol:
         :func:`_failure_message` with the protocol's ``_addr_suffix``.
         Used uniformly across the query-path raise sites so the
         rendering is consistent.
+
+        Truncates the server message BEFORE composing the addr
+        suffix so the suffix survives the
+        ``OperationalError._MAX_DISPLAY_MESSAGE`` codepoint cap on
+        the exception's display ``message`` field. Without
+        pre-truncation, a long server message (e.g. ORM-generated
+        SQL with many bound parameters) would push the suffix past
+        the cutoff — operators tailing logs via
+        ``logger.error("%s", exc)`` would see the truncated server
+        text but lose the peer-address attribution.
         """
-        return _failure_message(response.message, self._addr_suffix())
+        from dqliteclient.cluster import _truncate_error
+
+        truncated_msg = _truncate_error(response.message)
+        return _failure_message(truncated_msg, self._addr_suffix())
 
     def _operation_deadline(self) -> float:
         """Deadline (monotonic seconds) for a single read-side protocol
