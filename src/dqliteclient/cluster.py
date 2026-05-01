@@ -543,7 +543,7 @@ class ClusterClient:
             # the drain to completion within its 100 ms budget even
             # during shutdown; the outer cancel still propagates past
             # this ``finally`` as expected.
-            with contextlib.suppress(OSError, asyncio.TimeoutError):
+            with contextlib.suppress(OSError, TimeoutError):
                 await asyncio.shield(
                     asyncio.wait_for(
                         writer.wait_closed(),
