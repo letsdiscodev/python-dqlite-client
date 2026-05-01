@@ -739,7 +739,23 @@ class DqliteProtocol:
         return _failure_message(response.message, self._addr_suffix())
 
     def _operation_deadline(self) -> float:
-        """Deadline (monotonic seconds) for a single protocol operation.
+        """Deadline (monotonic seconds) for a single read-side protocol
+        operation.
+
+        Uses ``self._read_timeout`` (NOT ``self._timeout``) so the
+        ``trust_server_heartbeat`` widening — which raises
+        ``_read_timeout`` up to the server-advertised heartbeat
+        capped at ``_HEARTBEAT_READ_TIMEOUT_CAP_SECONDS`` — actually
+        flows through to the per-read deadline budget. Without this,
+        the widening was dead code: ``_read_data``'s
+        ``min(remaining, self._read_timeout)`` always selected
+        ``remaining`` because the deadline came from
+        ``self._timeout`` (un-widened), so the user-configured
+        opt-in had no effect.
+
+        Write-path ``_send`` continues to use ``self._timeout``
+        directly (line ~652) — that's intentional: only the read
+        side gets the heartbeat widening.
 
         Note on multi-phase RPCs: ``timeout`` bounds each phase
         independently — a phase-1 ``_send`` followed by a phase-2
@@ -753,7 +769,7 @@ class DqliteProtocol:
         outer call in ``asyncio.timeout`` / ``asyncio.wait_for``.
         This matches go-dqlite's per-phase budgeting.
         """
-        return asyncio.get_running_loop().time() + self._timeout
+        return asyncio.get_running_loop().time() + self._read_timeout
 
     async def _read_continuation(self, deadline: float | None = None) -> RowsResponse:
         """Read and decode a ROWS continuation frame.

@@ -139,7 +139,12 @@ class TestDqliteProtocol:
         import asyncio
         import time
 
+        # Set both the write-path timeout AND the read-path timeout
+        # so the operation deadline (which keys off ``_read_timeout``
+        # so the heartbeat widening flows through) reflects the
+        # tightened budget.
         protocol._timeout = 0.2
+        protocol._read_timeout = 0.2
 
         async def drip_forever(_n: int) -> bytes:
             await asyncio.sleep(0.1)
@@ -154,6 +159,43 @@ class TestDqliteProtocol:
         assert elapsed < 1.0, (
             f"_read_response must bail at the operation deadline; took {elapsed:.3f}s"
         )
+
+    async def test_read_timeout_widening_actually_extends_operation_deadline(
+        self,
+        protocol: DqliteProtocol,
+        mock_reader: AsyncMock,
+    ) -> None:
+        """Pin: setting ``_read_timeout`` (e.g. via the
+        ``trust_server_heartbeat`` opt-in widening) genuinely extends
+        the per-operation read deadline; the widening is not dead
+        code. A read that takes longer than ``_timeout`` but less
+        than the widened ``_read_timeout`` must complete cleanly.
+        """
+        import asyncio
+
+        from dqlitewire.messages import EmptyResponse
+
+        protocol._timeout = 0.05  # tight write-side
+        protocol._read_timeout = 5.0  # widened read-side
+        body = EmptyResponse().encode()
+
+        sent = [False]
+
+        async def slow_first_read(_n: int) -> bytes:
+            # First call takes longer than _timeout but well within
+            # _read_timeout; deliver the full response so the
+            # decoder completes.
+            if not sent[0]:
+                sent[0] = True
+                await asyncio.sleep(0.2)
+                return body
+            return b""
+
+        mock_reader.read.side_effect = slow_first_read
+
+        # Must NOT raise: the widening flowed through into the
+        # deadline budget. Pre-fix this raised TimeoutError at 0.05s.
+        await protocol._read_response()
 
     async def test_read_data_deadline_already_in_past_raises_immediately(
         self,
