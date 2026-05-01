@@ -773,7 +773,7 @@ class ConnectionPool:
                 "Pool used after fork; reconstruct from configuration in the target process."
             )
         if self._closed:
-            raise DqliteConnectionError("Pool is closed")
+            raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._timeout
@@ -781,7 +781,7 @@ class ConnectionPool:
 
         while conn is None:
             if self._closed:
-                raise DqliteConnectionError("Pool is closed")
+                raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
 
             # Try to get an idle connection from the queue
             try:
@@ -796,7 +796,7 @@ class ConnectionPool:
             reserved = False
             async with self._lock:
                 if self._closed:
-                    raise DqliteConnectionError("Pool is closed")
+                    raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
                 if self._size < self._max_size:
                     self._size += 1
                     reserved = True
@@ -846,7 +846,7 @@ class ConnectionPool:
             async with self._lock:
                 closed_event = self._get_closed_event()
                 if self._closed:
-                    raise DqliteConnectionError("Pool is closed")
+                    raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
                 closed_event.clear()
                 logger.debug(
                     "pool.acquire: at capacity size=%d max=%d, waiting",
@@ -1025,7 +1025,7 @@ class ConnectionPool:
                     await asyncio.shield(conn.close())
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.shield(self._release_reservation())
-                raise DqliteConnectionError("Pool is closed")
+                raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
 
         conn._pool_released = False
         try:
