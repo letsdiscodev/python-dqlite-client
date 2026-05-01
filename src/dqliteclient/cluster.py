@@ -546,6 +546,13 @@ class ClusterClient:
                 SIGTERM-shutdown budgets. See
                 ``DqliteConnection.__init__`` for full rationale.
         """
+        # Reject ``bool`` before the < 1 check so ``True``/``False``
+        # don't silently coerce to 1/0. Mirrors the discipline in
+        # ``ConnectionPool.__init__``.
+        if max_attempts is not None and (
+            isinstance(max_attempts, bool) or not isinstance(max_attempts, int)
+        ):
+            raise TypeError(f"max_attempts must be int or None, got {type(max_attempts).__name__}")
         attempts_cap = max_attempts if max_attempts is not None else _DEFAULT_CONNECT_MAX_ATTEMPTS
         if attempts_cap < 1:
             # Wording mirrors ``ConnectionPool.__init__``'s validator

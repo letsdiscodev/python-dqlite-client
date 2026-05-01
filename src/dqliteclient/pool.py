@@ -226,6 +226,19 @@ class ConnectionPool:
                 a long retry loop just delays the diagnosis. Must be
                 ``>= 1`` if not ``None``.
         """
+        # Reject ``bool`` first: ``True == 1`` and ``False == 0``
+        # would silently coerce to valid sizes and mask caller bugs
+        # that accidentally pass a flag through. Mirrors the
+        # int/bool reject discipline applied to ``encode_int64``,
+        # ``Cursor.arraysize``, and the wire validators.
+        if isinstance(min_size, bool) or not isinstance(min_size, int):
+            raise TypeError(f"min_size must be int, got {type(min_size).__name__}")
+        if isinstance(max_size, bool) or not isinstance(max_size, int):
+            raise TypeError(f"max_size must be int, got {type(max_size).__name__}")
+        if max_attempts is not None and (
+            isinstance(max_attempts, bool) or not isinstance(max_attempts, int)
+        ):
+            raise TypeError(f"max_attempts must be int or None, got {type(max_attempts).__name__}")
         if min_size < 0:
             raise ValueError(f"min_size must be non-negative, got {min_size}")
         if max_size < 1:
