@@ -1216,18 +1216,22 @@ class DqliteConnection:
         # only inside the ``_protocol is None`` branch left a done-task
         # reference on the happy path indefinitely, inconsistent with
         # ``connect()``'s own ``_pending_drain = None`` symmetry.
-        pending = self._pending_drain
-        self._pending_drain = None
-        if pending is not None and not pending.done():  # pragma: no cover
-            # Defensive: the pending bounded-drain task is set only
-            # by ``_invalidate`` and is normally already-done by
-            # the time ``close()`` runs (the drain is bounded by
-            # ``close_timeout`` and the close path is the second
-            # caller). Reaching here requires the rare race where
-            # ``_invalidate`` fires between the snapshot read and
-            # the second caller's resumption — verified by code
-            # review, not coverage.
-            #
+        # Bounded re-snapshot loop: a concurrent ``_invalidate``
+        # callback queued via ``loop.call_soon_threadsafe`` (the
+        # dbapi sync wrapper's timeout / KI arms do this) can run
+        # during ``await pending`` and CREATE a new ``_pending_drain``
+        # task on this same connection. Without re-snapshotting,
+        # that fresh drain task is orphaned — surfacing as
+        # "Task was destroyed but it is pending" at GC. The loop is
+        # bounded (each iteration retires one drain task; after a
+        # few rounds the racing _invalidate sees ``_protocol is None``
+        # and the cycle terminates). Cap at 3 to fail loudly on a
+        # pathological feedback loop rather than spin.
+        for _attempt in range(3):
+            pending = self._pending_drain
+            self._pending_drain = None
+            if pending is None or pending.done():
+                break
             # Narrow suppress to ``(Exception, asyncio.CancelledError)``
             # so KeyboardInterrupt and SystemExit propagate. Cycle 23
             # noted that the previous ``BaseException`` suppress was
