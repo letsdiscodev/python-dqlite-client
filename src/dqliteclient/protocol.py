@@ -865,11 +865,18 @@ class DqliteProtocol:
             # Server-authored failure mid-stream: surface the SQLite code
             # so sqlalchemy's is_disconnect and dbapi's code-to-exception
             # map can classify correctly (leader flip, constraint, etc.).
-            # Append the addr suffix so the operator log shows which
-            # peer emitted the failure — matching the eight sibling
-            # ``raise OperationalError`` sites in this module.
+            # Pre-truncate the body BEFORE composing the addr suffix so
+            # the suffix survives the OperationalError._MAX_DISPLAY_MESSAGE
+            # codepoint cap on the exception's display field — matching
+            # the eight sibling ``raise OperationalError`` sites in this
+            # module that route through ``self._failure_text``.
+            from dqliteclient.cluster import _truncate_error
+
+            truncated_msg = _truncate_error(e.message)
             raise OperationalError(
-                e.code, f"{e.message}{self._addr_suffix()}", raw_message=e.message
+                e.code,
+                _failure_message(truncated_msg, self._addr_suffix()),
+                raw_message=e.message,
             ) from e
         except _WireProtocolError as e:
             # Wire-decode failures are NOT recovered via
