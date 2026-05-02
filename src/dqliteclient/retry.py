@@ -4,6 +4,7 @@ import asyncio
 import math
 import random
 from collections.abc import Awaitable, Callable
+from typing import Final
 
 from dqliteclient.exceptions import ClusterError, DqliteConnectionError
 
@@ -23,7 +24,7 @@ __all__ = ["retry_with_backoff"]
 # (mirrors the classification in
 # ``sqlalchemy-dqlite/src/sqlalchemydqlite/base.py``'s
 # ``is_disconnect``).
-_DEFAULT_RETRYABLE: tuple[type[BaseException], ...] = (
+_DEFAULT_RETRYABLE: Final[tuple[type[BaseException], ...]] = (
     OSError,
     DqliteConnectionError,
     ClusterError,
@@ -176,5 +177,9 @@ async def retry_with_backoff[T](
 
     # last_error is non-None here: the break on the final attempt only
     # runs after ``last_error = e`` executes, and max_attempts < 1 is
-    # rejected above. mypy can't see the loop invariant.
-    raise last_error  # type: ignore[misc]
+    # rejected above. The assert pins the loop invariant for mypy
+    # without runtime cost on production paths (a stripped-by-O assert
+    # would still leave the invariant intact at this point because the
+    # break path always sets last_error first).
+    assert last_error is not None
+    raise last_error
