@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any, Final, NoReturn, Self
 
+from dqliteclient._dial import open_connection_with_keepalive
 from dqliteclient.exceptions import (
     DataError,
     DqliteConnectionError,
@@ -1063,7 +1064,7 @@ class DqliteConnection:
         # calls on the same instance are rejected by ``_check_in_use``.
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(self._host, self._port),
+                open_connection_with_keepalive(self._host, self._port),
                 timeout=self._timeout,
             )
         except TimeoutError as e:

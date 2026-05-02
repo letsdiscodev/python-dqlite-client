@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable
 from typing import Final, NoReturn
 
 from dqliteclient import connection as _conn_mod
+from dqliteclient._dial import open_connection_with_keepalive
 from dqliteclient.connection import DqliteConnection, _parse_address, _validate_timeout
 from dqliteclient.exceptions import (
     ClusterError,
@@ -476,7 +477,7 @@ class ClusterClient:
 
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port),
+                open_connection_with_keepalive(host, port),
                 timeout=self._timeout,
             )
         except OSError:
