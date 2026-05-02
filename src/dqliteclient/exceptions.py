@@ -21,7 +21,31 @@ class DqliteError(Exception):
 
 
 class DqliteConnectionError(DqliteError):
-    """Error establishing or maintaining connection."""
+    """Error establishing or maintaining connection.
+
+    Optionally carries ``code`` and ``raw_message`` so the verbatim
+    server-supplied diagnostic survives a connect-path rewrap of an
+    upstream ``OperationalError`` (e.g. the ``LEADER_ERROR_CODES``
+    branch in ``DqliteConnection.connect()``). Both attributes are
+    ``None`` for the canonical TCP / handshake / cluster-level
+    failures; callers that want the verbatim server text fall back to
+    ``str(exc)`` when ``raw_message`` is None — matching the dbapi-
+    side ``getattr(e, "raw_message", None) or str(e)`` idiom.
+    """
+
+    code: int | None
+    raw_message: str | None
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        code: int | None = None,
+        raw_message: str | None = None,
+    ) -> None:
+        self.code = code
+        self.raw_message = raw_message
+        super().__init__(message)
 
 
 class ProtocolError(DqliteError, _WireProtocolError):

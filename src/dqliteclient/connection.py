@@ -1118,9 +1118,19 @@ class DqliteConnection:
             if e.code in LEADER_ERROR_CODES:
                 # Leader-change errors during OPEN are transport-level
                 # problems — the caller needs to reconnect elsewhere, not
-                # treat this as a SQL error.
+                # treat this as a SQL error. Thread ``code`` and
+                # ``raw_message`` through the rewrap so the dbapi /
+                # SA-dialect classifiers see the same code-bearing
+                # signal they would on the query path: without this
+                # the leader-change SQLITE_IOERR_NOT_LEADER /
+                # SQLITE_IOERR_LEADERSHIP_LOST code is dropped on the
+                # floor and SA's is_disconnect can only fall back to
+                # the substring branch (which works today but would
+                # break on a future message rewording).
                 raise DqliteConnectionError(
-                    f"Node {self._address} is no longer leader: {e.message}"
+                    f"Node {self._address} is no longer leader: {e.message}",
+                    code=e.code,
+                    raw_message=e.raw_message,
                 ) from e
             raise
         except BaseException:
