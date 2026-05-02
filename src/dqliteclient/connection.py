@@ -1420,7 +1420,19 @@ class DqliteConnection:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        await self.close()
+        # Shield close() against an outer CancelledError. ``async with
+        # DqliteConnection(...)`` whose body raises CancelledError
+        # (outer ``asyncio.timeout``) has the close()'s bounded drain
+        # cancelled mid-``wait_closed``, leaving the inner reader Task
+        # orphaned and producing "Task was destroyed but it is pending"
+        # warnings at GC. The transport's ``writer.close()`` is
+        # synchronous so the FD is already gone by the time we enter
+        # the await — only the bounded drain and ``_pending_drain``
+        # reaper are at risk. Mirror the discipline used by
+        # ``ConnectionPool._release``. Caller's outer
+        # ``asyncio.timeout`` still bounds the absolute wall clock.
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(self.close())
 
     def _ensure_connected(self) -> tuple[DqliteProtocol, int]:
         """Ensure we're connected and return protocol and db_id."""
