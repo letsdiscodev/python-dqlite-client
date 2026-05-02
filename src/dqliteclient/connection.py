@@ -1017,39 +1017,40 @@ class DqliteConnection:
         pending = self._pending_drain
         if pending is not None:
             if not pending.done():
+                # Snapshot ``cancelling()`` BEFORE calling
+                # ``pending.cancel()`` so a non-zero residual count
+                # left over from an upstream caller's prior consumed-
+                # but-not-uncancelled cancel does not unconditionally
+                # trigger the post-await re-raise. Compare the
+                # post-await counter against this snapshot — only a
+                # delta indicates a fresh outer cancel landed during
+                # ``await pending``. ``Task.cancelling()`` is
+                # cumulative and not function-scoped; the canonical
+                # way to detect "did MY await get cancelled" is the
+                # delta pattern that ``asyncio.timeout`` itself uses
+                # internally.
+                self_task = asyncio.current_task()
+                cancelling_before = self_task.cancelling() if self_task is not None else 0
                 pending.cancel()
                 # Awaiting a cancelled task raises ``CancelledError``;
                 # that is the cancel WE delivered and must be consumed
                 # here so connect() can proceed. But an outer
                 # ``task.cancel()`` may have also landed on the current
-                # task — distinguish via ``Task.cancelling()`` (a
-                # READ-only counter of cancels delivered to the current
-                # task). Our own ``pending.cancel()`` cancelled the
-                # *inner* drain task and propagated CancelledError up
-                # through ``await pending``, but does NOT increment the
-                # current task's own cancel count; an outer
-                # ``task.cancel()`` against this coroutine, by contrast,
-                # increments ``cancelling()`` to >= 1. If > 0, the
-                # cancel was outer; let it propagate to the next
-                # checkpoint cleanly. We deliberately do NOT call
-                # ``Task.uncancel()`` here — that decrements the
-                # counter and would consume the outer cancel, leaving
-                # ``connect()`` to silently open a TCP connection the
-                # parent intended to abort.
+                # task — distinguish via the cancelling-counter delta
+                # described above. We deliberately do NOT call
+                # ``Task.uncancel()`` here — that would consume the
+                # outer cancel, leaving ``connect()`` to silently open
+                # a TCP connection the parent intended to abort.
                 try:
                     await pending
                 except asyncio.CancelledError:
-                    # The CancelledError came either from our own
-                    # ``pending.cancel()`` (which we want to consume
-                    # so connect() can proceed) OR from an outer
-                    # ``task.cancel()`` that propagated through our
-                    # fut_waiter. ``Task.cancelling()`` distinguishes:
-                    # it counts cancels delivered TO the current task,
-                    # which our own ``pending.cancel()`` does not
-                    # increment. If > 0, the cancel was outer; let
-                    # it propagate to the next checkpoint.
-                    self_task = asyncio.current_task()
-                    if self_task is not None and self_task.cancelling() > 0:
+                    # Re-raise only if the cancelling counter
+                    # increased during ``await pending`` (a fresh
+                    # outer cancel landed); a stable counter means the
+                    # CancelledError came from our own
+                    # ``pending.cancel()`` and must be consumed.
+                    cancelling_after = self_task.cancelling() if self_task is not None else 0
+                    if cancelling_after > cancelling_before:
                         raise
                 except Exception:
                     pass
