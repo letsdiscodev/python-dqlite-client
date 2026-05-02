@@ -2240,15 +2240,36 @@ class DqliteConnection:
             await self.execute(_TRANSACTION_COMMIT_SQL)
         except BaseException as exc:
             if commit_attempted:
-                # COMMIT was sent but failed. Server-side state is ambiguous
-                # (maybe committed, maybe still open, maybe rolled back). We
-                # cannot safely reuse this connection — invalidate so the
-                # pool discards it instead of recycling an unknown state.
-                # Pass the in-flight exception as the cause so subsequent
-                # ``_ensure_connected`` raises chain back to the cancel /
-                # OperationalError that triggered the invalidation, instead
-                # of dropping ``__cause__`` on the floor.
-                self._invalidate(exc)
+                # COMMIT was sent but failed. Discriminate by exception
+                # class / SQLite code: deterministic rollback codes
+                # (``_TX_AUTO_ROLLBACK_PRIMARY_CODES`` — SQLITE_NOMEM /
+                # IOERR / INTERRUPT / CORRUPT / FULL / ABORT, all
+                # documented as engine-rolled-back) and SQLITE_CONSTRAINT
+                # primary 19 on COMMIT (deferred-FK violation, also
+                # engine-rolled-back per the SQLite savepoint
+                # specification) leave the server in a known no-tx
+                # state — ``execute`` / ``_run_protocol`` already
+                # cleared the local tx flags atomically before raising,
+                # so the connection is healthy and reusable. Invalidate
+                # only when the server-side state is genuinely
+                # ambiguous (transport / cancellation / non-rollback
+                # codes). Mirrors the rollback-arm discrimination
+                # below at lines 2284-2298 (already-fixed sibling).
+                deterministic_rollback = (
+                    isinstance(exc, OperationalError)
+                    and exc.code is not None
+                    and (
+                        _primary_sqlite_code(exc.code) in _TX_AUTO_ROLLBACK_PRIMARY_CODES
+                        or _primary_sqlite_code(exc.code) == 19  # SQLITE_CONSTRAINT
+                    )
+                )
+                if not deterministic_rollback:
+                    # Pass the in-flight exception as the cause so
+                    # subsequent ``_ensure_connected`` raises chain
+                    # back to the cancel / OperationalError that
+                    # triggered the invalidation, instead of
+                    # dropping ``__cause__`` on the floor.
+                    self._invalidate(exc)
             else:
                 # Body raised before COMMIT; try to roll back.
                 #
