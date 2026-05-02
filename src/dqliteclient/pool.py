@@ -90,6 +90,14 @@ def _socket_looks_dead(conn: DqliteConnection) -> bool:
     connected / invalidated state); the only way to reach this branch
     in production is a connection that genuinely has no usable
     protocol.
+
+    Loop-affinity invariant: this function is only ever called on the
+    loop's owning thread (acquire-path pre-ping is sync within
+    ``ConnectionPool.acquire``'s coroutine; never crosses an
+    ``await`` between the attribute peeks). A concurrent
+    ``DqliteConnection._invalidate`` runs on the same loop and cannot
+    interleave between the attribute reads — torn reads are not
+    possible without an ``await`` boundary in this function body.
     """
     # ``getattr`` (rather than direct attribute access) so the function
     # tolerates partial mocks that omit ``_protocol`` entirely — the
