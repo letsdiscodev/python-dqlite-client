@@ -17,24 +17,41 @@ __all__ = [
 
 
 class DqliteError(Exception):
-    """Base exception for dqlite client errors."""
+    """Base exception for dqlite client errors.
+
+    Carries an optional ``raw_message`` attribute — the verbatim
+    server-supplied diagnostic, un-truncated and un-suffixed — so
+    callers (the dbapi-layer classifier, SA's ``is_disconnect``)
+    can read forensic-grade text without falling back to
+    ``str(e)`` (which can be truncated by display caps or padded
+    by per-class wrap prefixes). Defaults to ``None`` for raises
+    that are purely client-side (no server text in scope).
+
+    The ``OperationalError`` subclass overrides ``__init__`` to keep
+    its existing display-truncation semantics (a 1 KiB cap on the
+    user-facing ``message`` field with the un-truncated text on
+    ``raw_message``); all other subclasses inherit this base
+    constructor unchanged.
+    """
+
+    raw_message: str | None
+
+    def __init__(self, *args: object, raw_message: str | None = None) -> None:
+        super().__init__(*args)
+        self.raw_message = raw_message
 
 
 class DqliteConnectionError(DqliteError):
     """Error establishing or maintaining connection.
 
-    Optionally carries ``code`` and ``raw_message`` so the verbatim
-    server-supplied diagnostic survives a connect-path rewrap of an
-    upstream ``OperationalError`` (e.g. the ``LEADER_ERROR_CODES``
-    branch in ``DqliteConnection.connect()``). Both attributes are
-    ``None`` for the canonical TCP / handshake / cluster-level
-    failures; callers that want the verbatim server text fall back to
-    ``str(exc)`` when ``raw_message`` is None — matching the dbapi-
-    side ``getattr(e, "raw_message", None) or str(e)`` idiom.
+    Optionally carries ``code`` so the wire-level signal survives a
+    connect-path rewrap of an upstream ``OperationalError`` (e.g. the
+    ``LEADER_ERROR_CODES`` branch in ``DqliteConnection.connect()``).
+    ``raw_message`` (the verbatim server text) is inherited from the
+    ``DqliteError`` base.
     """
 
     code: int | None
-    raw_message: str | None
 
     def __init__(
         self,
@@ -44,8 +61,7 @@ class DqliteConnectionError(DqliteError):
         raw_message: str | None = None,
     ) -> None:
         self.code = code
-        self.raw_message = raw_message
-        super().__init__(message)
+        super().__init__(message, raw_message=raw_message)
 
 
 class ProtocolError(DqliteError, _WireProtocolError):
@@ -129,7 +145,7 @@ class OperationalError(DqliteError):
         # preserved through the dbapi-layer plumbing. Old call sites
         # that omit the kwarg still get the previous behaviour
         # (``raw_message`` defaults to ``message``).
-        self.raw_message = message if raw_message is None else raw_message
+        resolved_raw_message = message if raw_message is None else raw_message
         if len(message) > self._MAX_DISPLAY_MESSAGE:
             # ``len(message)`` and the slice cap count Python codepoints,
             # not UTF-8 bytes. Match the unit in the marker so an
@@ -143,11 +159,11 @@ class OperationalError(DqliteError):
             self.message = message
         # Pass ``code`` and the display ``message`` through as separate
         # args so ``self.args == (code, message)``; pickle / deepcopy
-        # reconstruct via ``OperationalError(*args)``. The
-        # ``raw_message`` kwarg is keyword-only and lossy on pickle —
-        # but the dbapi layer is the consumer and reconstructs from
-        # ``e.raw_message`` directly, not from ``args``.
-        super().__init__(code, message)
+        # reconstruct via ``OperationalError(*args)``. Pass
+        # ``raw_message=`` through to the base so the ``DqliteError``
+        # ``raw_message`` slot is set there (keeps a single source of
+        # truth across the hierarchy).
+        super().__init__(code, message, raw_message=resolved_raw_message)
 
     def __str__(self) -> str:
         return f"[{self.code}] {self.message}"
