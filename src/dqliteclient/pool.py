@@ -1325,6 +1325,19 @@ class ConnectionPool:
             # Healthy connection returning to queue: no close; just flip
             # the flag and enqueue. If the queue is full we must close
             # before setting the flag.
+            #
+            # Synchronous-tail invariant: there is no ``await`` between
+            # the ``self._closed`` re-check at line 1319 and the
+            # ``put_nowait`` below, so under standard CPython
+            # single-loop semantics no concurrent ``pool.close()`` can
+            # interleave to drain the queue between the check and the
+            # put. Do NOT introduce an ``await`` in this block without
+            # adding a fresh ``_closed`` re-check immediately before
+            # ``put_nowait`` — that would re-open a TOCTOU window where
+            # a concurrent ``close()`` finishes its drain after our
+            # check but before our enqueue, orphaning the released
+            # connection (no longer reachable from the pool, never
+            # closed).
             try:
                 self._pool.put_nowait(conn)
             except asyncio.QueueFull:
