@@ -33,6 +33,7 @@ from dqlitewire import SQLITE_BUSY as _SQLITE_BUSY
 from dqlitewire import TX_AUTO_ROLLBACK_PRIMARY_CODES as _TX_AUTO_ROLLBACK_PRIMARY_CODES
 from dqlitewire import primary_sqlite_code as _primary_sqlite_code
 from dqlitewire.exceptions import EncodeError as _WireEncodeError
+from dqlitewire.messages.responses import _sanitize_server_text as _sanitize_display_text
 
 __all__ = ["DqliteConnection"]
 
@@ -988,6 +989,25 @@ class DqliteConnection:
         return self._address
 
     @property
+    def _safe_address(self) -> str:
+        """Sanitised form of ``self._address`` for embedding in
+        exception messages and log lines.
+
+        ``self._address`` ultimately originates from either operator
+        configuration (trusted) or a server-supplied
+        ``LeaderResponse`` (NOT trusted at decode time — sanitising
+        would split allowlist sets, so it goes through
+        ``parse_address`` for shape validation but is left otherwise
+        verbatim). The current ``parse_address`` rejects
+        whitespace/CRLF, so a CRLF log-injection is blocked at the
+        boundary today; routing every f-string interpolation through
+        the wire-layer sanitiser is defence-in-depth in case a future
+        change loosens hostname validation. Mirrors the discipline
+        used in :meth:`DqliteProtocol._addr_suffix`.
+        """
+        return _sanitize_display_text(self._address)
+
+    @property
     def is_connected(self) -> bool:
         """Check if connected."""
         return self._protocol is not None
@@ -1114,9 +1134,9 @@ class DqliteConnection:
                 timeout=self._timeout,
             )
         except TimeoutError as e:
-            raise DqliteConnectionError(f"Connection to {self._address} timed out") from e
+            raise DqliteConnectionError(f"Connection to {self._safe_address} timed out") from e
         except OSError as e:
-            raise DqliteConnectionError(f"Failed to connect to {self._address}: {e}") from e
+            raise DqliteConnectionError(f"Failed to connect to {self._safe_address}: {e}") from e
 
         try:
             self._protocol = DqliteProtocol(
@@ -1177,7 +1197,7 @@ class DqliteConnection:
                 # the substring branch (which works today but would
                 # break on a future message rewording).
                 raise DqliteConnectionError(
-                    f"Node {self._address} is no longer leader: {e.message}",
+                    f"Node {self._safe_address} is no longer leader: {e.message}",
                     code=e.code,
                     raw_message=e.raw_message,
                 ) from e
