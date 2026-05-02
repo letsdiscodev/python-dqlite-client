@@ -574,6 +574,15 @@ class ClusterClient:
             # mid-shield orphans the inner Task with a
             # ``TimeoutError`` that asyncio's task-finalisation
             # logger emits as "Task exception was never retrieved".
+            #
+            # Bounded-tail invariant: when the outer await asyncio.shield
+            # is itself cancelled, ``inner_drain`` continues running for
+            # up to ``_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS`` (100 ms)
+            # before self-terminating via the inner ``wait_for``. Under
+            # leader-probe stampede this leaves a 100 ms tail of
+            # background work surviving outer-cancel shutdown — bounded
+            # by the slot count and the per-drain deadline; intentional
+            # to avoid socket leaks under cancel.
             inner_drain: asyncio.Task[None] = asyncio.ensure_future(
                 asyncio.wait_for(
                     writer.wait_closed(),
