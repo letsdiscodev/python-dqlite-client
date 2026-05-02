@@ -824,7 +824,13 @@ class DqliteProtocol:
         ``open_database`` + ``query_sql`` for proportionally more.
         Callers needing an absolute end-to-end bound should wrap the
         outer call in ``asyncio.timeout`` / ``asyncio.wait_for``.
-        This matches go-dqlite's per-phase budgeting.
+
+        Note: this differs from go-dqlite, which uses an absolute
+        per-call deadline (``conn.SetDeadline(ctx.Deadline())``). The
+        per-phase shape here is a deliberate Python-side choice — the
+        asyncio.wait_for wraps individual sends and reads independently
+        — and is documented at :class:`DqliteConnection` for caller
+        guidance.
         """
         return asyncio.get_running_loop().time() + self._read_timeout
 
