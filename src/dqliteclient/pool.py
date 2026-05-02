@@ -915,6 +915,10 @@ class ConnectionPool:
                     with contextlib.suppress(BaseException):
                         await get_task
                 raise
+            # mypy-narrowing assert; no runtime cost on the happy path
+            # (both tasks are constructed in the try-block above before
+            # the BaseException branch raises). Stripped under
+            # ``python -O`` but the invariant is structurally guaranteed.
             assert get_task is not None and closed_task is not None
             if not closed_task.done():
                 closed_task.cancel()
