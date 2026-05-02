@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import weakref
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -721,7 +722,7 @@ class TestConnectionPool:
             mock_conn.is_connected = True
             mock_conn._in_use = False
             mock_conn._in_transaction = False
-            mock_conn._bound_loop = asyncio.get_running_loop()
+            mock_conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
             mock_conn._check_in_use = MagicMock()
 
             async def slow_close():
@@ -762,7 +763,7 @@ class TestConnectionPool:
             mock_conn.is_connected = True
             mock_conn._in_use = False
             mock_conn._in_transaction = False
-            mock_conn._bound_loop = asyncio.get_running_loop()
+            mock_conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
             mock_conn._check_in_use = MagicMock()
 
             async def slow_close():
@@ -805,7 +806,7 @@ class TestConnectionPool:
         mock_conn.close = AsyncMock()
         mock_conn._in_transaction = False
         mock_conn._in_use = False
-        mock_conn._bound_loop = None
+        mock_conn._bound_loop_ref = None
         mock_conn._check_in_use = MagicMock()
 
         call_log: list[str] = []
@@ -843,7 +844,7 @@ class TestConnectionPool:
         mock_conn.close = AsyncMock()
         mock_conn._in_transaction = False
         mock_conn._in_use = False
-        mock_conn._bound_loop = None
+        mock_conn._bound_loop_ref = None
         mock_conn._check_in_use = MagicMock()
 
         async def failing_execute(sql, params=None):
@@ -885,7 +886,7 @@ class TestConnectionPool:
         conn = DqliteConnection("127.0.0.1:9001")
         conn._protocol = MagicMock()
         conn._db_id = 1
-        conn._bound_loop = asyncio.get_running_loop()
+        conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         conn._in_transaction = True
 
         # Reader has seen EOF / transport is closing.
@@ -931,7 +932,7 @@ class TestConnectionPool:
         mock_conn.close = AsyncMock()
         mock_conn._in_transaction = False
         mock_conn._in_use = False
-        mock_conn._bound_loop = None
+        mock_conn._bound_loop_ref = None
         mock_conn._pool_released = False
         mock_conn._check_in_use = MagicMock()
 
@@ -981,7 +982,7 @@ class TestConnectionPool:
         mock_conn.close = AsyncMock()
         mock_conn._in_transaction = False
         mock_conn._in_use = False
-        mock_conn._bound_loop = None
+        mock_conn._bound_loop_ref = None
         mock_conn._pool_released = False
         mock_conn._check_in_use = MagicMock()
 
@@ -1103,7 +1104,7 @@ class TestConnectionPool:
         conn = DqliteConnection("127.0.0.1:9001")
         conn._protocol = MagicMock()
         conn._db_id = 1
-        conn._bound_loop = asyncio.get_running_loop()
+        conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         conn._in_transaction = True
 
         async def cancel_on_rollback(db_id, sql, params=None):
@@ -1130,7 +1131,7 @@ class TestConnectionPool:
         real_conn = DqliteConnection("127.0.0.1:9001")
         real_conn._protocol = MagicMock()
         real_conn._db_id = 1
-        real_conn._bound_loop = asyncio.get_running_loop()
+        real_conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         real_conn._protocol.exec_sql = AsyncMock(return_value=(0, 1))
         real_conn._protocol.query_sql = AsyncMock(return_value=(["id"], [[1]]))
         real_conn._protocol.close = MagicMock()
@@ -1164,7 +1165,7 @@ class TestConnectionPool:
         real_conn = DqliteConnection("127.0.0.1:9001")
         real_conn._protocol = MagicMock()
         real_conn._db_id = 1
-        real_conn._bound_loop = asyncio.get_running_loop()
+        real_conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         real_conn._protocol.exec_sql = AsyncMock(return_value=(0, 1))
         real_conn._protocol.close = MagicMock()
         real_conn._protocol.wait_closed = AsyncMock()
@@ -1195,7 +1196,7 @@ class TestConnectionPool:
         real_conn = DqliteConnection("127.0.0.1:9001")
         real_conn._protocol = MagicMock()
         real_conn._db_id = 1
-        real_conn._bound_loop = asyncio.get_running_loop()
+        real_conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         real_conn._protocol.exec_sql = AsyncMock(return_value=(0, 0))
         real_conn._protocol.close = MagicMock()
         real_conn._protocol.wait_closed = AsyncMock()
@@ -1226,7 +1227,7 @@ class TestConnectionPool:
         real_conn = DqliteConnection("127.0.0.1:9001")
         real_conn._protocol = MagicMock()
         real_conn._db_id = 1
-        real_conn._bound_loop = asyncio.get_running_loop()
+        real_conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         real_conn._protocol.exec_sql = AsyncMock(return_value=(0, 1))
         real_conn._protocol.close = MagicMock()
         real_conn._protocol.wait_closed = AsyncMock()
@@ -1253,7 +1254,7 @@ class TestConnectionPool:
         conn = DqliteConnection("127.0.0.1:9001")
         conn._protocol = MagicMock()
         conn._db_id = 1
-        conn._bound_loop = asyncio.get_running_loop()
+        conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         conn._protocol.exec_sql = AsyncMock(return_value=(0, 1))
 
         # Standalone connection — no pool involved, should work fine
@@ -1627,7 +1628,7 @@ class TestReleaseCancellationPreservesReservation:
         mock_conn.close = AsyncMock()
         mock_conn._in_transaction = False
         mock_conn._in_use = False
-        mock_conn._bound_loop = None
+        mock_conn._bound_loop_ref = None
         mock_conn._check_in_use = MagicMock()
         mock_conn._pool_released = False
 
@@ -1674,7 +1675,7 @@ class TestReleaseCancellationPreservesReservation:
         mock_conn.connect = AsyncMock()
         mock_conn._in_transaction = False
         mock_conn._in_use = False
-        mock_conn._bound_loop = None
+        mock_conn._bound_loop_ref = None
         mock_conn._check_in_use = MagicMock()
         mock_conn._pool_released = False
 
@@ -1705,7 +1706,7 @@ class TestReleaseCancellationPreservesReservation:
         mock_conn.connect = AsyncMock()
         mock_conn._in_transaction = False
         mock_conn._in_use = False
-        mock_conn._bound_loop = None
+        mock_conn._bound_loop_ref = None
         mock_conn._check_in_use = MagicMock()
         mock_conn._pool_released = False
 

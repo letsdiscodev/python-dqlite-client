@@ -16,6 +16,7 @@ of telling them to reconstruct the connection.
 from __future__ import annotations
 
 import asyncio
+import weakref
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -36,7 +37,7 @@ async def test_transaction_after_fork_raises_fork_diagnostic_not_cross_task() ->
     # child inherits both fields.
     conn._in_transaction = True
     conn._tx_owner = MagicMock(spec=asyncio.Task)
-    conn._bound_loop = asyncio.get_running_loop()
+    conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
     fake_parent_pid = conn._creator_pid + 1
     conn._creator_pid = fake_parent_pid
 

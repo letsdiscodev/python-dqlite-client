@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import weakref
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -126,7 +127,7 @@ def test_dqlite_connection_close_after_fork_drops_inherited_state() -> None:
     conn._savepoint_stack.append("sp1")
     conn._savepoint_implicit_begin = True
     conn._has_untracked_savepoint = True
-    conn._bound_loop = MagicMock()
+    conn._bound_loop_ref = weakref.ref(MagicMock(spec=asyncio.AbstractEventLoop))
     fake_parent_pid = conn._creator_pid + 1
     conn._creator_pid = fake_parent_pid
 
@@ -144,7 +145,7 @@ def test_dqlite_connection_close_after_fork_drops_inherited_state() -> None:
     assert conn._savepoint_stack == []
     assert conn._savepoint_implicit_begin is False
     assert conn._has_untracked_savepoint is False
-    assert conn._bound_loop is None
+    assert conn._bound_loop_ref is None
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")

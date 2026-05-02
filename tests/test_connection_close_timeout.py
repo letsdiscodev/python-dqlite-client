@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+import weakref
 from unittest.mock import MagicMock
 
 import pytest
@@ -41,7 +42,7 @@ async def test_close_bounds_wait_closed_with_close_timeout() -> None:
     conn = DqliteConnection("localhost:9001", close_timeout=0.1)
     hung = _HungProtocol()
     conn._protocol = hung  # type: ignore[assignment]
-    conn._bound_loop = asyncio.get_running_loop()
+    conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
 
     t0 = time.monotonic()
     await conn.close()
@@ -67,7 +68,7 @@ async def test_close_happy_path_completes_promptly() -> None:
             return None
 
     conn._protocol = _PromptProtocol()  # type: ignore[assignment]
-    conn._bound_loop = asyncio.get_running_loop()
+    conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
 
     t0 = time.monotonic()
     await conn.close()
@@ -91,7 +92,7 @@ async def test_close_oserror_during_drain_is_swallowed() -> None:
             raise OSError("socket already closed")
 
     conn._protocol = _OSErroringProtocol()  # type: ignore[assignment]
-    conn._bound_loop = asyncio.get_running_loop()
+    conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
 
     await conn.close()  # Must not raise.
 
@@ -113,7 +114,7 @@ async def test_close_timeout_error_during_drain_is_swallowed() -> None:
             raise TimeoutError("slow peer")
 
     conn._protocol = _TimeoutProtocol()  # type: ignore[assignment]
-    conn._bound_loop = asyncio.get_running_loop()
+    conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
 
     await conn.close()  # Must not raise.
 
@@ -133,7 +134,7 @@ async def test_abort_protocol_timeout_error_during_drain_is_swallowed() -> None:
             raise TimeoutError("slow peer")
 
     conn._protocol = _TimeoutProtocol()  # type: ignore[assignment]
-    conn._bound_loop = asyncio.get_running_loop()
+    conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
 
     await conn._abort_protocol()  # Must not raise.
 
@@ -155,7 +156,7 @@ async def test_close_cancellederror_escapes() -> None:
             raise asyncio.CancelledError
 
     conn._protocol = _CancellingProtocol()  # type: ignore[assignment]
-    conn._bound_loop = asyncio.get_running_loop()
+    conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
 
     with pytest.raises(asyncio.CancelledError):
         await conn.close()
@@ -179,7 +180,7 @@ async def test_abort_protocol_also_uses_close_timeout() -> None:
     conn = DqliteConnection("localhost:9001", close_timeout=0.1)
     hung = _HungProtocol()
     conn._protocol = hung  # type: ignore[assignment]
-    conn._bound_loop = asyncio.get_running_loop()
+    conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
 
     t0 = time.monotonic()
     await conn._abort_protocol()

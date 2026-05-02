@@ -54,7 +54,7 @@ async def test_close_impl_drains_late_arriving_pending_drain() -> None:
     conn._savepoint_implicit_begin = False
     conn._has_untracked_savepoint = False
     conn._invalidation_cause = None
-    conn._bound_loop = None
+    conn._bound_loop_ref = None
 
     # Schedule the race callback to fire while we're inside the
     # await pending block. ``call_soon`` runs at the next loop
@@ -119,7 +119,7 @@ async def test_close_impl_fails_loud_when_resnapshot_cap_exhausted(
     conn._savepoint_implicit_begin = False
     conn._has_untracked_savepoint = False
     conn._invalidation_cause = None
-    conn._bound_loop = None
+    conn._bound_loop_ref = None
 
     # Adversarial: each ``await pending`` that resolves triggers a
     # fresh not-done task to be assigned to ``conn._pending_drain``.
@@ -206,7 +206,7 @@ async def test_close_impl_loop_terminates_when_invalidate_clears_protocol() -> N
     conn._savepoint_implicit_begin = False
     conn._has_untracked_savepoint = False
     conn._invalidation_cause = None
-    conn._bound_loop = None
+    conn._bound_loop_ref = None
 
     await conn._close_impl()
     assert pending_a.done()

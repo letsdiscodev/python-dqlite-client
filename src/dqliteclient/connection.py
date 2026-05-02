@@ -8,6 +8,7 @@ import math
 import os
 import re
 import string
+import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
@@ -936,7 +937,13 @@ class DqliteConnection:
         self._db_id: int | None = None
         self._in_transaction = False
         self._in_use = False
-        self._bound_loop: asyncio.AbstractEventLoop | None = None
+        # Hold the bound loop via weakref so a long-lived
+        # ``DqliteConnection`` whose loop has been closed (but the
+        # connection itself was not properly ``close()``d) does NOT pin
+        # the loop in memory. The dbapi/aio layer uses the same
+        # discipline; the client layer was a strong reference, leaving
+        # closed loops reachable for direct ``DqliteConnection`` users.
+        self._bound_loop_ref: weakref.ref[asyncio.AbstractEventLoop] | None = None
         self._tx_owner: asyncio.Task[Any] | None = None
         # Savepoint stack and implicit-begin flag for SAVEPOINT / RELEASE
         # tracking. ``_update_tx_flags_from_sql`` pushes a SAVEPOINT name
@@ -1039,11 +1046,11 @@ class DqliteConnection:
         try:
             await self._connect_impl()
         except BaseException:
-            # On failure, clear _in_use AND _bound_loop if no protocol
+            # On failure, clear _in_use AND _bound_loop_ref if no protocol
             # was published. Mirrors the original failure-path discipline.
             self._in_use = False
             if self._protocol is None:
-                self._bound_loop = None
+                self._bound_loop_ref = None
             raise
         else:
             self._in_use = False
@@ -1097,7 +1104,7 @@ class DqliteConnection:
                     pass
             self._pending_drain = None
 
-        self._bound_loop = asyncio.get_running_loop()
+        self._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         # ``_in_use`` was claimed synchronously in ``connect()`` above
         # (before any await checkpoint) so concurrent connect/close
         # calls on the same instance are rejected by ``_check_in_use``.
@@ -1228,7 +1235,7 @@ class DqliteConnection:
             self._savepoint_stack.clear()
             self._savepoint_implicit_begin = False
             self._has_untracked_savepoint = False
-            self._bound_loop = None
+            self._bound_loop_ref = None
             return
         # Run the in-use guard BEFORE the ``_protocol is None``
         # early-return so a concurrent ``connect()`` racing with
@@ -1340,7 +1347,7 @@ class DqliteConnection:
         # finally block, but the successful-close path was missing the
         # symmetry. Mirrors the loop-reset done by the dbapi-async
         # adapter on close.
-        self._bound_loop = None
+        self._bound_loop_ref = None
         if self._protocol is None:
             return
         protocol = self._protocol
@@ -1441,12 +1448,23 @@ class DqliteConnection:
             raise InterfaceError(
                 "DqliteConnection must be used from within an async context."
             ) from None
-        if self._bound_loop is None:
+        bound_loop = self._bound_loop_ref() if self._bound_loop_ref is not None else None
+        if self._bound_loop_ref is None:
             # Lazily bind on first use so the guard is always active, even
             # for bare-instantiation / mocked-protocol patterns that skip
             # connect().
-            self._bound_loop = current_loop
-        elif current_loop is not self._bound_loop:
+            self._bound_loop_ref = weakref.ref(current_loop)
+        elif bound_loop is None:
+            # Weakref expired: the loop we were bound to has been GC'd
+            # (i.e. fully closed and released). Refuse use rather than
+            # silently rebinding to ``current_loop`` — silent rebind
+            # would mask cross-loop misuse where the original loop was
+            # disposed of and a fresh loop is now driving the call.
+            raise InterfaceError(
+                "DqliteConnection is bound to a closed event loop. "
+                "Reconstruct the connection in the new loop."
+            )
+        elif current_loop is not bound_loop:
             raise InterfaceError(
                 "DqliteConnection is bound to a different event loop. "
                 "Do not share connections across event loops or OS threads."
@@ -1584,7 +1602,7 @@ class DqliteConnection:
         # connection (where every other state field has been
         # scrubbed) is still rejected as "bound to a different
         # event loop" on a fresh-loop reconnect.
-        self._bound_loop = None
+        self._bound_loop_ref = None
         # Preserve the FIRST cause: ``_ensure_connected`` raises a
         # synthetic ``DqliteConnectionError("Not connected")`` chained
         # from ``self._invalidation_cause`` whenever an

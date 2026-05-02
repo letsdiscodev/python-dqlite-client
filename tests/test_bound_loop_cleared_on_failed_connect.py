@@ -1,4 +1,4 @@
-"""``DqliteConnection.connect()`` clears ``_bound_loop`` on the
+"""``DqliteConnection.connect()`` clears ``_bound_loop_ref`` on the
 never-connected failure path so a retry from a different event loop
 (legitimate in unit-test teardown or ``asyncio.run()`` re-entry)
 does not fail ``_check_in_use`` with "bound to a different event
@@ -31,9 +31,11 @@ def test_failed_connect_clears_bound_loop() -> None:
     # First loop: connect fails.
     asyncio.run(_run())
     # Second loop: connect again on the same instance. If
-    # ``_bound_loop`` had not been cleared on the failure path, this
-    # would raise ProgrammingError("bound to a different event loop").
+    # ``_bound_loop_ref`` had not been cleared on the failure path,
+    # this would raise ProgrammingError("bound to a different event
+    # loop") — or under the weakref shape, "bound to a closed event
+    # loop" once the first loop was GC'd.
     asyncio.run(_run())
     # After both failures, the binding should still be cleared so a
     # third run can try again.
-    assert conn._bound_loop is None
+    assert conn._bound_loop_ref is None

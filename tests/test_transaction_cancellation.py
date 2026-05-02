@@ -23,6 +23,7 @@ No cluster required.
 from __future__ import annotations
 
 import asyncio
+import weakref
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -81,7 +82,7 @@ def _make_connection() -> tuple[DqliteConnection, _FakeProtocol]:
     proto = _FakeProtocol()
     conn._protocol = proto  # type: ignore[assignment]
     conn._db_id = 0
-    conn._bound_loop = asyncio.get_event_loop_policy().get_event_loop()
+    conn._bound_loop_ref = weakref.ref(asyncio.get_event_loop_policy().get_event_loop())
     return conn, proto
 
 
@@ -94,7 +95,7 @@ def conn_and_proto() -> Any:
         proto = _FakeProtocol()
         conn._protocol = proto  # type: ignore[assignment]
         conn._db_id = 0
-        conn._bound_loop = asyncio.get_running_loop()
+        conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         return conn, proto
 
     return _make

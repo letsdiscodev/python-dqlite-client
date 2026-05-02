@@ -45,7 +45,7 @@ def _make_conn_with_protocol() -> DqliteConnection:
     conn._closed = False  # type: ignore[attr-defined]
     conn._close_timeout = 0.05
     conn._address = "test:9001"
-    conn._bound_loop = None
+    conn._bound_loop_ref = None
     conn._pool_released = False
     return conn
 

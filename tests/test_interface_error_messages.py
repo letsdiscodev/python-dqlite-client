@@ -35,7 +35,7 @@ def _make_bound_connection() -> DqliteConnection:
 
     conn = DqliteConnection.__new__(DqliteConnection)
     conn._pool_released = False
-    conn._bound_loop = asyncio.get_running_loop()
+    conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
     conn._in_use = False
     conn._in_transaction = False
     conn._tx_owner = None
@@ -58,7 +58,7 @@ async def test_cross_loop_branch_message_substring() -> None:
     # second loop here; a sentinel that compares unequal is enough,
     # because ``_check_in_use`` only does ``is`` identity comparison.
     sentinel = MagicMock(spec=asyncio.AbstractEventLoop)
-    conn._bound_loop = sentinel
+    conn._bound_loop_ref = weakref.ref(sentinel)
     with pytest.raises(InterfaceError, match="bound to a different event loop"):
         conn._check_in_use()
 
@@ -72,7 +72,7 @@ def test_called_from_sync_context_branch_message_substring() -> None:
 
     conn = DqliteConnection.__new__(DqliteConnection)
     conn._pool_released = False
-    conn._bound_loop = None
+    conn._bound_loop_ref = None
     conn._in_use = False
     conn._in_transaction = False
     conn._tx_owner = None
@@ -81,7 +81,5 @@ def test_called_from_sync_context_branch_message_substring() -> None:
         conn._check_in_use()
 
 
-# Suppress the unused import warning — ``weakref`` is here for
-# future _bound_loop helpers; keep the import grouped with the
-# rest of the asyncio imports for symmetry with neighboring tests.
-_ = weakref
+# ``weakref`` is used by the helpers above to set up
+# ``_bound_loop_ref`` in the bound-state fixture.

@@ -855,7 +855,8 @@ class TestDqliteConnection:
 
         # First operation in this loop should bind the loop implicitly.
         conn._check_in_use()
-        first_loop = conn._bound_loop
+        assert conn._bound_loop_ref is not None
+        first_loop = conn._bound_loop_ref()
         assert first_loop is asyncio.get_running_loop(), (
             "first _check_in_use should bind the current event loop"
         )
@@ -982,9 +983,9 @@ class TestDqliteConnection:
         adapter's loop reset on close (done/ISSUE-159) and the existing
         failed-connect path's clear in connect()'s finally block."""
         conn, _, _ = connected_connection
-        assert conn._bound_loop is not None
+        assert conn._bound_loop_ref is not None
         await conn.close()
-        assert conn._bound_loop is None
+        assert conn._bound_loop_ref is None
 
     async def test_commit_failure_invalidates_connection(self, connected_connection) -> None:
         """A failed COMMIT leaves server-side state ambiguous; the connection
