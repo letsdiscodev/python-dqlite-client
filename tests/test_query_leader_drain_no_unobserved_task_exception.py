@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-import warnings
 
 import pytest
 
@@ -74,11 +73,16 @@ def test_query_leader_finally_uses_observed_drain_pattern() -> None:
 async def test_outer_cancel_during_drain_does_not_emit_unobserved_warning() -> None:
     """Behavioural pin: cancel the outer task mid-drain, let the inner
     task run to its TimeoutError, drain the loop, and verify NO
-    "Task exception was never retrieved" warning fires.
+    "Task exception was never retrieved" diagnostic fires.
 
     Drives a synthetic case mirroring the production shape — a task
     that runs the same shielded pattern in a tight loop, with the
     outer cancelled mid-flight.
+
+    asyncio surfaces the unobserved-exception diagnostic via
+    ``loop.call_exception_handler``, NOT via ``warnings.warn``.
+    Capture via the loop's exception handler so the assert sees what
+    asyncio actually emits.
     """
 
     async def _slow() -> None:
@@ -90,8 +94,11 @@ async def test_outer_cancel_during_drain_does_not_emit_unobserved_warning() -> N
         with contextlib.suppress(OSError, TimeoutError):
             await asyncio.shield(inner)
 
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
+    captured: list[dict[str, object]] = []
+    loop = asyncio.get_running_loop()
+    prior_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, ctx: captured.append(ctx))
+    try:
         t = asyncio.create_task(_drain_under_shield())
         await asyncio.sleep(0.001)
         t.cancel()
@@ -99,12 +106,62 @@ async def test_outer_cancel_during_drain_does_not_emit_unobserved_warning() -> N
             await t
         # Let the inner timeout fire and finalise.
         await asyncio.sleep(0.1)
+    finally:
+        loop.set_exception_handler(prior_handler)
 
-    # Ensure no asyncio "Task exception was never retrieved" warning
-    # was captured on the warnings channel.
-    asyncio_warnings = [
-        w for w in captured if "Task exception was never retrieved" in str(w.message)
+    # Ensure no asyncio "Task exception was never retrieved" diagnostic
+    # was emitted to the loop's exception handler.
+    asyncio_diagnostics = [
+        ctx
+        for ctx in captured
+        if "Task exception was never retrieved" in str(ctx.get("message", ""))
     ]
-    assert not asyncio_warnings, (
-        f"Expected no unobserved-task warnings; got {[str(w.message) for w in asyncio_warnings]}"
+    if asyncio_diagnostics:
+        msgs = [ctx.get("message") for ctx in asyncio_diagnostics]
+        raise AssertionError(f"Expected no unobserved-task diagnostics; got {msgs}")
+
+
+@pytest.mark.asyncio
+async def test_loop_exception_handler_captures_unobserved_task_exception() -> None:
+    """Positive control: with no done-callback, the unobserved-
+    exception diagnostic IS emitted via ``loop.call_exception_handler``
+    — verifying the capture mechanism works. Without this control, a
+    future regression on the capture path itself (e.g., asyncio
+    changing how it surfaces the diagnostic) would silently make the
+    negative pin above pass for the wrong reason.
+    """
+
+    async def _slow() -> None:
+        await asyncio.sleep(60)
+
+    captured: list[dict[str, object]] = []
+    loop = asyncio.get_running_loop()
+    prior_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, ctx: captured.append(ctx))
+    try:
+        # Build an inner task that resolves with TimeoutError —
+        # crucially with NO done-callback to observe the exception.
+        inner = asyncio.ensure_future(asyncio.wait_for(_slow(), timeout=0.001))
+        # Wait for the timeout to fire without awaiting the inner.
+        await asyncio.sleep(0.05)
+        # Drop the reference so the task can be GC'd → ``__del__``
+        # fires → ``call_exception_handler`` reports the unobserved
+        # exception.
+        del inner
+        import gc
+
+        gc.collect()
+        await asyncio.sleep(0.01)
+    finally:
+        loop.set_exception_handler(prior_handler)
+
+    asyncio_diagnostics = [
+        ctx
+        for ctx in captured
+        if "Task exception was never retrieved" in str(ctx.get("message", ""))
+    ]
+    assert asyncio_diagnostics, (
+        "Capture mechanism must observe asyncio's unobserved-exception "
+        "diagnostic; if this fails, the negative pin above is silently "
+        "passing for the wrong reason."
     )

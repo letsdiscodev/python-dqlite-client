@@ -16,7 +16,6 @@ leaving the new drain task orphaned. asyncio emits
 from __future__ import annotations
 
 import asyncio
-import warnings
 
 import pytest
 
@@ -62,12 +61,21 @@ async def test_close_impl_drains_late_arriving_pending_drain() -> None:
     # iteration which is exactly when ``await pending`` yields.
     loop.call_soon(_race_invalidate_callback)
 
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
+    # asyncio surfaces the "Task was destroyed but it is pending" /
+    # "Task exception was never retrieved" diagnostics via the loop's
+    # exception handler, NOT via ``warnings.warn``. Capture via
+    # ``loop.set_exception_handler`` so the assert sees what asyncio
+    # actually emits.
+    captured: list[dict[str, object]] = []
+    prior_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, ctx: captured.append(ctx))
+    try:
         await conn._close_impl()
-        # Let the loop drain so any orphaned task surfaces as a
-        # "Task was destroyed but it is pending" warning at GC.
+        # Let the loop drain so any orphaned task surfaces a diagnostic
+        # at GC.
         await asyncio.sleep(0.05)
+    finally:
+        loop.set_exception_handler(prior_handler)
 
     # Both A and B must be done — the loop reaped both.
     assert pending_a.done()
@@ -75,12 +83,14 @@ async def test_close_impl_drains_late_arriving_pending_drain() -> None:
     assert pending_b_holder[0].done(), (
         "fresh _pending_drain task created during await must be reaped"
     )
-    # No "Task was destroyed but it is pending" warnings on the
-    # warnings channel.
-    asyncio_warnings = [w for w in captured if "Task was destroyed" in str(w.message)]
-    assert not asyncio_warnings, (
-        f"Expected no orphaned-task warnings; got {[str(w.message) for w in asyncio_warnings]}"
-    )
+    # No "Task was destroyed but it is pending" diagnostic was
+    # emitted via asyncio's exception handler.
+    asyncio_diagnostics = [
+        ctx for ctx in captured if "Task was destroyed" in str(ctx.get("message", ""))
+    ]
+    if asyncio_diagnostics:
+        msgs = [ctx.get("message") for ctx in asyncio_diagnostics]
+        raise AssertionError(f"Expected no orphaned-task diagnostics; got {msgs}")
 
 
 @pytest.mark.asyncio
