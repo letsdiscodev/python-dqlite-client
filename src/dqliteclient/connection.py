@@ -647,9 +647,48 @@ def _canonicalize_host(host: str, address: str) -> str:
     # Try IP literal first — IPv6 shorthand (``::1``) must canonicalize
     # so allowlists see one form regardless of how the peer wrote it.
     try:
-        return str(ipaddress.ip_address(host))
+        ip = ipaddress.ip_address(host)
     except ValueError:
-        pass
+        ip = None
+    if ip is not None:
+        # Reject classes of IP literal that cannot legitimately be a
+        # TCP destination. A server-supplied redirect to ``0.0.0.0``,
+        # ``[::]``, multicast, or reserved IP would pass parsing,
+        # then fail at TCP connect, consuming a full retry attempt
+        # — three successive redirects to such addresses exhaust the
+        # default ``max_attempts`` and surface as ``ClusterError`` on
+        # every fresh ``connect()``. Subtler: an operator allowlist
+        # that contains the unspecified IP silently authorises every
+        # redirect there. Reject at parse time.
+        # Also unwrap an IPv4-mapped IPv6 (``::ffff:0.0.0.0``) so the
+        # embedded IPv4's classification governs — ``is_unspecified``
+        # on the IPv6 wrapper returns False even when the embedded
+        # IPv4 is unspecified.
+        ipv4_mapped = ip.ipv4_mapped if isinstance(ip, ipaddress.IPv6Address) else None
+        effective: ipaddress.IPv4Address | ipaddress.IPv6Address = (
+            ipv4_mapped if ipv4_mapped is not None else ip
+        )
+        if effective.is_unspecified:
+            raise ValueError(
+                f"Invalid host in address {address!r}: "
+                f"{host!r} is the unspecified IP literal and not a valid TCP destination"
+            )
+        if effective.is_multicast:
+            raise ValueError(
+                f"Invalid host in address {address!r}: "
+                f"{host!r} is a multicast IP and not a valid TCP destination"
+            )
+        # ``is_reserved`` is only safe to reject for IPv4 (the
+        # 240.0.0.0/4 Class-E space) — IPv6 ``::1`` (loopback) is
+        # classified as ``is_reserved=True`` in CPython's
+        # ipaddress module, and rejecting loopback would break any
+        # local-test harness using ``[::1]:port``.
+        if isinstance(effective, ipaddress.IPv4Address) and effective.is_reserved:
+            raise ValueError(
+                f"Invalid host in address {address!r}: "
+                f"{host!r} is a reserved IP and not a valid TCP destination"
+            )
+        return str(ip)
     # ASCII-only: reject IDN outright. dqlite's wire does not round-
     # trip punycode reliably, and non-ASCII hostnames are a common
     # homograph-attack vector.
