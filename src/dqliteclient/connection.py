@@ -1227,7 +1227,8 @@ class DqliteConnection:
         # few rounds the racing _invalidate sees ``_protocol is None``
         # and the cycle terminates). Cap at 3 to fail loudly on a
         # pathological feedback loop rather than spin.
-        for _attempt in range(3):
+        _RESNAPSHOT_CAP = 3
+        for _attempt in range(_RESNAPSHOT_CAP):
             pending = self._pending_drain
             self._pending_drain = None
             if pending is None or pending.done():
@@ -1244,6 +1245,27 @@ class DqliteConnection:
             # would be lost forever if absorbed here.
             with contextlib.suppress(Exception, asyncio.CancelledError):
                 await pending
+        else:
+            # Cap exhausted: a racing ``_invalidate`` keeps creating
+            # fresh ``_pending_drain`` tasks each iteration. The
+            # comment block above promised "fail loudly"; without an
+            # explicit log/cancel here, ``self._pending_drain`` would
+            # remain set and the residual task would still be
+            # orphaned at GC. Cancel it (best-effort) and log a
+            # WARNING so operators see the pathological feedback
+            # loop in production logs.
+            stuck = self._pending_drain
+            if stuck is not None and not stuck.done():
+                stuck.cancel()
+            self._pending_drain = None
+            logger.warning(
+                "DqliteConnection._close_impl: _pending_drain still set after "
+                "%d re-snapshot iterations; cancelling residual task to avoid "
+                "'Task was destroyed but it is pending' at GC. This indicates "
+                "a pathological _invalidate feedback loop on connection id=%s.",
+                _RESNAPSHOT_CAP,
+                id(self),
+            )
         # Mirror ``_invalidate``'s atomic clear of the transaction
         # bookkeeping. Without this, a raw ``BEGIN`` followed by an
         # explicit ``close()`` and a reconnect on the same instance
