@@ -40,6 +40,29 @@ class DqliteError(Exception):
         super().__init__(*args)
         self.raw_message = raw_message
 
+    def __reduce__(
+        self,
+    ) -> tuple[type["DqliteError"], tuple[object, ...], dict[str, object]]:
+        # Default ``Exception.__reduce__`` returns ``(cls, self.args)``,
+        # which reconstructs via ``cls(*args)``. That loses every field
+        # set on the instance after ``Exception.__init__`` — most
+        # notably ``raw_message`` (set on the ``DqliteError`` base) and
+        # the ``code`` carried by ``DqliteConnectionError``. The
+        # carriers were added in cycle 27 (XP2 / XP3) precisely so the
+        # wire-level signal would survive cross-process pickling
+        # (``ProcessPoolExecutor``, ``multiprocessing.Queue``, Celery
+        # task results, SA's multiprocess pool); without overriding
+        # ``__reduce__`` the round-trip silently drops them.
+        #
+        # Return the 3-tuple ``(callable, args, state)`` form so pickle
+        # reconstructs via ``cls(*args)`` then applies state via
+        # ``self.__dict__.update(state)`` — preserving every attribute
+        # we set on the instance (``raw_message`` on the base, ``code``
+        # on subclasses, the truncated ``message`` on
+        # ``OperationalError``). All subclasses of ``DqliteError``
+        # inherit this discipline automatically.
+        return (self.__class__, self.args, self.__dict__.copy())
+
 
 class DqliteConnectionError(DqliteError):
     """Error establishing or maintaining connection.
