@@ -7,10 +7,11 @@ Without explicit ``__reduce__`` raises:
   primitives became pickleable in 3.10+) — producing a
   "live"-looking duplicate detached from any loop. Any use yields
   opaque corruption.
-- ``DqliteConnection`` post-``connect()`` raises a cryptic
-  ``AttributeError("Can't pickle local object
-  'WeakSet.__init__.<locals>._remove'")`` from the cursor-tracking
-  weak set.
+- ``DqliteConnection`` (post- or pre-``connect()``) silently
+  produces a corrupt duplicate via the default
+  ``Exception.__reduce__`` walk; without an explicit reject the
+  duplicate looks "live" but holds severed loop bindings and
+  half-state.
 - ``DqliteProtocol`` raises an opaque error from wrapped
   StreamReader / StreamWriter.
 
