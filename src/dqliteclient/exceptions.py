@@ -173,7 +173,12 @@ class OperationalError(DqliteError):
             # ``len(message)`` and the slice cap count Python codepoints,
             # not UTF-8 bytes. Match the unit in the marker so an
             # operator inspecting a truncated message can compute the
-            # original size without converting between units.
+            # original size without converting between units. The
+            # ``overflow`` count is server-controlled when the message
+            # originates from a peer ``FailureResponse`` — a deliberate
+            # forensic-vs-disclosure trade-off (operators want the
+            # original size for triage; the marginal info-disclosure of
+            # exposing the size class outweighs the loss).
             overflow = len(message) - self._MAX_DISPLAY_MESSAGE
             self.message = (
                 f"{message[: self._MAX_DISPLAY_MESSAGE]}... [truncated, {overflow} codepoints]"
