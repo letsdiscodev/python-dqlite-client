@@ -102,6 +102,25 @@ def _truncate_error(message: str) -> str:
     return message[:_MAX_ERROR_MESSAGE_SNIPPET] + f"... [truncated, {len(message)} chars]"
 
 
+def _observe_drain_exception(t: asyncio.Task[None]) -> None:
+    """Done-callback that reaps an inner-shield drain task's exception.
+
+    The leader-probe writer-drain finally wraps ``writer.wait_closed()``
+    in ``asyncio.shield(asyncio.wait_for(...))``. When the awaiter is
+    cancelled mid-shield and the inner ``wait_for`` later fires
+    ``TimeoutError`` (or completes with any other exception), no
+    coroutine is awaiting the inner task — asyncio's
+    task-finalisation logger emits ``"Task exception was never
+    retrieved"`` at GC. Calling ``.exception()`` is the canonical
+    "I've observed this" signal so the warning never fires. Mirrors
+    the ``_clear_slot`` discipline used by the single-flight
+    find-leader slot map.
+    """
+    if not t.cancelled():
+        with contextlib.suppress(BaseException):
+            t.exception()
+
+
 class ClusterClient:
     """Client that discovers the current dqlite leader.
 
@@ -543,13 +562,26 @@ class ClusterClient:
             # the drain to completion within its 100 ms budget even
             # during shutdown; the outer cancel still propagates past
             # this ``finally`` as expected.
-            with contextlib.suppress(OSError, TimeoutError):
-                await asyncio.shield(
-                    asyncio.wait_for(
-                        writer.wait_closed(),
-                        timeout=_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS,
-                    )
+            #
+            # Wrap the inner ``wait_for`` in an explicit Task with a
+            # done-callback that observes ``.exception()`` so the
+            # ``TimeoutError`` (or ``CancelledError`` on shutdown) is
+            # never an "unobserved task exception" at GC. Mirrors the
+            # ``_clear_slot`` done-callback discipline used by the
+            # single-flight find-leader slot map elsewhere in this
+            # file. Without the explicit observer, an outer cancel
+            # mid-shield orphans the inner Task with a
+            # ``TimeoutError`` that asyncio's task-finalisation
+            # logger emits as "Task exception was never retrieved".
+            inner_drain: asyncio.Task[None] = asyncio.ensure_future(
+                asyncio.wait_for(
+                    writer.wait_closed(),
+                    timeout=_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS,
                 )
+            )
+            inner_drain.add_done_callback(_observe_drain_exception)
+            with contextlib.suppress(OSError, TimeoutError):
+                await asyncio.shield(inner_drain)
 
     async def connect(
         self,
