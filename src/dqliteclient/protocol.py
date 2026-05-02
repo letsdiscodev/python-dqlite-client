@@ -40,6 +40,7 @@ from dqlitewire.messages import (
     WelcomeResponse,
 )
 from dqlitewire.messages.base import Message
+from dqlitewire.messages.responses import _sanitize_server_text
 
 __all__ = ["DqliteProtocol"]
 
@@ -766,8 +767,6 @@ class DqliteProtocol:
         """
         if not self._address:
             return ""
-        from dqlitewire.messages.responses import _sanitize_server_text
-
         return f" to {_sanitize_server_text(self._address)}"
 
     def _failure_text(self, response: FailureResponse) -> str:
