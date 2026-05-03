@@ -41,7 +41,7 @@ from dqlitewire.messages.responses import EmptyResponse
 
 class TestConnectReraisesNonLeaderOperationalError:
     async def test_non_leader_operational_error_propagates_as_is(
-        self, monkeypatch: pytest.MonkeyPatch, cluster_address: str = "localhost:19001"
+        self, monkeypatch: pytest.MonkeyPatch, cluster_address: str = "localhost:9001"
     ) -> None:
         """``connect()`` translates leader-change OperationalErrors
         to ``DqliteConnectionError`` (so the pool's reconnect-

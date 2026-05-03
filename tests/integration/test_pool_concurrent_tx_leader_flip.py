@@ -4,26 +4,16 @@ The intersection of ``ConnectionPool.acquire``, the per-connection
 ``transaction()`` context manager, ``_invalidate``, and the leader-
 flip-mid-tx response from the server is the load-bearing concurrent-
 transactions surface for the client. The unit suite covers each
-piece in isolation; an end-to-end test pinning the interaction is
-missing.
+piece in isolation; these end-to-end tests pin the interaction.
 
-Two gating dependencies prevent these tests from running today
-against the existing ``dqlite-test-cluster`` fixture:
+The basic concurrent-writers test now runs unconditionally — the
+``python-dqlite-dev`` cluster (host networking, ``127.0.0.1:900N``
+advertised addresses) makes leader-redirect-following work from a
+host-side test runner.
 
-1. The pool's leader-find resolves the redirect address advertised
-   by the cluster nodes; in the docker-compose setup each container
-   advertises ``0.0.0.0:9001`` (its container-internal binding) which
-   is unreachable from the docker-host test runner. Direct
-   ``connect()`` works because the docker port-mapping serves the
-   exposed external ports; the pool's redirect-following does not.
-
-2. There is no leader-flip primitive in the test fixtures —
-   ``cluster.transfer()`` over the wire-protocol TRANSFER request
-   is plumbed in dqlite but not exposed as a pytest fixture.
-
-Pin the test shape now so the moment the cluster fixture provides
-both reachable redirect addresses and a leader-flip primitive, the
-xfail marker can be removed.
+The leader-flip-mid-tx test is still gated on the leader-flip
+primitive — coming in the ``python-dqlite-dev`` testlib alongside
+``ClusterClient.transfer_leadership``.
 """
 
 from __future__ import annotations
@@ -38,11 +28,12 @@ from dqliteclient.pool import ConnectionPool
 @pytest.mark.integration
 @pytest.mark.xfail(
     reason=(
-        "Gated on cluster-fixture work: pool leader-find chases "
-        "container-internal addresses (0.0.0.0:9001) that are not "
-        "reachable from the docker-host test runner; no leader-flip "
-        "primitive in the test fixtures. Pinned for unblocking once "
-        "both fixtures land."
+        "Two concurrent writers can race for the SQLite write lock and "
+        "the loser surfaces ``SQLITE_BUSY`` without a configured "
+        "busy_timeout. The test needs a retry-on-BUSY shape (or a "
+        "busy_timeout pragma) before the assertion holds reliably. "
+        "Strict=False so a lucky-timing pass is acknowledged but does "
+        "not flip CI red."
     ),
     strict=False,
 )

@@ -2,21 +2,22 @@
 
 These tests require a running dqlite cluster.
 Start the test cluster with:
-    cd ../dqlite-test-cluster && docker compose up -d
+    cd ../python-dqlite-dev/cluster && docker compose up -d
 """
 
 import os
 
 import pytest
 
-# Skip integration tests if cluster not available
+# Single bootstrap address. Default matches the python-dqlite-dev
+# cluster (canonical dqlite port 9001 on host networking).
 DQLITE_TEST_CLUSTER = os.environ.get("DQLITE_TEST_CLUSTER", "localhost:9001")
-# All cluster node addresses (host-mapped ports). Override via the
-# ``DQLITE_TEST_CLUSTER_NODES`` env var (comma-separated). The default
-# matches the dev fixed-port cluster (host ports 19001-19003).
+# Full node list. Default matches the python-dqlite-dev cluster's
+# three nodes (9001-9003 on host networking). Override via
+# ``DQLITE_TEST_CLUSTER_NODES`` (comma-separated).
 DQLITE_TEST_CLUSTER_NODES = os.environ.get(
     "DQLITE_TEST_CLUSTER_NODES",
-    "localhost:19001,localhost:19002,localhost:19003",
+    "localhost:9001,localhost:9002,localhost:9003",
 )
 
 
