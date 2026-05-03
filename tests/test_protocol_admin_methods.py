@@ -83,18 +83,21 @@ class TestProtocolTransfer:
     def protocol(self, mock_reader: AsyncMock, mock_writer: MagicMock) -> DqliteProtocol:
         return DqliteProtocol(mock_reader, mock_writer)
 
-    async def test_transfer_success_returns_none(
+    async def test_transfer_success_does_not_raise(
         self,
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """Healthy path: server replies with EmptyResponse; the call
-        returns ``None``."""
+        """Healthy path: server replies with EmptyResponse and the
+        call returns (it is typed as ``-> None``).
+
+        The interesting contract is that the request encoded
+        successfully and the response decoded without raising — the
+        return value itself carries no information.
+        """
         mock_reader.read.return_value = EmptyResponse().encode()
 
-        result = await protocol.transfer(target_node_id=2)
-
-        assert result is None
+        await protocol.transfer(target_node_id=2)
 
     async def test_transfer_failure_response_raises_operational_error(
         self,

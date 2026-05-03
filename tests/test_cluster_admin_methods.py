@@ -14,6 +14,7 @@ available.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,13 +25,19 @@ from dqliteclient.node_store import MemoryNodeStore
 from dqlitewire import NodeRole
 from dqlitewire.messages.responses import NodeInfo
 
+# Shape of ``open_connection_with_keepalive`` for the fake we
+# substitute in ``_patch_admin_connection``.
+_FakeOpenConnection = Callable[[str, int], Awaitable[tuple[MagicMock, MagicMock]]]
+
 
 def _make_cluster() -> ClusterClient:
     store = MemoryNodeStore(["localhost:9001"])
     return ClusterClient(store, timeout=0.5)
 
 
-def _patch_admin_connection(fake_proto: MagicMock) -> tuple[MagicMock, MagicMock]:
+def _patch_admin_connection(
+    fake_proto: MagicMock,
+) -> tuple[_FakeOpenConnection, MagicMock]:
     """Patch the network primitives so ``_admin_connection`` yields
     ``fake_proto`` without touching a real socket."""
     reader = MagicMock()
@@ -130,9 +137,11 @@ async def test_transfer_leadership_sends_request_with_target_id() -> None:
         patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
-        result = await cluster.transfer_leadership(target_node_id=2)
+        # ``transfer_leadership`` is typed as -> None; the assertion
+        # covered by mypy is ``no return value``. Call without binding,
+        # then verify the wire dispatch happened.
+        await cluster.transfer_leadership(target_node_id=2)
 
-    assert result is None
     fake_proto.transfer.assert_awaited_once_with(2)
 
 
