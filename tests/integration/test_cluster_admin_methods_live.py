@@ -7,14 +7,9 @@ against the real dqlite C server's responses. A regression in either
 the wire layer or the protocol layer will be caught here even if the
 unit tests pass.
 
-Currently gated on the same cluster-fixture work as ``test_query_raw_apis``
-and ``test_pool_concurrent_tx_leader_flip``: the test cluster's nodes
-advertise container-internal addresses (``0.0.0.0:9001``) that are
-unreachable from the docker-host test runner, so ``find_leader``
-fails the redirect-validation step before the admin-method round
-trip runs. Pinning the test shape now so the contract is anchored;
-the skip lifts when ``python-dqlite-dev``'s cluster configuration
-exposes host-reachable advertised addresses.
+Runs against the python-dqlite-dev cluster (host networking,
+``127.0.0.1:9001-9003`` advertised); the previous container-internal
+address advertisement that blocked these tests is fixed.
 """
 
 from __future__ import annotations
@@ -27,15 +22,6 @@ from dqliteclient.cluster import ClusterClient
 from dqliteclient.exceptions import OperationalError
 from dqliteclient.node_store import MemoryNodeStore
 from dqlitewire import NodeRole
-
-pytestmark = pytest.mark.skip(
-    reason=(
-        "Gated on python-dqlite-dev cluster-fixture work: nodes advertise "
-        "0.0.0.0:N (container-internal) which the client correctly rejects "
-        "as unreachable. Same blocker as test_query_raw_apis.py and "
-        "test_pool_concurrent_tx_leader_flip.py."
-    )
-)
 
 
 @pytest.mark.integration

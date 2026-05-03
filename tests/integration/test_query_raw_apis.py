@@ -55,16 +55,6 @@ class TestQueryRawApis:
 
 
 @pytest.mark.integration
-@pytest.mark.skip(
-    reason=(
-        "Gated on the same cluster-fixture work as tx-040: pool's "
-        "leader-find chases container-internal addresses "
-        "(0.0.0.0:9001) that are unreachable from the docker-host "
-        "test runner. Pin the test shape now so the moment the "
-        "fixture exposes reachable redirect addresses it can be "
-        "unblocked."
-    )
-)
 class TestCreatePool:
     async def test_create_pool_returns_initialized_usable_pool(self, cluster_address: str) -> None:
         """Drive the ``create_pool`` body in ``__init__.py`` (the
@@ -75,7 +65,10 @@ class TestCreatePool:
         pool = await create_pool([cluster_address], min_size=1, max_size=1)
         try:
             async with pool.acquire() as conn:
+                # ``fetchall`` returns positional row lists, NOT
+                # dicts (no aliasing). Pin that shape — drift here
+                # would break every caller that indexes by position.
                 rows = await conn.fetchall("SELECT 1 AS n")
-                assert rows == [{"n": 1}]
+                assert rows == [[1]]
         finally:
             await pool.close()

@@ -3,6 +3,11 @@
 These tests require a running dqlite cluster.
 Start the test cluster with:
     cd ../python-dqlite-dev/cluster && docker compose up -d
+
+Note: the ``pytest_plugins = ["dqlitetestlib.fixtures"]`` declaration
+that would normally live next to integration-only fixtures is in the
+top-level ``tests/conftest.py`` instead. Pytest 8+ rejects
+``pytest_plugins`` in non-top-level conftests.
 """
 
 import os
