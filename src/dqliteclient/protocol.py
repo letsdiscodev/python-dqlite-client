@@ -23,6 +23,7 @@ from dqlitewire.exceptions import (
 )
 from dqlitewire.messages import (
     ClientRequest,
+    ClusterRequest,
     DbResponse,
     EmptyResponse,
     ExecSqlRequest,
@@ -36,11 +37,13 @@ from dqlitewire.messages import (
     QuerySqlRequest,
     ResultResponse,
     RowsResponse,
+    ServersResponse,
     StmtResponse,
+    TransferRequest,
     WelcomeResponse,
 )
 from dqlitewire.messages.base import Message
-from dqlitewire.messages.responses import _sanitize_server_text
+from dqlitewire.messages.responses import NodeInfo, _sanitize_server_text
 
 __all__ = ["DqliteProtocol"]
 
@@ -338,6 +341,72 @@ class DqliteProtocol:
             )
 
         return response.node_id, response.address
+
+    async def cluster(self) -> list[NodeInfo]:
+        """Request the cluster's node list.
+
+        Sends ``ClusterRequest(format=1)`` and returns the V1 node
+        list (id + address + role) the server replies with via
+        :class:`ServersResponse`. Format 0 (V0, no role field) is
+        rejected client-side by ``ClusterRequest.__post_init__``;
+        callers needing the V0 shape would have to bypass this layer.
+
+        Mirrors the spec-level admin operation ``go-dqlite/client.Cluster``.
+        Any node can answer this — the cluster view is replicated —
+        but the typical caller asks the leader for the freshest view.
+        """
+        request = ClusterRequest(format=1)
+        self._writer.write(request.encode())
+        await self._send()
+
+        response = await self._read_response()
+
+        if isinstance(response, FailureResponse):
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
+
+        if not isinstance(response, ServersResponse):
+            raise ProtocolError(
+                f"Expected ServersResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
+
+        return response.nodes
+
+    async def transfer(self, target_node_id: int) -> None:
+        """Request leadership transfer to ``target_node_id``.
+
+        Sends ``TransferRequest(target_node_id)`` and expects an
+        :class:`EmptyResponse` on success. The peer connected to MUST
+        be the current leader; sending Transfer to a follower returns
+        ``SQLITE_IOERR_NOT_LEADER`` (or equivalent), which surfaces
+        here as :class:`OperationalError` so the higher-level
+        ``ClusterClient.transfer_leadership`` can rediscover the
+        leader and retry against it.
+
+        On success, Raft begins promoting ``target_node_id`` to
+        leader; the call returns once the server has accepted the
+        transfer request. Election convergence (the new leader being
+        able to accept writes) is observable via a subsequent
+        :meth:`get_leader` call.
+
+        Mirrors the spec-level admin operation ``go-dqlite/client.Transfer``.
+        """
+        request = TransferRequest(target_node_id=target_node_id)
+        self._writer.write(request.encode())
+        await self._send()
+
+        response = await self._read_response()
+
+        if isinstance(response, FailureResponse):
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
+
+        if not isinstance(response, EmptyResponse):
+            raise ProtocolError(
+                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
 
     async def open_database(self, name: str, flags: int = 0, vfs: str = "") -> int:
         """Open a database.

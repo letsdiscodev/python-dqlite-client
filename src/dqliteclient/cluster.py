@@ -5,7 +5,7 @@ import contextlib
 import logging
 import os
 import random
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from typing import Final, NoReturn
 
 from dqliteclient import connection as _conn_mod
@@ -29,6 +29,7 @@ from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
 from dqlitewire import NodeRole
+from dqlitewire.messages.responses import NodeInfo
 from dqlitewire.messages.responses import _sanitize_server_text as _sanitize_display_text
 
 __all__ = ["ClusterClient", "RedirectPolicy", "allowlist_policy"]
@@ -771,6 +772,119 @@ class ClusterClient:
                 _truncate_error(str(exc)),
             )
             raise
+
+    async def cluster_info(self) -> list[NodeInfo]:
+        """Return the current cluster's node list (id, address, role).
+
+        Sends ``ClusterRequest(format=1)`` to the current leader and
+        returns the V1 server list. Each :class:`NodeInfo` carries
+        ``node_id``, ``address``, and ``role``. Mirrors the spec-level
+        admin operation ``go-dqlite/client.Cluster``.
+
+        Any node can answer this — Raft replicates the configuration
+        — but this method asks the leader so the returned view is the
+        freshest one available. A stale follower could otherwise
+        report a configuration that is one Raft log entry behind.
+
+        Raises:
+            ClusterError: when no leader is reachable across the
+                configured node store (same condition that
+                :meth:`find_leader` would surface).
+            OperationalError: when the leader rejects the request
+                (e.g. mid-shutdown).
+            ProtocolError: on a wire-level shape mismatch.
+        """
+        leader_addr = await self.find_leader()
+        async with self._admin_connection(leader_addr) as protocol:
+            return await protocol.cluster()
+
+    async def transfer_leadership(self, target_node_id: int) -> None:
+        """Transfer leadership to ``target_node_id``.
+
+        Sends ``TransferRequest(target_node_id)`` to the current
+        leader. Raft will demote the current leader and promote
+        ``target_node_id`` (which must be a voter and reachable);
+        the call returns once the server has accepted the request.
+        Election convergence — the new leader being able to accept
+        writes — is observable via a subsequent
+        :meth:`find_leader` (or :meth:`cluster_info`) probe.
+
+        Mirrors the spec-level admin operation
+        ``go-dqlite/client.Transfer``.
+
+        This is an ops-grade primitive — applications doing SQL work
+        should not call it. It is exposed here for cluster-management
+        tooling and test infrastructure that needs deterministic
+        leadership control.
+
+        Args:
+            target_node_id: id of the voter to promote. The caller is
+                responsible for picking a valid voter; the server
+                rejects invalid targets with
+                :class:`OperationalError`.
+
+        Raises:
+            ClusterError: when no leader is reachable.
+            OperationalError: when the server rejects the transfer
+                (e.g. target is not a voter, target unreachable,
+                cluster mid-flux).
+            ProtocolError: on a wire-level shape mismatch.
+        """
+        # Validate locally before the round-trip so callers see a
+        # ``TypeError`` from the dialect/CLI layer they invoked, not
+        # a cryptic wire-decode error from the server.
+        if isinstance(target_node_id, bool) or not isinstance(target_node_id, int):
+            raise TypeError(f"target_node_id must be int, got {type(target_node_id).__name__}")
+        if target_node_id < 1:
+            # Node id 0 is the upstream "no node" sentinel
+            # (``LeaderResponse.node_id == 0`` means "no leader
+            # known"); rejecting it client-side keeps the diagnostic
+            # at the call site.
+            raise ValueError(f"target_node_id must be >= 1, got {target_node_id}")
+
+        leader_addr = await self.find_leader()
+        async with self._admin_connection(leader_addr) as protocol:
+            await protocol.transfer(target_node_id)
+
+    @contextlib.asynccontextmanager
+    async def _admin_connection(self, address: str) -> AsyncIterator[DqliteProtocol]:
+        """Open a one-shot admin connection to ``address``, yield a
+        handshaken :class:`DqliteProtocol`, and tear the socket down on
+        exit.
+
+        Used by :meth:`cluster_info` and :meth:`transfer_leadership` —
+        admin requests that need a fresh connection (no pool, no
+        reuse) so admin traffic does not mix with the SQL-path
+        connection lifecycle. Mirrors :meth:`_query_leader`'s
+        transport discipline (bounded shutdown drain wrapped in
+        ``asyncio.shield``) so a cancelled outer task does not leak
+        a half-closed socket.
+        """
+        host, port = _parse_address(address)
+        reader, writer = await asyncio.wait_for(
+            open_connection_with_keepalive(host, port),
+            timeout=self._timeout,
+        )
+        try:
+            protocol = DqliteProtocol(
+                reader,
+                writer,
+                timeout=self._timeout,
+                address=address,
+            )
+            await protocol.handshake()
+            yield protocol
+        finally:
+            writer.close()
+            inner_drain: asyncio.Task[None] = asyncio.ensure_future(
+                asyncio.wait_for(
+                    writer.wait_closed(),
+                    timeout=_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS,
+                )
+            )
+            inner_drain.add_done_callback(_observe_drain_exception)
+            with contextlib.suppress(OSError, TimeoutError):
+                await asyncio.shield(inner_drain)
 
 
 def allowlist_policy(addresses: Iterable[str]) -> RedirectPolicy:
