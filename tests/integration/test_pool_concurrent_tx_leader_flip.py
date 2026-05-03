@@ -28,35 +28,54 @@ if TYPE_CHECKING:
     from dqlitetestlib import TestClusterControl  # type: ignore[import-not-found]
 
 
+_SQLITE_BUSY = 5
+_RETRY_MAX_ATTEMPTS = 5
+_RETRY_BASE_DELAY_S = 0.01
+
+
 @pytest.mark.integration
-@pytest.mark.xfail(
-    reason=(
-        "Two concurrent writers can race for the SQLite write lock and "
-        "the loser surfaces ``SQLITE_BUSY`` without a configured "
-        "busy_timeout. The test needs a retry-on-BUSY shape (or a "
-        "busy_timeout pragma) before the assertion holds reliably. "
-        "Strict=False so a lucky-timing pass is acknowledged but does "
-        "not flip CI red."
-    ),
-    strict=False,
-)
 async def test_pool_two_concurrent_writers_no_lost_rows(
     cluster_address: str,
 ) -> None:
-    """Two pool-acquired connections each running their own
-    transaction. Both COMMIT cleanly when no contention; pool slots
-    return clean."""
+    """Two pool-acquired connections each running their own write
+    transaction; both commits land. Each writer wraps its
+    transaction in a retry-on-BUSY loop — that is the application-
+    level pattern dqlite expects.
+
+    Why retry rather than ``PRAGMA busy_timeout``: dqlite's
+    authorizer (``vfs.c::vfsAuthorizer``) explicitly denies
+    ``PRAGMA busy_timeout`` (along with ``journal_mode``,
+    ``synchronous``, ``wal_checkpoint``, ``locking_mode``,
+    ``read_uncommitted``) because their semantics conflict with
+    Raft-replicated write ordering. Concurrent writers in dqlite
+    are expected to handle ``SQLITE_BUSY`` (code 5) at the
+    application layer — same shape go-dqlite and the canonical
+    dqlite C client document. This test models that contract.
+    """
     pool = ConnectionPool([cluster_address], min_size=2, max_size=2)
     try:
-        async with pool.acquire() as setup:
+        async with pool.acquire() as setup, setup.transaction():
             await setup.execute("DROP TABLE IF EXISTS pool_concurrent_w")
             await setup.execute(
                 "CREATE TABLE pool_concurrent_w (id INTEGER PRIMARY KEY, marker TEXT)"
             )
 
         async def writer(marker: str) -> None:
-            async with pool.acquire() as conn, conn.transaction():
-                await conn.execute("INSERT INTO pool_concurrent_w (marker) VALUES (?)", [marker])
+            for attempt in range(_RETRY_MAX_ATTEMPTS):
+                try:
+                    async with pool.acquire() as conn, conn.transaction():
+                        await conn.execute(
+                            "INSERT INTO pool_concurrent_w (marker) VALUES (?)",
+                            [marker],
+                        )
+                    return
+                except OperationalError as e:
+                    # Code 5 is SQLITE_BUSY. Other OperationalErrors
+                    # (leader change, transport, ...) propagate — they
+                    # are not the contention this loop handles.
+                    if e.code != _SQLITE_BUSY or attempt == _RETRY_MAX_ATTEMPTS - 1:
+                        raise
+                    await asyncio.sleep(_RETRY_BASE_DELAY_S * (2**attempt))
 
         await asyncio.gather(writer("A"), writer("B"))
 
