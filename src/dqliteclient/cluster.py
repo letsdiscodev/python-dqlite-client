@@ -6,6 +6,7 @@ import logging
 import os
 import random
 from collections.abc import AsyncIterator, Callable, Iterable
+from dataclasses import dataclass
 from typing import Final, NoReturn
 
 from dqliteclient import connection as _conn_mod
@@ -32,7 +33,7 @@ from dqlitewire import NodeRole
 from dqlitewire.messages.responses import NodeInfo
 from dqlitewire.messages.responses import _sanitize_server_text as _sanitize_display_text
 
-__all__ = ["ClusterClient", "RedirectPolicy", "allowlist_policy"]
+__all__ = ["ClusterClient", "LeaderInfo", "NodeMetadata", "RedirectPolicy", "allowlist_policy"]
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,22 @@ def _truncate_error(message: str) -> str:
     return message[:_MAX_ERROR_MESSAGE_SNIPPET] + f"... [truncated, {len(message)} chars]"
 
 
+def _validate_node_id(node_id: object) -> None:
+    """Shared client-side validation for ``node_id`` arguments to
+    membership-change methods.
+
+    Rejects ``bool`` (which is otherwise an ``int`` subclass), non-int
+    types, and ``< 1`` values. Node id ``0`` is the upstream "no node"
+    sentinel (``LeaderResponse.node_id == 0`` means "no leader known"),
+    so it cannot be a real cluster member; rejecting client-side keeps
+    the diagnostic at the call site instead of the server reply.
+    """
+    if isinstance(node_id, bool) or not isinstance(node_id, int):
+        raise TypeError(f"node_id must be int, got {type(node_id).__name__}")
+    if node_id < 1:
+        raise ValueError(f"node_id must be >= 1, got {node_id}")
+
+
 def _observe_drain_exception(t: asyncio.Task[None]) -> None:
     """Done-callback that reaps an inner-shield drain task's exception.
 
@@ -121,6 +138,35 @@ def _observe_drain_exception(t: asyncio.Task[None]) -> None:
     if not t.cancelled():
         with contextlib.suppress(BaseException):
             t.exception()
+
+
+@dataclass(frozen=True, slots=True)
+class LeaderInfo:
+    """``(node_id, address)`` pair returned by :meth:`ClusterClient.leader_info`.
+
+    Distinct from :class:`dqlitewire.messages.responses.NodeInfo`
+    because the wire's ``LeaderResponse`` body has no role field —
+    only id and address. Mirrors go-dqlite's ``Client.Leader``
+    return shape (``*NodeInfo`` with the role left zero).
+    """
+
+    node_id: int
+    address: str
+
+
+@dataclass(frozen=True, slots=True)
+class NodeMetadata:
+    """Per-node failure-domain + weight metadata.
+
+    Returned by :meth:`ClusterClient.describe`. Mirrors go-dqlite's
+    ``NodeMetadata`` struct returned by ``Client.Describe``. The two
+    values tune cluster-topology decisions: weight biases leader
+    election within a failure domain; failure_domain identifies
+    which fault-isolation group the node belongs to.
+    """
+
+    failure_domain: int
+    weight: int
 
 
 class ClusterClient:
@@ -845,6 +891,227 @@ class ClusterClient:
         leader_addr = await self.find_leader()
         async with self._admin_connection(leader_addr) as protocol:
             await protocol.transfer(target_node_id)
+
+    async def leader_info(self) -> LeaderInfo | None:
+        """Return the current leader's ``(node_id, address)``, or
+        ``None`` if no leader is known.
+
+        Single round-trip against the first reachable node in the
+        configured store — cheaper than :meth:`cluster_info` (which
+        also returns roles for every node) when the caller only
+        needs the leader's id (e.g. to confirm a
+        :meth:`transfer_leadership` landed at the expected target).
+
+        Mirrors go-dqlite's ``Client.Leader``. The wire's
+        ``LeaderResponse`` body has no role field, by design — see
+        :class:`LeaderInfo` vs. :class:`NodeInfo`.
+
+        ``None`` is returned for the legitimate
+        ``(node_id=0, address="")`` "no leader yet" reply that the
+        server emits during a re-election.
+
+        Raises:
+            ClusterError: when no node in the store responds.
+        """
+        # Reuse find_leader's sweep semantics — it already handles
+        # node-store iteration, redirect validation, and the
+        # malformed-redirect arms. Then ask the leader itself for its
+        # node id (a single extra round-trip against the leader).
+        # Open question: could we have find_leader keep the node_id
+        # it discards and surface it here? Yes, but that is a wider
+        # refactor of the single-flight slot map; deferred.
+        leader_addr = await self.find_leader()
+        async with self._admin_connection(leader_addr) as protocol:
+            node_id, address = await protocol.get_leader()
+            if node_id == 0 or not address:
+                # Mid-election: the leader we just connected to no
+                # longer self-identifies as leader. Surface ``None``
+                # rather than confabulating an answer.
+                return None
+            return LeaderInfo(node_id=node_id, address=address)
+
+    async def add_node(
+        self,
+        node_id: int,
+        address: str,
+        *,
+        role: NodeRole = NodeRole.SPARE,
+    ) -> None:
+        """Add a node to the cluster (Raft membership change).
+
+        Mirrors go-dqlite's ``Client.Add`` two-phase shape: the
+        underlying ``ADD`` wire op always lands the node as
+        ``NodeRole.SPARE`` (a newly-added voter that has not caught
+        up with the leader's log cannot vote). If the caller asked
+        for a non-spare role, this method follows up with an
+        ``ASSIGN`` to promote — same as
+        ``go-dqlite/client.go::Client.Add``.
+
+        Both calls go to the leader; the leader-discovery happens
+        once per call.
+
+        Args:
+            node_id: Raft id of the new node. Must be >= 1
+                (0 is the upstream "no node" sentinel).
+            address: TCP ``host:port`` the new node listens on for
+                Raft traffic.
+            role: target role; defaults to
+                :class:`NodeRole.SPARE` (no follow-up assign needed).
+
+        Raises:
+            TypeError / ValueError: on invalid arguments
+                (validated client-side before the round-trip).
+            ClusterError: when no leader is reachable.
+            OperationalError: when the server rejects (e.g. id
+                already in cluster, address unreachable).
+            ProtocolError: on a wire-level shape mismatch.
+        """
+        _validate_node_id(node_id)
+        if not isinstance(address, str) or not address:
+            raise TypeError(f"address must be a non-empty str, got {type(address).__name__}")
+        if not isinstance(role, NodeRole):
+            raise TypeError(f"role must be a NodeRole, got {type(role).__name__}")
+
+        leader_addr = await self.find_leader()
+        async with self._admin_connection(leader_addr) as protocol:
+            await protocol.add(node_id, address)
+            if role != NodeRole.SPARE:
+                # Mirror go-dqlite's `Client.Add` second phase: ADD
+                # is always implicitly Spare server-side; promote with
+                # a follow-up Assign. Reuses the same admin connection
+                # so the second call lands on the same leader (avoids
+                # a re-election window between the two requests).
+                await protocol.assign(node_id, role)
+
+    async def assign_role(self, node_id: int, role: NodeRole) -> None:
+        """Change a node's role (promote or demote).
+
+        Mirrors go-dqlite's ``Client.Assign``. Used to promote a
+        spare that has caught up, or to demote a voter to standby
+        ahead of a controlled :meth:`remove_node`.
+
+        Raises:
+            TypeError / ValueError: on invalid arguments.
+            ClusterError: when no leader is reachable.
+            OperationalError: when the server rejects (e.g. id not
+                in cluster, role unchanged, cluster mid-flux).
+            ProtocolError: on a wire-level shape mismatch.
+        """
+        _validate_node_id(node_id)
+        if not isinstance(role, NodeRole):
+            raise TypeError(f"role must be a NodeRole, got {type(role).__name__}")
+
+        leader_addr = await self.find_leader()
+        async with self._admin_connection(leader_addr) as protocol:
+            await protocol.assign(node_id, role)
+
+    async def remove_node(self, node_id: int) -> None:
+        """Remove a node from the cluster (Raft membership change).
+
+        Mirrors go-dqlite's ``Client.Remove``. The other half of the
+        membership-change surface alongside :meth:`add_node`.
+        Removing the current leader requires a prior
+        :meth:`transfer_leadership` to a different voter — the
+        server otherwise rejects with a not-leader-style error.
+
+        Raises:
+            TypeError / ValueError: on invalid arguments.
+            ClusterError: when no leader is reachable.
+            OperationalError: when the server rejects.
+            ProtocolError: on a wire-level shape mismatch.
+        """
+        _validate_node_id(node_id)
+
+        leader_addr = await self.find_leader()
+        async with self._admin_connection(leader_addr) as protocol:
+            await protocol.remove(node_id)
+
+    async def describe(self, *, address: str | None = None) -> NodeMetadata:
+        """Read a node's failure-domain + weight metadata.
+
+        Mirrors go-dqlite's ``Client.Describe``. The describe
+        operation is **per-node** (not per-cluster) — it returns the
+        connected peer's own metadata. Pass an explicit ``address``
+        to describe a specific node; ``None`` describes the current
+        leader (matches go-dqlite's typical
+        leader-connected-Client pattern).
+
+        Args:
+            address: TCP ``host:port`` of the node to describe.
+                ``None`` means "describe the leader".
+
+        Raises:
+            ClusterError: when no leader is reachable (only fires
+                when ``address=None``).
+            OperationalError: when the node rejects the request.
+            ProtocolError: on a wire-level shape mismatch.
+        """
+        target = address if address is not None else await self.find_leader()
+        async with self._admin_connection(target) as protocol:
+            response = await protocol.describe()
+            return NodeMetadata(
+                failure_domain=response.failure_domain,
+                weight=response.weight,
+            )
+
+    async def set_weight(self, weight: int, *, address: str | None = None) -> None:
+        """Set a node's weight (leader-election preference).
+
+        Mirrors go-dqlite's ``Client.Weight``. Like :meth:`describe`,
+        this operation is **per-node** — pass an explicit ``address``
+        to target a specific node, or ``None`` to target the leader.
+
+        Args:
+            weight: non-negative integer (uint64 wire-side).
+            address: TCP ``host:port`` of the node to update;
+                ``None`` targets the leader.
+
+        Raises:
+            TypeError / ValueError: on invalid arguments.
+            ClusterError: when ``address=None`` and no leader is reachable.
+            OperationalError: when the node rejects.
+            ProtocolError: on a wire-level shape mismatch.
+        """
+        if isinstance(weight, bool) or not isinstance(weight, int):
+            raise TypeError(f"weight must be int, got {type(weight).__name__}")
+        if weight < 0:
+            raise ValueError(f"weight must be >= 0, got {weight}")
+
+        target = address if address is not None else await self.find_leader()
+        async with self._admin_connection(target) as protocol:
+            await protocol.weight(weight)
+
+    async def dump(self, database: str = "default") -> dict[str, bytes]:
+        """Dump a database to ``{filename: bytes}``.
+
+        Mirrors go-dqlite's ``Client.Dump``. The dump request is
+        sent to the leader; the response materialises every file in
+        the database (typically two: the database itself and its
+        ``-wal`` sidecar).
+
+        The wire layer enforces caps on file count + per-file size
+        + 8-byte content alignment so a hostile peer cannot exhaust
+        client memory; multi-GB databases will hit those caps and
+        fail with :class:`ProtocolError` at decode. Operators
+        should plan a cluster-side snapshot or out-of-band backup
+        for very large databases.
+
+        Args:
+            database: dqlite database name (default: ``"default"``).
+
+        Raises:
+            TypeError: on invalid arguments.
+            ClusterError: when no leader is reachable.
+            OperationalError: when the server rejects (e.g. unknown
+                database name).
+            ProtocolError: on a wire-level shape mismatch.
+        """
+        if not isinstance(database, str) or not database:
+            raise TypeError(f"database must be a non-empty str, got {type(database).__name__}")
+
+        leader_addr = await self.find_leader()
+        async with self._admin_connection(leader_addr) as protocol:
+            return await protocol.dump(database)
 
     @contextlib.asynccontextmanager
     async def _admin_connection(self, address: str) -> AsyncIterator[DqliteProtocol]:

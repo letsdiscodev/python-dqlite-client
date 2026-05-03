@@ -14,7 +14,7 @@ from dqlitewire import (
 from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
-from dqlitewire import MessageDecoder, MessageEncoder
+from dqlitewire import MessageDecoder, MessageEncoder, NodeRole
 from dqlitewire.exceptions import (
     ProtocolError as _WireProtocolError,
 )
@@ -22,24 +22,32 @@ from dqlitewire.exceptions import (
     ServerFailure as _WireServerFailure,
 )
 from dqlitewire.messages import (
+    AddRequest,
+    AssignRequest,
     ClientRequest,
     ClusterRequest,
     DbResponse,
+    DescribeRequest,
+    DumpRequest,
     EmptyResponse,
     ExecSqlRequest,
     FailureResponse,
+    FilesResponse,
     FinalizeRequest,
     InterruptRequest,
     LeaderRequest,
     LeaderResponse,
+    MetadataResponse,
     OpenRequest,
     PrepareRequest,
     QuerySqlRequest,
+    RemoveRequest,
     ResultResponse,
     RowsResponse,
     ServersResponse,
     StmtResponse,
     TransferRequest,
+    WeightRequest,
     WelcomeResponse,
 )
 from dqlitewire.messages.base import Message
@@ -372,6 +380,174 @@ class DqliteProtocol:
             )
 
         return response.nodes
+
+    async def add(self, node_id: int, address: str) -> None:
+        """Add a node to the cluster (Raft membership change).
+
+        Sends ``AddRequest(node_id, address)`` and expects
+        :class:`EmptyResponse`. The peer MUST be the current leader;
+        a follower returns ``SQLITE_IOERR_NOT_LEADER``-style codes.
+
+        Mirrors go-dqlite's ``client.go::EncodeAdd`` half of
+        ``Client.Add``. Per upstream semantics, ADD lands the node as
+        ``NodeRole.SPARE``; promote with :meth:`assign` after.
+        """
+        request = AddRequest(node_id=node_id, address=address)
+        self._writer.write(request.encode())
+        await self._send()
+
+        response = await self._read_response()
+
+        if isinstance(response, FailureResponse):
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
+
+        if not isinstance(response, EmptyResponse):
+            raise ProtocolError(
+                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
+
+    async def assign(self, node_id: int, role: NodeRole) -> None:
+        """Assign (or change) a node's role.
+
+        Sends ``AssignRequest(node_id, role)`` (modern 16-byte body;
+        the legacy 8-byte PROMOTE shape is encoder-rejected per the
+        wire-layer documentation). Expects :class:`EmptyResponse`.
+        Must be sent to the leader.
+
+        Mirrors go-dqlite's ``client.go::EncodeAssign``.
+        """
+        request = AssignRequest(node_id=node_id, role=role)
+        self._writer.write(request.encode())
+        await self._send()
+
+        response = await self._read_response()
+
+        if isinstance(response, FailureResponse):
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
+
+        if not isinstance(response, EmptyResponse):
+            raise ProtocolError(
+                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
+
+    async def remove(self, node_id: int) -> None:
+        """Remove a node from the cluster (Raft membership change).
+
+        Sends ``RemoveRequest(node_id)`` and expects
+        :class:`EmptyResponse`. Must be sent to the leader. Removing
+        the current leader requires a prior :meth:`transfer` to a
+        different voter — the server otherwise rejects.
+
+        Mirrors go-dqlite's ``client.go::EncodeRemove``.
+        """
+        request = RemoveRequest(node_id=node_id)
+        self._writer.write(request.encode())
+        await self._send()
+
+        response = await self._read_response()
+
+        if isinstance(response, FailureResponse):
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
+
+        if not isinstance(response, EmptyResponse):
+            raise ProtocolError(
+                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
+
+    async def describe(self) -> MetadataResponse:
+        """Describe the connected node's metadata.
+
+        Sends ``DescribeRequest(format=0)`` (the only format the
+        upstream gateway accepts) and returns the
+        :class:`MetadataResponse` carrying ``failure_domain`` and
+        ``weight``. The response describes the **connected node**,
+        not the cluster — to sweep, the higher-level
+        :meth:`ClusterClient.describe` accepts an explicit
+        ``address``.
+
+        Mirrors go-dqlite's ``client.go::EncodeDescribe``.
+        """
+        request = DescribeRequest(format=0)
+        self._writer.write(request.encode())
+        await self._send()
+
+        response = await self._read_response()
+
+        if isinstance(response, FailureResponse):
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
+
+        if not isinstance(response, MetadataResponse):
+            raise ProtocolError(
+                f"Expected MetadataResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
+
+        return response
+
+    async def weight(self, weight: int) -> None:
+        """Set the connected node's weight.
+
+        Sends ``WeightRequest(weight)`` and expects
+        :class:`EmptyResponse`. Weight tunes leader-election
+        preference within a failure domain. Affects only the
+        **connected node** — to sweep, the higher-level
+        :meth:`ClusterClient.set_weight` accepts an explicit
+        ``address``.
+
+        Mirrors go-dqlite's ``client.go::EncodeWeight``.
+        """
+        request = WeightRequest(weight=weight)
+        self._writer.write(request.encode())
+        await self._send()
+
+        response = await self._read_response()
+
+        if isinstance(response, FailureResponse):
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
+
+        if not isinstance(response, EmptyResponse):
+            raise ProtocolError(
+                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
+
+    async def dump(self, database: str) -> dict[str, bytes]:
+        """Dump a database to ``{filename: bytes}``.
+
+        Sends ``DumpRequest(database)`` and returns the
+        :class:`FilesResponse`'s ``files`` dict (typically two
+        entries: the database file and its WAL sidecar). The
+        wire-layer enforces caps on file count + per-file size +
+        8-byte content alignment so a hostile peer cannot exhaust
+        client memory.
+
+        Mirrors go-dqlite's ``client.go::EncodeDump``.
+        """
+        request = DumpRequest(name=database)
+        self._writer.write(request.encode())
+        await self._send()
+
+        response = await self._read_response()
+
+        if isinstance(response, FailureResponse):
+            raise OperationalError(
+                response.code, self._failure_text(response), raw_message=response.message
+            )
+
+        if not isinstance(response, FilesResponse):
+            raise ProtocolError(
+                f"Expected FilesResponse, got {type(response).__name__}{self._addr_suffix()}"
+            )
+
+        return response.files
 
     async def transfer(self, target_node_id: int) -> None:
         """Request leadership transfer to ``target_node_id``.
