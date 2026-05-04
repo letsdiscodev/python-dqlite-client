@@ -241,6 +241,9 @@ class ClusterClient:
         attempt_timeout: float | None = None,
         concurrent_leader_conns: int = _DEFAULT_CONCURRENT_LEADER_CONNS,
         redirect_policy: RedirectPolicy | None = None,
+        max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
+        max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
+        trust_server_heartbeat: bool = False,
     ) -> None:
         """Initialize cluster client.
 
@@ -300,6 +303,19 @@ class ClusterClient:
         self._attempt_timeout = attempt_timeout if attempt_timeout is not None else timeout
         self._concurrent_leader_conns = concurrent_leader_conns
         self._redirect_policy = redirect_policy
+        # DoS / heartbeat governors forwarded to the underlying
+        # ``DqliteProtocol`` for every admin path
+        # (``open_admin_connection``) and leader probe
+        # (``_query_leader``). These were silently bypassed for admin
+        # operations before — every cluster_info / dump / etc. ran
+        # with the dqlitewire defaults regardless of operator config.
+        # ``trust_server_heartbeat`` is security-relevant (opt-in to
+        # widened per-read deadline); ``max_total_rows`` and
+        # ``max_continuation_frames`` matter for ``dump`` paths
+        # carrying multi-GB results.
+        self._max_total_rows = max_total_rows
+        self._max_continuation_frames = max_continuation_frames
+        self._trust_server_heartbeat = trust_server_heartbeat
         # Last-known-leader cache (mirror of go-dqlite's
         # ``LeaderTracker.lastKnownLeaderAddr``). On every successful
         # sweep we set this; on the next ``find_leader`` we probe it
@@ -347,6 +363,9 @@ class ClusterClient:
         attempt_timeout: float | None = None,
         concurrent_leader_conns: int = _DEFAULT_CONCURRENT_LEADER_CONNS,
         redirect_policy: RedirectPolicy | None = None,
+        max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
+        max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
+        trust_server_heartbeat: bool = False,
     ) -> "ClusterClient":
         """Create cluster client from list of addresses.
 
@@ -370,6 +389,9 @@ class ClusterClient:
             attempt_timeout=attempt_timeout,
             concurrent_leader_conns=concurrent_leader_conns,
             redirect_policy=redirect_policy,
+            max_total_rows=max_total_rows,
+            max_continuation_frames=max_continuation_frames,
+            trust_server_heartbeat=trust_server_heartbeat,
         )
 
     def __reduce__(self) -> NoReturn:
@@ -884,6 +906,8 @@ class ClusterClient:
                 writer,
                 timeout=self._timeout,
                 trust_server_heartbeat=trust_server_heartbeat,
+                max_total_rows=self._max_total_rows,
+                max_continuation_frames=self._max_continuation_frames,
                 address=address,
             )
             await protocol.handshake()
@@ -1592,6 +1616,9 @@ class ClusterClient:
                 reader,
                 writer,
                 timeout=self._timeout,
+                trust_server_heartbeat=self._trust_server_heartbeat,
+                max_total_rows=self._max_total_rows,
+                max_continuation_frames=self._max_continuation_frames,
                 address=address,
             )
             await protocol.handshake()

@@ -321,6 +321,9 @@ class ConnectionPool:
                 timeout=timeout,
                 dial_timeout=dial_timeout,
                 attempt_timeout=attempt_timeout,
+                max_total_rows=max_total_rows,
+                max_continuation_frames=max_continuation_frames,
+                trust_server_heartbeat=trust_server_heartbeat,
             )
         else:
             self._cluster = ClusterClient.from_addresses(
@@ -328,6 +331,9 @@ class ConnectionPool:
                 timeout=timeout,
                 dial_timeout=dial_timeout,
                 attempt_timeout=attempt_timeout,
+                max_total_rows=max_total_rows,
+                max_continuation_frames=max_continuation_frames,
+                trust_server_heartbeat=trust_server_heartbeat,
             )
         self._pool: asyncio.Queue[DqliteConnection] = asyncio.Queue(maxsize=max_size)
         self._size = 0
