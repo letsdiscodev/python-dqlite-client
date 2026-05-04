@@ -78,6 +78,29 @@ def test_parse_address_accepts_normal_ipv6() -> None:
     assert port == 9001
 
 
+def test_parse_address_canonicalises_ipv4_mapped_ipv6_to_v4() -> None:
+    """RFC 4291 §2.5.5.2 names the IPv4 dotted-quad form canonical for
+    IPv4-mapped IPv6 addresses. The previous implementation returned
+    the IPv6 form (``::ffff:127.0.0.1``) which split allowlists and
+    audit logs across two strings for what is on-the-wire the same
+    host. After canonicalisation, ``[::ffff:127.0.0.1]:9001`` and
+    ``127.0.0.1:9001`` parse to the same ``(host, port)`` tuple.
+    """
+    v4_form = _parse_address("127.0.0.1:9001")
+    mapped_form = _parse_address("[::ffff:127.0.0.1]:9001")
+    assert v4_form == mapped_form
+    assert v4_form == ("127.0.0.1", 9001)
+
+
+def test_parse_address_canonicalises_ipv4_mapped_ipv6_loopback_explicit() -> None:
+    """The hex form (``::ffff:7f00:1``) decomposes to the same IPv4
+    dotted-quad. Pin the canonicalisation against the alternate
+    spelling."""
+    v4_form = _parse_address("127.0.0.1:9001")
+    hex_mapped = _parse_address("[::ffff:7f00:1]:9001")
+    assert v4_form == hex_mapped
+
+
 def test_parse_address_accepts_normal_hostname() -> None:
     """Regression check: hostname path is unaffected."""
     host, port = _parse_address("example.com:9001")

@@ -690,7 +690,12 @@ def _canonicalize_host(host: str, address: str) -> str:
                 f"Invalid host in address {address!r}: "
                 f"{host!r} is a reserved IP and not a valid TCP destination"
             )
-        return str(ip)
+        # Canonical form for IPv4-mapped IPv6: return the embedded
+        # IPv4 dotted-quad (RFC 4291 §2.5.5.2 names this the canonical
+        # form). Otherwise an operator allowlist of ``127.0.0.1:9001``
+        # would not match a peer-redirect to ``[::ffff:127.0.0.1]:9001``,
+        # and audit logs would split the same host across two strings.
+        return str(effective)
     # ASCII-only: reject IDN outright. dqlite's wire does not round-
     # trip punycode reliably, and non-ASCII hostnames are a common
     # homograph-attack vector.
