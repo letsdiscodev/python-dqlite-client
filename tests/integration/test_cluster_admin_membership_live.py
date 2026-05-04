@@ -17,6 +17,7 @@ starting state. ``set_weight`` similarly snapshots and restores.
 from __future__ import annotations
 
 import contextlib
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -24,6 +25,9 @@ from dqliteclient.cluster import ClusterClient, LeaderInfo, NodeMetadata
 from dqliteclient.exceptions import OperationalError
 from dqliteclient.node_store import MemoryNodeStore
 from dqlitewire import NodeRole
+
+if TYPE_CHECKING:
+    from dqlitetestlib import TestClusterControl  # type: ignore[import-not-found]
 
 
 def _client(addresses: list[str]) -> ClusterClient:
@@ -137,58 +141,118 @@ class TestDumpAgainstLiveCluster:
 
 @pytest.mark.integration
 class TestMembershipChangesAgainstLiveCluster:
-    """Membership changes mutate Raft state; these tests are
-    self-restoring (add a node, assign, remove) so the cluster shape
-    returns to the starting (3-voter) configuration on success or
-    failure.
+    """Live Raft membership changes against a real running 4th
+    node spawned via the ``python-dqlite-dev`` testlib's
+    ``spare_node`` primitive.
 
-    Skipped because a real ``add_node`` requires a running fourth
-    dqlite-demo process at the announced ``host:port``; the
-    python-dqlite-dev cluster has only three nodes. Pinning the
-    test shape here so the moment the fixture grows a spare-node
-    primitive (or the test infrastructure can spawn one), the skip
-    can be lifted.
+    The 4th node (``cluster/docker-compose.yml::node4``, profile
+    ``spare``) self-joins via ``dqlite-demo --join`` so it lands
+    in the cluster as a Standby on startup. Tests then exercise
+    the wire-level lifecycle our client controls — promote to
+    Voter, demote back, and remove. The Raft replication needed
+    for the Voter promotion to actually converge requires a
+    real, reachable peer; that is exactly what the fixture
+    provides.
 
-    The validation paths and protocol-level encoding are fully
-    covered by the unit + protocol tests; the missing live coverage
-    is "the cluster actually accepts the request and updates Raft
-    membership."
+    Each test is self-restoring: the ``cluster_control.spare_node()``
+    context manager handles ``remove_node`` + container teardown
+    + data-volume wipe on exit so subsequent tests in the session
+    see a deterministic 3-voter starting state.
+
+    See ``test_add_remove_round_trip_against_running_node`` (live)
+    and the ``add_node`` / ``remove_node`` /
+    ``assign_role`` unit + protocol tests (mocked wire) for the
+    full coverage of these methods.
     """
 
-    @pytest.fixture(autouse=True)
-    def _skip_for_now(self) -> None:
-        pytest.skip(
-            "Gated on a 4th-node fixture: add_node requires a real "
-            "dqlite-demo listening at the announced host:port for the "
-            "Raft-side join handshake. python-dqlite-dev cluster has "
-            "exactly 3 nodes; lifting the skip needs either a spawnable "
-            "spare-node primitive or a known unused dqlite-demo "
-            "pre-running on a fourth port."
-        )
+    async def test_add_remove_round_trip_against_running_node(
+        self,
+        cluster_node_addresses: list[str],
+        cluster_control: TestClusterControl,
+    ) -> None:
+        """End-to-end membership round-trip with a real 4th node.
 
-    async def test_add_remove_round_trip(self, cluster_node_addresses: list[str]) -> None:
+        The new node self-adds as Standby via ``--join``; we then
+        exercise the parts of the membership API our client
+        actually drives on top: ``assign_role`` (Standby → Voter
+        with real Raft catch-up), ``cluster_info`` reflects the
+        promotion, ``assign_role`` (Voter → Spare for a clean
+        teardown), and ``remove_node`` via the context manager's
+        ``__aexit__``.
+
+        ``add_node`` is exercised by ``--join``-driven self-add
+        rather than an explicit ``cluster.add_node`` call —
+        ``dqlite-demo`` does not have a "wait to be added" mode.
+        The unit / protocol tests cover the explicit ``add_node``
+        wire dispatch, and a separate live test
+        (``test_add_remove_config_only_round_trip``) exercises
+        the cluster-config side of ``add_node`` + ``remove_node``
+        without a real running node.
+        """
         cluster = _client(cluster_node_addresses)
 
-        # Snapshot starting cluster.
         starting = await cluster.cluster_info()
         starting_ids = {n.node_id for n in starting}
 
-        # Pick a free node id + address. The address would need to
-        # point at a live dqlite-demo for the request to succeed —
-        # see class docstring.
-        new_id = max(starting_ids) + 1
-        new_addr = "127.0.0.1:9099"
+        async with cluster_control.spare_node() as spare:
+            # Sanity: the spare auto-joined and is visible.
+            assert spare.node_id not in starting_ids
+            after_join = await cluster.cluster_info()
+            assert any(n.node_id == spare.node_id for n in after_join), (
+                f"spare {spare.node_id} not in cluster_info {after_join!r}"
+            )
+
+            # Promote to Voter — needs the running peer to catch
+            # up via Raft replication. Without a real running
+            # node, this would block indefinitely.
+            await cluster.assign_role(node_id=spare.node_id, role=NodeRole.VOTER)
+            await cluster_control.wait_for_role(spare.node_id, NodeRole.VOTER, timeout=10.0)
+
+            # Demote back to Spare so the spare-node teardown's
+            # ``remove_node`` runs without the "cannot remove
+            # voter without prior demotion" error.
+            await cluster.assign_role(node_id=spare.node_id, role=NodeRole.SPARE)
+            await cluster_control.wait_for_role(spare.node_id, NodeRole.SPARE, timeout=10.0)
+
+        # ``spare_node`` context manager already called
+        # ``remove_node`` + tore down the container; pin that the
+        # cluster is back to its starting shape.
+        final = await cluster.cluster_info()
+        assert {n.node_id for n in final} == starting_ids
+
+    async def test_add_remove_config_only_round_trip(
+        self, cluster_node_addresses: list[str]
+    ) -> None:
+        """``add_node`` + ``remove_node`` against a fake address —
+        exercises the cluster-config side without a real running
+        peer.
+
+        Raft's ``Add`` only updates the leader's config; it does
+        not contact the new node synchronously. So we can pin the
+        wire dispatch + cluster_info reflection of an add /
+        remove cycle without spawning a real 4th node. The
+        complementary ``test_add_remove_round_trip_against_running_node``
+        above does need a real peer because Voter promotion
+        requires actual log catch-up.
+        """
+        cluster = _client(cluster_node_addresses)
+
+        starting = await cluster.cluster_info()
+        starting_ids = {n.node_id for n in starting}
+
+        # Pick an id outside the starting set + an address that is
+        # not a real cluster member. The address never actually
+        # gets contacted as part of ``Add`` — Raft just records it.
+        fake_id = max(starting_ids) + 1
+        fake_addr = "127.0.0.1:9099"
 
         try:
-            await cluster.add_node(node_id=new_id, address=new_addr)
+            await cluster.add_node(node_id=fake_id, address=fake_addr)
             after_add = await cluster.cluster_info()
-            assert any(n.node_id == new_id for n in after_add)
-
-            # Promote to voter, observe role change.
-            await cluster.assign_role(node_id=new_id, role=NodeRole.VOTER)
-            after_assign = await cluster.cluster_info()
-            new_node = next(n for n in after_assign if n.node_id == new_id)
-            assert new_node.role == NodeRole.VOTER
+            assert any(n.node_id == fake_id for n in after_add)
         finally:
             with contextlib.suppress(Exception):
-                await cluster.remove_node(node_id=new_id)
+                await cluster.remove_node(node_id=fake_id)
+
+        final = await cluster.cluster_info()
+        assert {n.node_id for n in final} == starting_ids
