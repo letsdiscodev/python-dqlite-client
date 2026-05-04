@@ -90,18 +90,22 @@ async def test_reset_connection_skips_rollback_on_poisoned_decoder() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reset_connection_returns_true_when_no_rollback_needed() -> None:
-    """Negative pin (control case): when the connection is NOT in a
-    transaction and has no savepoint state, ``_reset_connection``
-    short-circuits cleanly without consulting the wire-coherence
-    accessor — the slot is returned as reusable. Catches a
-    regression where the poisoned-decoder branch fires too eagerly."""
+async def test_reset_connection_drops_poisoned_decoder_even_without_rollback() -> None:
+    """A poisoned wire is unrecoverable regardless of tx state — even
+    without an open transaction, the slot must be dropped so a future
+    acquirer doesn't dequeue it, retrip ``_socket_looks_dead`` on the
+    way out, and pay one wasted slot churn. The wire-coherence check
+    runs at the top of ``_reset_connection``, before the
+    ``needs_rollback`` calculation."""
     pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
     conn = _make_conn_with_poisoned_protocol(in_transaction=False)
 
     result = await pool._reset_connection(conn)
 
-    assert result is True, "no transaction state ⇒ no ROLLBACK needed ⇒ slot is reusable"
+    assert result is False, (
+        "poisoned decoder ⇒ slot is unrecoverable; no point waiting "
+        "for the next acquirer to discover the dead wire"
+    )
     assert conn.execute.await_count == 0
 
 

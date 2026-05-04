@@ -934,6 +934,7 @@ class TestConnectionPool:
         mock_conn._in_use = False
         mock_conn._bound_loop_ref = None
         mock_conn._pool_released = False
+        mock_conn._address = "localhost:9001"
         mock_conn._check_in_use = MagicMock()
 
         with patch.object(pool._cluster, "connect", return_value=mock_conn):
@@ -984,6 +985,7 @@ class TestConnectionPool:
         mock_conn._in_use = False
         mock_conn._bound_loop_ref = None
         mock_conn._pool_released = False
+        mock_conn._address = "localhost:9001"
         mock_conn._check_in_use = MagicMock()
 
         with patch.object(pool._cluster, "connect", return_value=mock_conn):

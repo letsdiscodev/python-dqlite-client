@@ -1264,6 +1264,20 @@ class ConnectionPool:
         # fakes whose attributes are MagicMock instances (truthy by
         # default) — without the type guards, every fake-conn release
         # would unconditionally enter the ROLLBACK branch.
+        # Cheap pre-anything liveness check: if the transport is
+        # closing or the reader has seen EOF, the connection cannot
+        # be re-used regardless of tx state. Without this, a clean-tx
+        # but wire-poisoned connection returned to the pool waited
+        # in the queue until a future acquirer dequeued it, tripped
+        # ``_socket_looks_dead`` on dequeue, and discarded — one
+        # wasted slot churn per affected connection. Drop on return
+        # so the slot is freed immediately.
+        if _socket_looks_dead(conn):
+            logger.debug(
+                "pool: dropping connection %s (socket looks dead on return)",
+                conn._address,
+            )
+            return False
         in_tx = getattr(conn, "_in_transaction", False)
         sp_stack = getattr(conn, "_savepoint_stack", None)
         implicit_begin = getattr(conn, "_savepoint_implicit_begin", False)
@@ -1275,15 +1289,6 @@ class ConnectionPool:
             or (isinstance(untracked_sp, bool) and untracked_sp)
         )
         if needs_rollback:
-            # Cheap pre-write liveness check: if the transport is already
-            # closing or the reader has seen EOF, ROLLBACK would stall on
-            # _read_data until self._timeout. Bail fast instead.
-            if _socket_looks_dead(conn):
-                logger.debug(
-                    "pool: dropping connection %s (socket looks dead before ROLLBACK)",
-                    conn._address,
-                )
-                return False
             try:
                 await conn.execute(_TRANSACTION_ROLLBACK_SQL)
             except _POOL_CLEANUP_EXCEPTIONS as exc:
