@@ -63,7 +63,7 @@ async def test_connect_swallows_inner_pending_cancel_alone() -> None:
     open_connection_called: list[object] = []
     real_open = asyncio.open_connection
 
-    async def fake_open(host: str, port: int):
+    async def fake_open(host: str, port: int, **_kwargs: object):
         open_connection_called.append((host, port))
         reader = MagicMock()
         writer = MagicMock()
@@ -131,7 +131,7 @@ async def test_connect_with_no_pending_drain_skips_drain_block_entirely() -> Non
     open_connection_called: list[object] = []
     real_open = asyncio.open_connection
 
-    async def fake_open(host: str, port: int):
+    async def fake_open(host: str, port: int, **_kwargs: object):
         open_connection_called.append((host, port))
         reader = MagicMock()
         writer = MagicMock()
@@ -197,7 +197,7 @@ async def test_connect_swallows_already_done_pending_drain() -> None:
     open_connection_called: list[object] = []
     real_open = asyncio.open_connection
 
-    async def fake_open(host: str, port: int):
+    async def fake_open(host: str, port: int, **_kwargs: object):
         open_connection_called.append((host, port))
         reader = MagicMock()
         writer = MagicMock()

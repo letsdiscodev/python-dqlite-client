@@ -45,7 +45,9 @@ def _patch_admin_connection(
     writer.close = MagicMock()
     writer.wait_closed = AsyncMock()
 
-    async def fake_open_connection(host: str, port: int) -> tuple[MagicMock, MagicMock]:
+    async def fake_open_connection(
+        host: str, port: int, **_kwargs: object
+    ) -> tuple[MagicMock, MagicMock]:
         return reader, writer
 
     return fake_open_connection, writer

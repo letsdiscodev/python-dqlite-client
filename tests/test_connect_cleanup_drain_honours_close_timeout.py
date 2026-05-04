@@ -23,7 +23,7 @@ async def test_connect_cleanup_uses_configured_close_timeout() -> None:
     fake_writer.close = MagicMock()
     fake_writer.wait_closed = AsyncMock()
 
-    async def fake_open_connection(host: str, port: int):
+    async def fake_open_connection(host: str, port: int, **_kwargs: object):
         return fake_reader, fake_writer
 
     import dqliteclient.connection as conn_mod

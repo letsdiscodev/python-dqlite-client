@@ -43,7 +43,7 @@ async def test_connect_cancels_prior_pending_drain() -> None:
     # connect() processed ``_pending_drain`` before doing its work.
     called: list[object] = []
 
-    async def fake_open_connection(host: str, port: int):
+    async def fake_open_connection(host: str, port: int, **_kwargs: object):
         called.append((host, port))
         # Return a never-read/writer pair via mocks; handshake will
         # be mocked to raise immediately below.
@@ -137,7 +137,7 @@ async def test_connect_propagates_outer_cancel_during_pending_drain_retire() -> 
     open_connection_called: list[object] = []
     real_open = asyncio.open_connection
 
-    async def fake_open(host: str, port: int):
+    async def fake_open(host: str, port: int, **_kwargs: object):
         open_connection_called.append((host, port))
         # Hand back enough to survive a first read; never reached on
         # the success path, so an assertion error here is a clear bug.

@@ -36,7 +36,9 @@ async def test_query_leader_empty_addr_with_nonzero_id_sanitizes_debug_log(
 ) -> None:
     cluster = _make_cluster()
 
-    async def fake_open_connection(host: str, port: int) -> tuple[MagicMock, MagicMock]:
+    async def fake_open_connection(
+        host: str, port: int, **_kwargs: object
+    ) -> tuple[MagicMock, MagicMock]:
         reader = MagicMock()
         writer = MagicMock()
         writer.close = MagicMock()
@@ -78,7 +80,9 @@ async def test_query_leader_zero_id_with_hostile_addr_sanitizes_debug_log(
 ) -> None:
     cluster = _make_cluster()
 
-    async def fake_open_connection(host: str, port: int) -> tuple[MagicMock, MagicMock]:
+    async def fake_open_connection(
+        host: str, port: int, **_kwargs: object
+    ) -> tuple[MagicMock, MagicMock]:
         reader = MagicMock()
         writer = MagicMock()
         writer.close = MagicMock()
@@ -111,7 +115,9 @@ async def test_query_leader_bidi_addr_in_debug_log_is_sanitized(
 ) -> None:
     cluster = _make_cluster()
 
-    async def fake_open_connection(host: str, port: int) -> tuple[MagicMock, MagicMock]:
+    async def fake_open_connection(
+        host: str, port: int, **_kwargs: object
+    ) -> tuple[MagicMock, MagicMock]:
         reader = MagicMock()
         writer = MagicMock()
         writer.close = MagicMock()

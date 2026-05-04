@@ -32,7 +32,7 @@ async def test_connect_clears_stale_invalidation_cause(monkeypatch) -> None:
     fake_protocol.open_database = AsyncMock(return_value=7)
     fake_protocol._client_id = 1
 
-    async def _fake_open_connection(host, port):
+    async def _fake_open_connection(host, port, **_kwargs):
         return (MagicMock(), MagicMock())
 
     monkeypatch.setattr(

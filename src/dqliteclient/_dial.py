@@ -46,6 +46,19 @@ _TCP_KEEPIDLE_S: Final[int] = 30
 _TCP_KEEPINTVL_S: Final[int] = 10
 _TCP_KEEPCNT: Final[int] = 3
 
+# RFC 8305 happy-eyeballs delay between launching the IPv6 attempt and
+# the IPv4 fallback attempt. Matches Go's ``net.Dialer{FallbackDelay:
+# 300ms}`` default since Go 1.12. On a dual-stack hostname where the
+# AAAA record points to an unroutable address (legitimate misconfig:
+# legacy ``::ffff:`` mapping or a mis-set ALIAS), serial fallback would
+# pay the full TCP timeout on the AAAA before falling back to A —
+# making a 5s ``dial_timeout`` take 10s+ on Python where Go takes 5s.
+# Python's ``asyncio.open_connection`` accepts ``happy_eyeballs_delay``
+# (and ``interleave``) since 3.10; the package requires >= 3.13 so
+# both are unconditionally available.
+_HAPPY_EYEBALLS_DELAY_S: Final[float] = 0.3
+_HAPPY_EYEBALLS_INTERLEAVE: Final[int] = 1
+
 
 def _apply_keepalive_options(sock: socket.socket) -> None:
     """Enable SO_KEEPALIVE on ``sock`` and tune the per-socket
@@ -82,11 +95,22 @@ async def open_connection_with_keepalive(
     the dialed socket.
 
     Returns the same ``(reader, writer)`` tuple
-    ``asyncio.open_connection`` returns; the only difference is the
-    socket has SO_KEEPALIVE=1 (and best-effort
-    TCP_KEEPIDLE/INTVL/CNT) applied before this function returns.
+    ``asyncio.open_connection`` returns; the differences are:
+
+    1. The socket has SO_KEEPALIVE=1 (and best-effort
+       TCP_KEEPIDLE/INTVL/CNT) applied before this function returns.
+    2. RFC 8305 happy-eyeballs (``happy_eyeballs_delay=0.3``,
+       ``interleave=1``) is enabled, matching Go's
+       ``net.Dialer{FallbackDelay: 300ms}`` default since Go 1.12.
+       On dual-stack hostnames with broken AAAA, this avoids waiting
+       the full TCP timeout before falling back to IPv4.
     """
-    reader, writer = await asyncio.open_connection(host, port)
+    reader, writer = await asyncio.open_connection(
+        host,
+        port,
+        happy_eyeballs_delay=_HAPPY_EYEBALLS_DELAY_S,
+        interleave=_HAPPY_EYEBALLS_INTERLEAVE,
+    )
     sock = writer.get_extra_info("socket")
     if sock is not None:
         _apply_keepalive_options(sock)

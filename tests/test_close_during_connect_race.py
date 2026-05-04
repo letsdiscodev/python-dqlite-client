@@ -47,7 +47,9 @@ class TestCloseDuringConnect:
         open_in_flight = asyncio.Event()
         may_finish = asyncio.Event()
 
-        async def _fake_open_connection(host: str, port: int) -> tuple[object, object]:
+        async def _fake_open_connection(
+            host: str, port: int, **_kwargs: object
+        ) -> tuple[object, object]:
             open_in_flight.set()
             await may_finish.wait()
             return reader, writer

@@ -32,7 +32,7 @@ async def test_concurrent_connect_calls_reject_one_via_in_use_guard() -> None:
     started = asyncio.Event()
     proceed = asyncio.Event()
 
-    async def slow_open(host: str, port: int):
+    async def slow_open(host: str, port: int, **_kwargs: object):
         started.set()
         await proceed.wait()
         # Construct a (reader, writer) that fail handshake quickly.

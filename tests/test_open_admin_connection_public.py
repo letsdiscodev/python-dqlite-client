@@ -42,7 +42,7 @@ async def test_open_admin_connection_yields_handshaken_protocol() -> None:
     writer.close = MagicMock()
     writer.wait_closed = AsyncMock()
 
-    async def fake_open(host: str, port: int) -> tuple[MagicMock, MagicMock]:
+    async def fake_open(host: str, port: int, **_kwargs: object) -> tuple[MagicMock, MagicMock]:
         return reader, writer
 
     with (
@@ -71,7 +71,7 @@ async def test_open_admin_connection_closes_writer_on_exception() -> None:
     writer.close = MagicMock()
     writer.wait_closed = AsyncMock()
 
-    async def fake_open(host: str, port: int) -> tuple[MagicMock, MagicMock]:
+    async def fake_open(host: str, port: int, **_kwargs: object) -> tuple[MagicMock, MagicMock]:
         return reader, writer
 
     with (  # noqa: SIM117
