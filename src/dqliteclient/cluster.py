@@ -261,6 +261,18 @@ class ClusterClient:
         self._timeout = timeout
         self._concurrent_leader_conns = concurrent_leader_conns
         self._redirect_policy = redirect_policy
+        # Last-known-leader cache (mirror of go-dqlite's
+        # ``LeaderTracker.lastKnownLeaderAddr``). On every successful
+        # sweep we set this; on the next ``find_leader`` we probe it
+        # directly first and fall through to the full sweep on miss.
+        # CPython-atomic attribute write/read — the GIL serialises a
+        # single ``str | None`` assignment, so updates are visible
+        # across coroutines without a lock. A future port to free-
+        # threaded Python (PEP 703) MUST add a lock or atomic op
+        # around get/set; do not extend the contents of this
+        # attribute (e.g. into a ``(addr, expires_at)`` tuple) without
+        # first introducing such a lock.
+        self._last_known_leader: str | None = None
         # Single-flight slot map for ``find_leader``. Concurrent callers
         # share the in-flight discovery task instead of each launching
         # an independent per-node sweep — under a leader flip with N
@@ -327,6 +339,21 @@ class ClusterClient:
             f"reference; reconstruct from configuration in the target "
             f"process instead."
         )
+
+    def _get_last_known_leader(self) -> str | None:
+        """Return the cached last-known-leader address, or ``None``.
+
+        Single attribute read; CPython-atomic. See ``__init__`` for
+        the free-threaded-Python caveat.
+        """
+        return self._last_known_leader
+
+    def _set_last_known_leader(self, address: str | None) -> None:
+        """Update the last-known-leader cache. ``None`` clears it.
+
+        Single attribute write; CPython-atomic. See ``__init__``.
+        """
+        self._last_known_leader = address
 
     def _check_redirect(self, address: str) -> None:
         """Reject leader-redirect targets that fail the configured policy."""
@@ -447,7 +474,74 @@ class ClusterClient:
         That's intentional: policy rejections are deterministic
         configuration errors, so the same policy would apply to every
         other node and the probe history is not actionable.
+
+        Fast path: if a previous sweep set ``_last_known_leader``,
+        probe that address first. On hit, return it; on miss
+        (transport error, no-leader reply, address mismatch), clear
+        the cache and fall through to the parallel sweep. Mirrors
+        ``connector.go::connectAttemptAll`` (lines 228-237). The
+        single-flight slot map collapses concurrent ``find_leader``
+        callers, so a stale-cache miss costs one extra probe before
+        the full sweep — same staleness window as the existing
+        single-flight contract.
         """
+        cached = self._get_last_known_leader()
+        if cached is not None:
+            try:
+                cached_leader = await asyncio.wait_for(
+                    self._query_leader(
+                        cached,
+                        trust_server_heartbeat=trust_server_heartbeat,
+                    ),
+                    timeout=self._timeout,
+                )
+                if cached_leader:
+                    if not _addr_equiv(cached_leader, cached):
+                        # Cached node redirected us elsewhere.
+                        # ``_check_redirect`` may raise
+                        # ``ClusterPolicyError`` — handled below.
+                        self._check_redirect(cached_leader)
+                    # Update the cache to point at the actual
+                    # leader, not the responder.
+                    self._set_last_known_leader(cached_leader)
+                    return cached_leader
+                # Cached node replied with no-leader-known: the
+                # leader has flipped or stepped down. Clear the
+                # cache and fall through.
+                logger.debug(
+                    "find_leader: fast-path probe of cached leader %s "
+                    "returned no-leader-known; clearing cache and falling "
+                    "through to full sweep",
+                    _sanitize_display_text(cached),
+                )
+                self._set_last_known_leader(None)
+            except (
+                DqliteConnectionError,
+                ProtocolError,
+                OperationalError,
+                OSError,
+                TimeoutError,
+            ) as e:
+                # Fast-path miss: probe failed. Clear the cache and
+                # fall through to the full sweep. Log at DEBUG so
+                # operators tailing logs see the cache invalidation
+                # without spamming default-verbosity output.
+                logger.debug(
+                    "find_leader: fast-path probe of cached leader %s failed (%s); "
+                    "clearing cache and falling through to full sweep",
+                    _sanitize_display_text(cached),
+                    type(e).__name__,
+                )
+                self._set_last_known_leader(None)
+            except ClusterPolicyError:
+                # The cached address redirected us to a policy-
+                # rejected target (or the operator changed the
+                # redirect policy). Clear and propagate — the same
+                # policy applies to every other probe, so falling
+                # through would not produce a different outcome.
+                self._set_last_known_leader(None)
+                raise
+
         nodes = await self._node_store.get_nodes()
 
         if not nodes:
@@ -619,6 +713,11 @@ class ClusterClient:
         if unexpected_exc is not None:
             raise unexpected_exc
         if winning_address is not None:
+            # Populate the leader-tracker cache so the next
+            # ``find_leader`` takes the fast path (one probe) instead
+            # of running the full parallel sweep again. Mirrors
+            # ``connector.go:214``'s ``c.lt.SetLeaderAddr(...)``.
+            self._set_last_known_leader(winning_address)
             return winning_address
         if policy_error is not None:
             raise policy_error
