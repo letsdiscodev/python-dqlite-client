@@ -99,7 +99,11 @@ class TestClusterClient:
 
         from dqlitewire.messages import LeaderResponse, WelcomeResponse
 
+        # First probe: localhost:9001 redirects to localhost:9002.
+        # Second probe (N1 verification): localhost:9002 self-confirms.
         responses = [
+            WelcomeResponse(heartbeat_timeout=15000).encode(),
+            LeaderResponse(node_id=2, address="localhost:9002").encode(),
             WelcomeResponse(heartbeat_timeout=15000).encode(),
             LeaderResponse(node_id=2, address="localhost:9002").encode(),
         ]
@@ -340,10 +344,24 @@ class TestClusterClient:
         #
         # Node B responds with a valid Welcome + Leader pair, so
         # find_leader returns Node B's address.
+        #
+        # Two extra Welcome+Leader pairs are appended so that — under
+        # the parallel sweep + N1 verify-redirect interleaving — if
+        # Probe A happens to read Node B's responses first (a redirect
+        # from its perspective: "localhost:9001" reports "localhost:9002"
+        # as leader), the verify-redirect probe and the second node's
+        # own probe still find responses and the test passes
+        # deterministically regardless of probe-order.
+        welcome = WelcomeResponse(heartbeat_timeout=15000).encode()
+        leader_b = LeaderResponse(node_id=2, address="localhost:9002").encode()
         responses = [
             b"\x00" * 64,
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
-            LeaderResponse(node_id=2, address="localhost:9002").encode(),
+            welcome,
+            leader_b,
+            welcome,
+            leader_b,
+            welcome,
+            leader_b,
         ]
         mock_reader.read.side_effect = responses
 

@@ -548,20 +548,49 @@ class ClusterClient:
                         # ``_check_redirect`` may raise
                         # ``ClusterPolicyError`` — handled below.
                         self._check_redirect(cached_leader)
-                    # Update the cache to point at the actual
-                    # leader, not the responder.
-                    self._set_last_known_leader(cached_leader)
-                    return cached_leader
-                # Cached node replied with no-leader-known: the
-                # leader has flipped or stepped down. Clear the
-                # cache and fall through.
-                logger.debug(
-                    "find_leader: fast-path probe of cached leader %s "
-                    "returned no-leader-known; clearing cache and falling "
-                    "through to full sweep",
-                    _sanitize_display_text(cached),
-                )
-                self._set_last_known_leader(None)
+                        # Re-verify the redirect target self-identifies
+                        # as leader before trusting the hint. On
+                        # mismatch (stale-hint cached node), clear the
+                        # cache and fall through to the full sweep so
+                        # leader rediscovery runs. Without this, a
+                        # cached responder pointing to an ex-leader
+                        # would loop the caller through a wasted
+                        # ``connect()``+Open before retry.
+                        verified = await self._verify_redirect(
+                            cached_leader,
+                            trust_server_heartbeat=trust_server_heartbeat,
+                        )
+                        if verified is None:
+                            logger.debug(
+                                "find_leader: fast-path probe of cached "
+                                "leader %s redirected to %s but "
+                                "verification failed; clearing cache "
+                                "and falling through to full sweep",
+                                _sanitize_display_text(cached),
+                                _sanitize_display_text(cached_leader),
+                            )
+                            self._set_last_known_leader(None)
+                            # Skip the no-leader-known log below and
+                            # let control reach the full sweep
+                            # naturally.
+                        else:
+                            self._set_last_known_leader(cached_leader)
+                            return cached_leader
+                    else:
+                        # Cached node confirmed itself as leader.
+                        self._set_last_known_leader(cached_leader)
+                        return cached_leader
+                else:
+                    # Cached node replied with no-leader-known: the
+                    # leader has flipped or stepped down. Clear the
+                    # cache and fall through.
+                    logger.debug(
+                        "find_leader: fast-path probe of cached leader %s "
+                        "returned no-leader-known; clearing cache and falling "
+                        "through to full sweep",
+                        _sanitize_display_text(cached),
+                    )
+                    self._set_last_known_leader(None)
             except (
                 DqliteConnectionError,
                 ProtocolError,
@@ -687,6 +716,35 @@ class ClusterClient:
                         # Re-raises ClusterPolicyError on rejection;
                         # the gather loop catches it and propagates.
                         self._check_redirect(leader_address)
+                        # Re-probe the redirect target to confirm it
+                        # self-identifies as leader. Stale-hint
+                        # peers can hand back a node that no longer
+                        # holds leadership; trusting the hint
+                        # without re-verification wastes a full
+                        # ``connect()`` round-trip and produces a
+                        # misleading error chain. Mirrors go-dqlite's
+                        # ``connector.go::connectAttemptOne`` redirect
+                        # re-probe.
+                        verified = await self._verify_redirect(
+                            leader_address,
+                            trust_server_heartbeat=trust_server_heartbeat,
+                        )
+                        if verified is None:
+                            _safe_addr = _sanitize_display_text(node.address)
+                            _safe_hint = _sanitize_display_text(leader_address)
+                            logger.debug(
+                                "find_leader: %s redirected to %s "
+                                "but verification failed (stale hint); "
+                                "falling through (%d/%d)",
+                                _safe_addr,
+                                _safe_hint,
+                                idx + 1,
+                                total_nodes,
+                            )
+                            return _ProbeMiss(
+                                message=(f"{_safe_addr}: stale redirect to {_safe_hint}"),
+                                exc=None,
+                            )
                     return _LeaderHit(address=leader_address)
 
                 # ``_query_leader`` returns ``None`` for the legitimate
@@ -924,6 +982,61 @@ class ClusterClient:
             inner_drain.add_done_callback(_observe_drain_exception)
             with contextlib.suppress(OSError, TimeoutError):
                 await asyncio.shield(inner_drain)
+
+    async def _verify_redirect(
+        self, hint_address: str, *, trust_server_heartbeat: bool = False
+    ) -> str | None:
+        """Re-probe a redirect target to confirm it self-identifies as
+        leader before trusting it.
+
+        Mirrors go-dqlite's ``connector.go::connectAttemptOne``
+        redirect re-probe (lines 285-294), trimmed to the LEADER RPC
+        only. Returns ``hint_address`` on self-confirmation, ``None``
+        on mismatch / unreachable / any transport-level failure (the
+        sweep falls through to other nodes; verification failure is
+        not fatal).
+
+        Why: ``_query_leader`` returns whatever address a peer claims
+        is leader, but a stale-state peer can hand back a node that
+        no longer holds leadership. Without re-verification, the
+        sweep returns the stale hint, ``connect()`` opens a full
+        connection and runs Open, the server responds with a
+        leader-change error, and the retry loop kicks in — wasted RTT
+        plus a misleading aggregate-error chain pointing at the
+        REDIRECTED address. With this re-probe, the stale hint is
+        discarded inside the per-node probe and the sweep fans out
+        via the parallel-sweep machinery.
+
+        Implementation: delegates the dial+handshake+LEADER RPC to
+        ``_query_leader`` so transport discipline (bounded shutdown
+        drain wrapped in ``asyncio.shield``) and test-time mocking
+        (``patch.object(cluster, "_query_leader", ...)``) apply
+        uniformly. The verification adds one decision: the responder
+        must report ITSELF as leader, otherwise we discard the hint.
+        """
+        try:
+            reported = await self._query_leader(
+                hint_address, trust_server_heartbeat=trust_server_heartbeat
+            )
+        except (
+            DqliteConnectionError,
+            ProtocolError,
+            OperationalError,
+            OSError,
+            TimeoutError,
+        ):
+            return None
+        if reported and _addr_equiv(reported, hint_address):
+            return hint_address
+        # Stale or pointing elsewhere. Log both addresses through
+        # ``_sanitize_display_text`` so a hostile peer can't inject
+        # CRLF / control-chars into operator-facing logs.
+        logger.debug(
+            "verify_redirect: %s reports leader=%s (stale hint, falling through)",
+            _sanitize_display_text(hint_address),
+            _sanitize_display_text(reported) if reported else "<none>",
+        )
+        return None
 
     async def connect(
         self,
