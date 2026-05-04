@@ -63,6 +63,8 @@ async def connect(
     *,
     database: str = "default",
     timeout: float = 10.0,
+    dial_timeout: float | None = None,
+    attempt_timeout: float | None = None,
     max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
     max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
     trust_server_heartbeat: bool = False,
@@ -77,6 +79,13 @@ async def connect(
             phase of an operation gets the full budget independently;
             wrap with ``asyncio.timeout(...)`` to enforce an end-to-end
             deadline.
+        dial_timeout: Per-dial TCP-establish budget. Defaults to
+            ``timeout`` when ``None``. Mirrors go-dqlite's
+            ``Config.DialTimeout``.
+        attempt_timeout: Per-attempt envelope wrapping
+            dial + handshake + ``open_database``. Defaults to
+            ``timeout`` when ``None``. Mirrors go-dqlite's
+            ``Config.AttemptTimeout``.
         max_total_rows: Cumulative row cap across continuation frames
             for a single query. Forwarded to the underlying
             DqliteConnection. None disables the cap.
@@ -99,6 +108,8 @@ async def connect(
         address,
         database=database,
         timeout=timeout,
+        dial_timeout=dial_timeout,
+        attempt_timeout=attempt_timeout,
         max_total_rows=max_total_rows,
         max_continuation_frames=max_continuation_frames,
         trust_server_heartbeat=trust_server_heartbeat,
@@ -115,6 +126,8 @@ async def create_pool(
     min_size: int = 1,
     max_size: int = 10,
     timeout: float = 10.0,
+    dial_timeout: float | None = None,
+    attempt_timeout: float | None = None,
     cluster: ClusterClient | None = None,
     node_store: NodeStore | None = None,
     max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
@@ -135,6 +148,14 @@ async def create_pool(
             phase of an operation gets the full budget independently;
             wrap with ``asyncio.timeout(...)`` to enforce an end-to-end
             deadline.
+        dial_timeout: Per-dial TCP-establish budget. Defaults to
+            ``timeout`` when ``None``. Mirrors go-dqlite's
+            ``Config.DialTimeout``. Forwarded to the underlying
+            ``ClusterClient`` and ``DqliteConnection`` instances.
+        attempt_timeout: Per-attempt envelope wrapping dial +
+            handshake + ``open_database``. Defaults to ``timeout``
+            when ``None``. Mirrors go-dqlite's
+            ``Config.AttemptTimeout``.
         cluster: Externally-owned ClusterClient shared across pools.
         node_store: Externally-owned NodeStore used to build a new
             ClusterClient. Mutually exclusive with ``cluster``.
@@ -166,6 +187,8 @@ async def create_pool(
         min_size=min_size,
         max_size=max_size,
         timeout=timeout,
+        dial_timeout=dial_timeout,
+        attempt_timeout=attempt_timeout,
         cluster=cluster,
         node_store=node_store,
         max_total_rows=max_total_rows,

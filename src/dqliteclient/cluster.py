@@ -225,6 +225,8 @@ class ClusterClient:
         node_store: NodeStore,
         *,
         timeout: float = 10.0,
+        dial_timeout: float | None = None,
+        attempt_timeout: float | None = None,
         concurrent_leader_conns: int = _DEFAULT_CONCURRENT_LEADER_CONNS,
         redirect_policy: RedirectPolicy | None = None,
     ) -> None:
@@ -232,7 +234,20 @@ class ClusterClient:
 
         Args:
             node_store: Store for cluster node information
-            timeout: Connection timeout in seconds
+            timeout: Connection timeout in seconds. Acts as the default
+                for ``dial_timeout`` and ``attempt_timeout`` when those
+                are not explicitly set, and as the per-RPC budget on
+                the underlying :class:`DqliteProtocol`.
+            dial_timeout: Per-dial TCP-establish budget. Defaults to
+                ``timeout`` when ``None``. Mirrors go-dqlite's
+                ``Config.DialTimeout`` (5 s in go-dqlite's config). Must
+                be ``> 0`` when set explicitly.
+            attempt_timeout: Per-attempt envelope (dial + handshake +
+                first useful round-trip). Defaults to ``timeout`` when
+                ``None``. Mirrors go-dqlite's ``Config.AttemptTimeout``
+                (15 s). The attempt envelope nests the dial inside it,
+                matching ``connector.go:357-360``. Must be ``> 0``
+                when set explicitly.
             concurrent_leader_conns: Maximum number of in-flight leader
                 probes during a single ``find_leader`` sweep. Mirrors
                 go-dqlite's ``Config.ConcurrentLeaderConns`` (default
@@ -249,6 +264,10 @@ class ClusterClient:
                 constrain where redirects can go.
         """
         _validate_timeout(timeout)
+        if dial_timeout is not None:
+            _validate_timeout(dial_timeout, name="dial_timeout")
+        if attempt_timeout is not None:
+            _validate_timeout(attempt_timeout, name="attempt_timeout")
         if isinstance(concurrent_leader_conns, bool) or not isinstance(
             concurrent_leader_conns, int
         ):
@@ -259,6 +278,14 @@ class ClusterClient:
             raise ValueError(f"concurrent_leader_conns must be >= 1, got {concurrent_leader_conns}")
         self._node_store = node_store
         self._timeout = timeout
+        # Default to ``timeout`` so existing callers see no change. The
+        # split exists so operators can set a tight TCP-dial budget
+        # (drop unreachable peers fast) and a generous attempt
+        # envelope (tolerate slow handshake on a healthy but loaded
+        # peer). Mirrors go-dqlite's ``DialTimeout`` /
+        # ``AttemptTimeout`` semantic.
+        self._dial_timeout = dial_timeout if dial_timeout is not None else timeout
+        self._attempt_timeout = attempt_timeout if attempt_timeout is not None else timeout
         self._concurrent_leader_conns = concurrent_leader_conns
         self._redirect_policy = redirect_policy
         # Last-known-leader cache (mirror of go-dqlite's
@@ -304,10 +331,16 @@ class ClusterClient:
         addresses: list[str],
         timeout: float = 10.0,
         *,
+        dial_timeout: float | None = None,
+        attempt_timeout: float | None = None,
         concurrent_leader_conns: int = _DEFAULT_CONCURRENT_LEADER_CONNS,
         redirect_policy: RedirectPolicy | None = None,
     ) -> "ClusterClient":
         """Create cluster client from list of addresses.
+
+        ``dial_timeout`` and ``attempt_timeout`` mirror go-dqlite's
+        ``DialTimeout`` / ``AttemptTimeout`` configuration knobs and
+        default to ``timeout`` when ``None``.
 
         ``concurrent_leader_conns`` (default 10) bounds the number of
         in-flight leader probes during a single ``find_leader`` sweep
@@ -321,6 +354,8 @@ class ClusterClient:
         return cls(
             store,
             timeout=timeout,
+            dial_timeout=dial_timeout,
+            attempt_timeout=attempt_timeout,
             concurrent_leader_conns=concurrent_leader_conns,
             redirect_policy=redirect_policy,
         )
@@ -493,7 +528,7 @@ class ClusterClient:
                         cached,
                         trust_server_heartbeat=trust_server_heartbeat,
                     ),
-                    timeout=self._timeout,
+                    timeout=self._attempt_timeout,
                 )
                 if cached_leader:
                     if not _addr_equiv(cached_leader, cached):
@@ -593,14 +628,14 @@ class ClusterClient:
                             node.address,
                             trust_server_heartbeat=trust_server_heartbeat,
                         ),
-                        timeout=self._timeout,
+                        timeout=self._attempt_timeout,
                     )
                 except TimeoutError as e:
                     _safe_addr = _sanitize_display_text(node.address)
                     logger.debug(
                         "find_leader: %s timed out after %.3fs (%d/%d)",
                         _safe_addr,
-                        self._timeout,
+                        self._attempt_timeout,
                         idx + 1,
                         total_nodes,
                     )
@@ -763,7 +798,7 @@ class ClusterClient:
         try:
             reader, writer = await asyncio.wait_for(
                 open_connection_with_keepalive(host, port),
-                timeout=self._timeout,
+                timeout=self._dial_timeout,
             )
         except OSError:
             # OSError subsumes TimeoutError, BrokenPipeError,
@@ -943,6 +978,8 @@ class ClusterClient:
                         leader,
                         database=database,
                         timeout=self._timeout,
+                        dial_timeout=self._dial_timeout,
+                        attempt_timeout=self._attempt_timeout,
                         max_total_rows=max_total_rows,
                         max_continuation_frames=max_continuation_frames,
                         trust_server_heartbeat=trust_server_heartbeat,
@@ -1368,7 +1405,7 @@ class ClusterClient:
         host, port = _parse_address(address)
         reader, writer = await asyncio.wait_for(
             open_connection_with_keepalive(host, port),
-            timeout=self._timeout,
+            timeout=self._dial_timeout,
         )
         try:
             protocol = DqliteProtocol(

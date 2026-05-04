@@ -879,6 +879,8 @@ class DqliteConnection:
         *,
         database: str = "default",
         timeout: float = 10.0,
+        dial_timeout: float | None = None,
+        attempt_timeout: float | None = None,
         max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
         max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
@@ -897,6 +899,16 @@ class DqliteConnection:
                 roughly N × ``timeout`` end-to-end. To enforce a true
                 end-to-end deadline, wrap the call in
                 ``asyncio.timeout(...)`` or ``asyncio.wait_for(...)``.
+            dial_timeout: Per-dial TCP-establish budget. Defaults to
+                ``timeout`` when ``None``. Mirrors go-dqlite's
+                ``Config.DialTimeout``.
+            attempt_timeout: Per-attempt envelope wrapping
+                dial + handshake + ``open_database`` so a slow
+                handshake on a healthy peer does not consume the
+                whole per-RPC budget. Defaults to ``timeout`` when
+                ``None``. Mirrors go-dqlite's
+                ``Config.AttemptTimeout`` and the
+                ``connector.go:357-360`` nested-envelope shape.
             max_total_rows: Cumulative row cap across continuation
                 frames for a single query. Prevents a slow-drip server
                 from keeping the client alive indefinitely within the
@@ -919,6 +931,10 @@ class DqliteConnection:
         """
         _validate_timeout(timeout)
         _validate_timeout(close_timeout, name="close_timeout")
+        if dial_timeout is not None:
+            _validate_timeout(dial_timeout, name="dial_timeout")
+        if attempt_timeout is not None:
+            _validate_timeout(attempt_timeout, name="attempt_timeout")
         # Parse at construction so a misconfigured address (typoed DSN,
         # invalid port, unbracketed IPv6) raises ValueError at the
         # operator's config-load site rather than inside connect(),
@@ -928,6 +944,11 @@ class DqliteConnection:
         self._address = address
         self._database = database
         self._timeout = timeout
+        # Default to ``timeout`` so existing callers see no change.
+        # Mirrors go-dqlite's ``DialTimeout`` / ``AttemptTimeout``
+        # split (``connector.go:357-360``).
+        self._dial_timeout = dial_timeout if dial_timeout is not None else timeout
+        self._attempt_timeout = attempt_timeout if attempt_timeout is not None else timeout
         self._close_timeout = close_timeout
         self._max_total_rows = _validate_positive_int_or_none(max_total_rows, "max_total_rows")
         self._max_continuation_frames = _validate_positive_int_or_none(
@@ -1128,83 +1149,117 @@ class DqliteConnection:
         # ``_in_use`` was claimed synchronously in ``connect()`` above
         # (before any await checkpoint) so concurrent connect/close
         # calls on the same instance are rejected by ``_check_in_use``.
+        #
+        # ``attempt_timeout`` wraps the entire dial + handshake +
+        # open_database envelope; ``dial_timeout`` is nested inside as
+        # the per-dial budget. Mirrors go-dqlite's
+        # ``connector.go:357-360`` shape — AttemptTimeout outside,
+        # DialTimeout inside. Defaults to ``timeout`` so existing
+        # callers see no change.
         try:
-            reader, writer = await asyncio.wait_for(
-                open_connection_with_keepalive(self._host, self._port),
-                timeout=self._timeout,
-            )
+            async with asyncio.timeout(self._attempt_timeout):
+                try:
+                    reader, writer = await asyncio.wait_for(
+                        open_connection_with_keepalive(self._host, self._port),
+                        timeout=self._dial_timeout,
+                    )
+                except TimeoutError as e:
+                    raise DqliteConnectionError(
+                        f"Connection to {self._safe_address} timed out"
+                    ) from e
+                except OSError as e:
+                    raise DqliteConnectionError(
+                        f"Failed to connect to {self._safe_address}: {e}"
+                    ) from e
+
+                try:
+                    self._protocol = DqliteProtocol(
+                        reader,
+                        writer,
+                        timeout=self._timeout,
+                        max_total_rows=self._max_total_rows,
+                        max_continuation_frames=self._max_continuation_frames,
+                        trust_server_heartbeat=self._trust_server_heartbeat,
+                        address=self._address,
+                    )
+                except BaseException:
+                    # Protocol construction is currently limited to
+                    # argument validation, which
+                    # ``DqliteConnection.__init__`` already enforces —
+                    # but if it ever raises (now or through future
+                    # refactors), ``_abort_protocol`` is a no-op until
+                    # ``self._protocol`` is assigned, so reader/writer
+                    # would be leaked. Close the transport defensively.
+                    writer.close()
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(writer.wait_closed(), timeout=self._close_timeout)
+                    raise
+
+                try:
+                    await self._protocol.handshake()
+                    logger.debug(
+                        "connect: handshake ok address=%s client_id=%d",
+                        self._address,
+                        self._protocol._client_id,
+                    )
+                    self._db_id = await self._protocol.open_database(self._database)
+                    logger.debug(
+                        "connect: db opened address=%s db_id=%d database=%r",
+                        self._address,
+                        self._db_id,
+                        self._database,
+                    )
+                    # Clear any stale cause recorded by a prior
+                    # ``_invalidate``. The field is only meaningful
+                    # while ``_protocol is None``; a successful
+                    # reconnect supersedes it. Without this, a later
+                    # silent invalidation (``_invalidate()`` with no
+                    # cause) would produce "Not connected" errors
+                    # whose ``__cause__`` chain points back at an
+                    # unrelated historical failure — misleading
+                    # operators reading logs.
+                    self._invalidation_cause = None
+                except OperationalError as e:
+                    await self._abort_protocol()
+                    if e.code in LEADER_ERROR_CODES:
+                        # Leader-change errors during OPEN are
+                        # transport-level problems — the caller needs
+                        # to reconnect elsewhere, not treat this as a
+                        # SQL error. Thread ``code`` and
+                        # ``raw_message`` through the rewrap so the
+                        # dbapi / SA-dialect classifiers see the same
+                        # code-bearing signal they would on the query
+                        # path: without this the leader-change
+                        # SQLITE_IOERR_NOT_LEADER /
+                        # SQLITE_IOERR_LEADERSHIP_LOST code is dropped
+                        # on the floor and SA's is_disconnect can only
+                        # fall back to the substring branch (which
+                        # works today but would break on a future
+                        # message rewording).
+                        raise DqliteConnectionError(
+                            f"Node {self._safe_address} is no longer leader: {e.message}",
+                            code=e.code,
+                            raw_message=e.raw_message,
+                        ) from e
+                    raise
+                except BaseException:
+                    await self._abort_protocol()
+                    raise
         except TimeoutError as e:
-            raise DqliteConnectionError(f"Connection to {self._safe_address} timed out") from e
-        except OSError as e:
-            raise DqliteConnectionError(f"Failed to connect to {self._safe_address}: {e}") from e
-
-        try:
-            self._protocol = DqliteProtocol(
-                reader,
-                writer,
-                timeout=self._timeout,
-                max_total_rows=self._max_total_rows,
-                max_continuation_frames=self._max_continuation_frames,
-                trust_server_heartbeat=self._trust_server_heartbeat,
-                address=self._address,
-            )
-        except BaseException:
-            # Protocol construction is currently limited to argument
-            # validation, which ``DqliteConnection.__init__`` already
-            # enforces — but if it ever raises (now or through future
-            # refactors), ``_abort_protocol`` is a no-op until
-            # ``self._protocol`` is assigned, so reader/writer would
-            # be leaked. Close the transport defensively.
-            writer.close()
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(writer.wait_closed(), timeout=self._close_timeout)
-            raise
-
-        try:
-            await self._protocol.handshake()
-            logger.debug(
-                "connect: handshake ok address=%s client_id=%d",
-                self._address,
-                self._protocol._client_id,
-            )
-            self._db_id = await self._protocol.open_database(self._database)
-            logger.debug(
-                "connect: db opened address=%s db_id=%d database=%r",
-                self._address,
-                self._db_id,
-                self._database,
-            )
-            # Clear any stale cause recorded by a prior ``_invalidate``.
-            # The field is only meaningful while ``_protocol is None``;
-            # a successful reconnect supersedes it. Without this,
-            # a later silent invalidation (``_invalidate()`` with no
-            # cause) would produce "Not connected" errors whose
-            # ``__cause__`` chain points back at an unrelated historical
-            # failure — misleading operators reading logs.
-            self._invalidation_cause = None
-        except OperationalError as e:
+            # ``asyncio.timeout`` fires once the per-attempt envelope
+            # is exhausted — the dial may have completed but the
+            # handshake stalled, or both the inner dial_timeout and
+            # the outer attempt_timeout fired at the same instant
+            # (defaults make them equal). Surface as a transport
+            # error using the same "timed out" wording the inner
+            # dial-timeout path produces so callers (retry helper,
+            # SA classifier, existing tests pinning the substring)
+            # see a consistent message regardless of which envelope
+            # tripped first.
             await self._abort_protocol()
-            if e.code in LEADER_ERROR_CODES:
-                # Leader-change errors during OPEN are transport-level
-                # problems — the caller needs to reconnect elsewhere, not
-                # treat this as a SQL error. Thread ``code`` and
-                # ``raw_message`` through the rewrap so the dbapi /
-                # SA-dialect classifiers see the same code-bearing
-                # signal they would on the query path: without this
-                # the leader-change SQLITE_IOERR_NOT_LEADER /
-                # SQLITE_IOERR_LEADERSHIP_LOST code is dropped on the
-                # floor and SA's is_disconnect can only fall back to
-                # the substring branch (which works today but would
-                # break on a future message rewording).
-                raise DqliteConnectionError(
-                    f"Node {self._safe_address} is no longer leader: {e.message}",
-                    code=e.code,
-                    raw_message=e.raw_message,
-                ) from e
-            raise
-        except BaseException:
-            await self._abort_protocol()
-            raise
+            raise DqliteConnectionError(
+                f"Connection attempt to {self._safe_address} timed out"
+            ) from e
 
     async def close(self) -> None:
         """Close the connection.

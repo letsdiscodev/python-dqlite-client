@@ -157,6 +157,8 @@ class ConnectionPool:
         min_size: int = 1,
         max_size: int = 10,
         timeout: float = 10.0,
+        dial_timeout: float | None = None,
+        attempt_timeout: float | None = None,
         cluster: ClusterClient | None = None,
         node_store: NodeStore | None = None,
         max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
@@ -257,6 +259,10 @@ class ConnectionPool:
             raise ValueError(f"max_attempts must be at least 1 if provided, got {max_attempts}")
         _validate_timeout(timeout)
         _validate_timeout(close_timeout, name="close_timeout")
+        if dial_timeout is not None:
+            _validate_timeout(dial_timeout, name="dial_timeout")
+        if attempt_timeout is not None:
+            _validate_timeout(attempt_timeout, name="attempt_timeout")
         if cluster is not None and node_store is not None:
             raise ValueError("pass only one of cluster= or node_store=")
         if cluster is None and node_store is None and not addresses:
@@ -267,6 +273,8 @@ class ConnectionPool:
         self._min_size = min_size
         self._max_size = max_size
         self._timeout = timeout
+        self._dial_timeout = dial_timeout
+        self._attempt_timeout = attempt_timeout
         self._max_total_rows = _validate_positive_int_or_none(max_total_rows, "max_total_rows")
         self._max_continuation_frames = _validate_positive_int_or_none(
             max_continuation_frames, "max_continuation_frames"
@@ -276,11 +284,23 @@ class ConnectionPool:
         self._max_attempts = max_attempts
 
         if cluster is not None:
+            # Externally-owned cluster — caller-supplied; pool does
+            # not override its dial/attempt timeouts.
             self._cluster = cluster
         elif node_store is not None:
-            self._cluster = ClusterClient(node_store, timeout=timeout)
+            self._cluster = ClusterClient(
+                node_store,
+                timeout=timeout,
+                dial_timeout=dial_timeout,
+                attempt_timeout=attempt_timeout,
+            )
         else:
-            self._cluster = ClusterClient.from_addresses(self._addresses, timeout=timeout)
+            self._cluster = ClusterClient.from_addresses(
+                self._addresses,
+                timeout=timeout,
+                dial_timeout=dial_timeout,
+                attempt_timeout=attempt_timeout,
+            )
         self._pool: asyncio.Queue[DqliteConnection] = asyncio.Queue(maxsize=max_size)
         self._size = 0
         self._lock = asyncio.Lock()
