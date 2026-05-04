@@ -147,6 +147,16 @@ class OperationalError(DqliteError):
     """
 
     _MAX_DISPLAY_MESSAGE: ClassVar[int] = 1024
+    # Cap on the un-truncated ``raw_message``. The wire layer caps
+    # ``FailureResponse.message`` at ~64 KiB; combined with
+    # ``BaseExceptionGroup`` chains in ``find_leader`` and
+    # ``pool.initialize``, a 100-node sweep against hostile peers
+    # would otherwise produce ~6 MB exception payloads that flow
+    # through cross-process pickling (``ProcessPoolExecutor``,
+    # Celery, structured-error capture). 4 KiB is well above any
+    # realistic SQLite error string (the longest in CPython's test
+    # suite is ~200 chars) while bounding the worst-case fan-out.
+    _MAX_RAW_MESSAGE: ClassVar[int] = 4 * 1024
 
     code: int
     message: str
@@ -169,6 +179,14 @@ class OperationalError(DqliteError):
         # that omit the kwarg still get the previous behaviour
         # (``raw_message`` defaults to ``message``).
         resolved_raw_message = message if raw_message is None else raw_message
+        # Bound ``raw_message`` so cross-process pickled exception
+        # graphs stay small even under hostile-peer fan-out.
+        if len(resolved_raw_message) > self._MAX_RAW_MESSAGE:
+            raw_overflow = len(resolved_raw_message) - self._MAX_RAW_MESSAGE
+            resolved_raw_message = (
+                resolved_raw_message[: self._MAX_RAW_MESSAGE]
+                + f"... [raw_message truncated, {raw_overflow} codepoints]"
+            )
         if len(message) > self._MAX_DISPLAY_MESSAGE:
             # ``len(message)`` and the slice cap count Python codepoints,
             # not UTF-8 bytes. Match the unit in the marker so an

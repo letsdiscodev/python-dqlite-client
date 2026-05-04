@@ -84,14 +84,17 @@ def test_subclass_raw_message_round_trips_through_deepcopy(cls: type) -> None:
     assert restored.raw_message == "server text"
 
 
-def test_operational_error_pickle_still_lossless_after_dqlite_error_reduce() -> None:
-    """Defence pin: the existing OperationalError pickle contract
-    (cycle-22 truncation+raw_message) must not regress when the base
-    DqliteError implements __reduce__."""
+def test_operational_error_pickle_lossless_within_caps() -> None:
+    """Defence pin: OperationalError pickle preserves code and the
+    bounded raw_message (the cap is applied at construction; the
+    bounded value survives the round-trip). Display message is
+    re-truncated."""
     payload = "y" * 5000
     e = OperationalError(19, payload)
     restored = pickle.loads(pickle.dumps(e))
-    assert restored.raw_message == payload
+    # raw_message round-trips with whatever bounded value was set
+    # at construction.
+    assert restored.raw_message == e.raw_message
     assert restored.code == 19
     assert len(restored.message) < 1200
     assert "truncated" in restored.message

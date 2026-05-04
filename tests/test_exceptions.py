@@ -85,11 +85,18 @@ class TestOperationalErrorMessageTruncation:
         assert len(e.message) < 1200, "display message must be truncated to avoid log amplification"
         assert "truncated" in e.message
 
-    def test_raw_message_retained_for_forensics(self) -> None:
+    def test_raw_message_capped_at_4kb_for_payload_safety(self) -> None:
+        """``raw_message`` is bounded to ~4 KiB so cross-process
+        pickled exception graphs stay small even under hostile-peer
+        fan-out. The wire layer caps a single FailureResponse at
+        ~64 KiB; combined with BaseExceptionGroup chains, an
+        unbounded raw_message produced multi-MB pickled payloads."""
         payload = "x" * 63000
         e = OperationalError(5, payload)
-        assert e.raw_message == payload
-        assert len(e.raw_message) == 63000
+        # raw_message is truncated with a marker that exposes the
+        # original size class for triage.
+        assert len(e.raw_message) < 5000, "raw_message must be capped"
+        assert "raw_message truncated" in e.raw_message
 
     def test_short_message_is_not_touched(self) -> None:
         e = OperationalError(5, "ordinary error")
@@ -97,11 +104,17 @@ class TestOperationalErrorMessageTruncation:
         assert e.raw_message == "ordinary error"
         assert "truncated" not in e.message
 
-    def test_pickle_roundtrip_is_lossless(self) -> None:
+    def test_pickle_roundtrip_is_lossless_within_caps(self) -> None:
+        """Pickling preserves raw_message and re-applies display
+        truncation. With raw_message itself capped, large payloads
+        round-trip with their bounded form intact."""
         payload = "y" * 5000
         original = OperationalError(19, payload)
         restored = pickle.loads(pickle.dumps(original))
-        assert restored.raw_message == payload
+        # raw_message survives the pickle round-trip (the cap was
+        # applied at construction; the bounded value is what's
+        # pickled).
+        assert restored.raw_message == original.raw_message
         # After round-trip the display truncation is re-applied.
         assert len(restored.message) < 1200
         assert "truncated" in restored.message

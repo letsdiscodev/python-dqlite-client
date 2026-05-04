@@ -65,14 +65,17 @@ def test_data_error_carries_raw_message() -> None:
     assert e.raw_message == "value too large"
 
 
-def test_operational_error_keeps_existing_raw_message_truncation_invariant() -> None:
-    """OperationalError still truncates ``message`` for display while
-    keeping the unbounded server text on ``raw_message`` — the
-    original cycle-21 contract is not broken by the hoist."""
+def test_operational_error_keeps_existing_message_truncation_invariant() -> None:
+    """OperationalError still truncates ``message`` for display.
+    ``raw_message`` is also bounded (now capped at ~4 KiB) so
+    cross-process pickled exception graphs stay small under
+    hostile-peer fan-out — both caps coexist."""
     long = "X" * 5000
     e = OperationalError(1, long, raw_message=long)
     assert "[truncated," in e.message
-    assert e.raw_message == long  # untruncated
+    # raw_message capped at 4 KiB with its own truncation marker.
+    assert len(e.raw_message) <= 4200
+    assert "raw_message truncated" in e.raw_message
 
 
 def test_operational_error_default_raw_message_is_message() -> None:
