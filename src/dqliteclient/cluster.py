@@ -640,7 +640,18 @@ class ClusterClient:
                 self._set_last_known_leader(None)
                 raise
 
-        nodes = await self._node_store.get_nodes()
+        # Snapshot defensively into a fresh list — the NodeStore Protocol
+        # documents that the returned Sequence "will not be mutated
+        # after return", but a third-party impl that returns its
+        # internal storage and mutates it from a concurrent
+        # ``set_nodes()`` would otherwise produce a torn iteration
+        # deep inside the parallel sweep, surfacing as an obscure
+        # ``IndexError`` from ``enumerate(nodes)`` rather than a
+        # clean diagnostic. ``MemoryNodeStore`` and ``YamlNodeStore``
+        # already return tuples; the cost is O(N) at typical 3-7
+        # node store sizes. The list is mutable so the subsequent
+        # shuffle + stable-sort can operate in place.
+        nodes = list(await self._node_store.get_nodes())
 
         if not nodes:
             raise ClusterError("No nodes configured")
@@ -656,7 +667,6 @@ class ClusterClient:
         # stampeding a single node across parallel callers. Do not
         # "fix" this toward Go's deterministic behavior without adding
         # an explicit stampede-avoidance mechanism elsewhere.
-        nodes = list(nodes)
         _cluster_random.shuffle(nodes)
         nodes.sort(key=lambda n: 0 if n.role == NodeRole.VOTER else 1)
 
