@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import stat
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -421,9 +422,22 @@ class YamlNodeStore(NodeStore):
                     tmp.flush()
                     os.fsync(tmp.fileno())
                     fd_path = tmp.name
-                # Match go-dqlite's 0600 mode before the rename so the
-                # final file's mode is correct atomically.
-                os.chmod(fd_path, 0o600)
+                # ``tempfile.NamedTemporaryFile`` opens via
+                # ``mkstemp`` which creates the file with mode 0600 on
+                # POSIX (matching go-dqlite's ``renameio.WriteFile``
+                # 0600 discipline). No additional chmod is needed —
+                # adding one creates a TOCTOU window where bytes are
+                # already on disk before any chmod tightening could
+                # take effect, if a future tempfile default ever
+                # relaxed to 0644. Debug-mode assertion pins the
+                # invariant so a future regression in tempfile defaults
+                # is caught at test time.
+                if __debug__ and os.name == "posix":
+                    actual_mode = stat.S_IMODE(os.stat(fd_path).st_mode)
+                    assert actual_mode == 0o600, (
+                        f"tempfile created with unexpected mode {oct(actual_mode)}; "
+                        "set_nodes pre-rename mode discipline is broken"
+                    )
                 os.replace(fd_path, self._path)
                 fd_path = None  # ownership transferred
                 # Sync the parent directory so the rename's metadata
