@@ -1565,13 +1565,20 @@ class ClusterClient:
         async with self.open_admin_connection(target) as protocol:
             await protocol.weight(weight)
 
-    async def dump(self, database: str = "default") -> dict[str, bytes]:
+    async def dump(self, database: str) -> dict[str, bytes]:
         """Dump a database to ``{filename: bytes}``.
 
-        Mirrors go-dqlite's ``Client.Dump``. The dump request is
-        sent to the leader; the response materialises every file in
-        the database (typically two: the database itself and its
-        ``-wal`` sidecar).
+        Mirrors go-dqlite's ``Client.Dump`` (``client.go:131``) where
+        the database name is a required positional argument — the
+        Go API does NOT default it. Defaulting was a footgun: an
+        operator running ``await client.dump()`` to back up
+        ``analytics`` would silently dump ``default`` instead. Backups
+        are critical operations and a forced-explicit signature is
+        the right discipline.
+
+        The dump request is sent to the leader; the response
+        materialises every file in the database (typically two: the
+        database itself and its ``-wal`` sidecar).
 
         The wire layer enforces caps on file count + per-file size
         + 8-byte content alignment so a hostile peer cannot exhaust
@@ -1581,7 +1588,9 @@ class ClusterClient:
         for very large databases.
 
         Args:
-            database: dqlite database name (default: ``"default"``).
+            database: dqlite database name. Required — pass
+                ``"default"`` explicitly if that is the database to
+                dump.
 
         Raises:
             TypeError: on invalid arguments.

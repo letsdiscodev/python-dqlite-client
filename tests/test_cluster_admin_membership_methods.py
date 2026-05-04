@@ -394,22 +394,16 @@ async def test_dump_returns_files_dict() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dump_default_database_name() -> None:
+async def test_dump_requires_explicit_database_name() -> None:
+    """Mirrors go-dqlite's ``Client.Dump(ctx, dbname)`` — the database
+    name is a required positional argument. Defaulting was a footgun
+    (an operator forgetting to pass the name silently dumped
+    ``"default"`` instead of the intended database). Pin that the
+    no-arg form raises ``TypeError`` from Python's argument-binding
+    layer."""
     cluster = _make_cluster()
-
-    fake_proto = MagicMock()
-    fake_proto.handshake = AsyncMock()
-    fake_proto.dump = AsyncMock(return_value={})
-    fake_open, _ = _patch_admin_connection(fake_proto)
-
-    with (
-        patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
-        patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
-    ):
-        await cluster.dump()
-
-    fake_proto.dump.assert_awaited_once_with("default")
+    with pytest.raises(TypeError):
+        await cluster.dump()  # type: ignore[call-arg]
 
 
 @pytest.mark.asyncio
