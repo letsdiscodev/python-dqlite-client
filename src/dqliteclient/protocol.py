@@ -670,7 +670,7 @@ class DqliteProtocol:
                 f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
             )
 
-    async def interrupt(self, db_id: int) -> None:
+    async def _interrupt(self, db_id: int) -> None:
         """Ask the server to stop producing further rows for this db_id.
 
         Drains the stream by consuming messages until an

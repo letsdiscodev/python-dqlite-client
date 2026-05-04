@@ -39,7 +39,7 @@ class TestInterrupt:
         EmptyResponse arrives.
         """
         protocol._reader.read = AsyncMock(side_effect=[EmptyResponse().encode(), b""])
-        await protocol.interrupt(db_id=1)
+        await protocol._interrupt(db_id=1)
         # Write was issued.
         protocol._writer.write.assert_called()  # type: ignore[attr-defined]
 
@@ -61,7 +61,7 @@ class TestInterrupt:
         result = ResultResponse(last_insert_id=42, rows_affected=1).encode()
         protocol._reader.read = AsyncMock(side_effect=[result, b""])
         # Must NOT raise — ResultResponse is the EXEC-side terminal.
-        await protocol.interrupt(db_id=1)
+        await protocol._interrupt(db_id=1)
 
     async def test_interrupt_swallows_in_flight_rows(self, protocol: DqliteProtocol) -> None:
         """A RowsResponse landing after INTERRUPT (in-flight from before
@@ -77,7 +77,7 @@ class TestInterrupt:
         ).encode()
         empty = EmptyResponse().encode()
         protocol._reader.read = AsyncMock(side_effect=[rows + empty, b""])
-        await protocol.interrupt(db_id=1)
+        await protocol._interrupt(db_id=1)
 
     async def test_interrupt_raises_operational_error_on_failure(
         self, protocol: DqliteProtocol
@@ -85,7 +85,7 @@ class TestInterrupt:
         failure = FailureResponse(code=5, message="interrupted").encode()
         protocol._reader.read = AsyncMock(side_effect=[failure, b""])
         with pytest.raises(OperationalError) as exc_info:
-            await protocol.interrupt(db_id=1)
+            await protocol._interrupt(db_id=1)
         assert exc_info.value.code == 5
 
     async def test_interrupt_drain_respects_max_continuation_frames(self) -> None:
@@ -121,7 +121,7 @@ class TestInterrupt:
         empty = EmptyResponse().encode()
         proto._reader.read = AsyncMock(side_effect=[rows_frame * 4 + empty, b""])
         with pytest.raises(ProtocolError, match="max_continuation_frames"):
-            await proto.interrupt(db_id=1)
+            await proto._interrupt(db_id=1)
 
     async def test_interrupt_drain_no_cap_when_governor_unset(self) -> None:
         """max_continuation_frames=None restores the existing behaviour
@@ -150,7 +150,7 @@ class TestInterrupt:
         empty = EmptyResponse().encode()
         proto._reader.read = AsyncMock(side_effect=[rows_frame * 10 + empty, b""])
         # No raise: deadline-only behaviour preserved.
-        await proto.interrupt(db_id=1)
+        await proto._interrupt(db_id=1)
 
     async def test_interrupt_raises_protocol_error_on_unexpected_message(
         self, protocol: DqliteProtocol
@@ -163,4 +163,4 @@ class TestInterrupt:
         unexpected = DbResponse(db_id=42).encode()
         protocol._reader.read = AsyncMock(side_effect=[unexpected, b""])
         with pytest.raises(ProtocolError, match="Expected EmptyResponse"):
-            await protocol.interrupt(db_id=1)
+            await protocol._interrupt(db_id=1)
