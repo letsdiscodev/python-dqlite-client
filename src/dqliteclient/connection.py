@@ -1754,6 +1754,21 @@ class DqliteConnection:
                 "qmark paramstyle requires an ordered sequence; got a set — "
                 "iteration order is non-deterministic across runs."
             )
+        # Reject single-shot iterators (generators, zip, map, filter,
+        # range_iterator, ...). The wire encoder calls ``len(params)``
+        # internally; passing a generator would raise
+        # ``TypeError: object of type 'generator' has no len()`` deep
+        # inside ``ExecSqlRequest.__post_init__`` instead of a
+        # friendly ``DataError`` at the call site. Sequences (list,
+        # tuple, plus user classes implementing ``__len__`` and
+        # ``__getitem__``) pass through.
+        if not isinstance(params, (list, tuple)) and not (
+            hasattr(params, "__len__") and hasattr(params, "__getitem__")
+        ):
+            raise DataError(
+                f"params must be a list or tuple, got {type(params).__name__!r}; "
+                f"single-shot iterators are not supported (materialise via list(...))"
+            )
 
     async def _run_protocol[T](self, fn: Callable[[DqliteProtocol, int], Awaitable[T]]) -> T:
         """Run a protocol operation with standard error handling.
