@@ -867,6 +867,82 @@ def parse_address(address: str) -> tuple[str, int]:
 _parse_address = parse_address
 
 
+async def _send_interrupt_on_fresh_socket(
+    address: str,
+    db_id: int,
+    *,
+    dial_timeout: float,
+    interrupt_timeout: float,
+) -> None:
+    """Best-effort: open a fresh socket to ``address``, handshake,
+    send INTERRUPT for ``db_id``, drain the response, close.
+
+    Used by ``_run_protocol``'s CancelledError arm to release the
+    server-side resources held by an in-flight long-running query
+    that the local caller cancelled. Mirrors go-dqlite's
+    ``Rows.Close`` → ``Protocol.Interrupt`` discipline
+    (``protocol.go:79-116``); the dqlite C client does the same in
+    ``clientSendInterrupt`` (``client/protocol.c:840-847``).
+
+    Cannot use the cancelled connection's existing socket — the wire
+    is mid-frame and the lock is held. A fresh socket pays one extra
+    dial + handshake round-trip but lets the local caller propagate
+    the cancel immediately while server-side cleanup runs in the
+    background.
+
+    All transport-class errors are swallowed (best-effort): if the
+    fresh dial fails, the server keeps doing work until its own
+    completion path. The cancel still propagates to the caller; this
+    helper only reduces the cluster-side resource amplification
+    under cancellation.
+    """
+    try:
+        async with asyncio.timeout(interrupt_timeout):
+            host, port = parse_address(address)
+            try:
+                reader, writer = await asyncio.wait_for(
+                    open_connection_with_keepalive(host, port),
+                    timeout=dial_timeout,
+                )
+            except (OSError, TimeoutError):
+                return
+            try:
+                proto = DqliteProtocol(
+                    reader,
+                    writer,
+                    timeout=interrupt_timeout,
+                    address=address,
+                )
+                await proto.handshake()
+                await proto._interrupt(db_id)
+            finally:
+                writer.close()
+                with contextlib.suppress(OSError, TimeoutError):
+                    await asyncio.wait_for(writer.wait_closed(), timeout=0.1)
+    except (
+        OSError,
+        TimeoutError,
+        DqliteConnectionError,
+        ProtocolError,
+        OperationalError,
+    ):
+        # Best-effort.
+        return
+
+
+def _observe_interrupt_task(t: asyncio.Task[None]) -> None:
+    """Done-callback for the fire-and-forget interrupt task.
+
+    Reads ``t.exception()`` so asyncio's task-finalisation logger
+    does not emit "Task exception was never retrieved" if the
+    helper raised an unexpected class. Mirrors the
+    ``_observe_drain_exception`` pattern in cluster.py.
+    """
+    if not t.cancelled():
+        with contextlib.suppress(BaseException):
+            t.exception()
+
+
 class DqliteConnection:
     """High-level async connection to a dqlite database.
 
@@ -890,6 +966,7 @@ class DqliteConnection:
         max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
         close_timeout: float = 0.5,
+        interrupt_timeout: float = 1.0,
     ) -> None:
         """Initialize connection (does not connect yet).
 
@@ -955,6 +1032,13 @@ class DqliteConnection:
         self._dial_timeout = dial_timeout if dial_timeout is not None else timeout
         self._attempt_timeout = attempt_timeout if attempt_timeout is not None else timeout
         self._close_timeout = close_timeout
+        # Wall-clock budget for the best-effort INTERRUPT sent on a
+        # fresh socket when ``_run_protocol`` catches CancelledError.
+        # Bounded so the fire-and-forget background task doesn't
+        # outlive the cancelled caller's scope by an unbounded amount;
+        # the server-side resource release is best-effort regardless.
+        _validate_timeout(interrupt_timeout, name="interrupt_timeout")
+        self._interrupt_timeout = interrupt_timeout
         self._max_total_rows = _validate_positive_int_or_none(max_total_rows, "max_total_rows")
         self._max_continuation_frames = _validate_positive_int_or_none(
             max_continuation_frames, "max_continuation_frames"
@@ -1837,7 +1921,40 @@ class DqliteConnection:
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as e:
             # Interrupted mid-operation; we don't know how much of the
             # request/response round-trip completed, so the wire state is
-            # unsafe to reuse. Invalidate and re-raise.
+            # unsafe to reuse.
+            #
+            # Schedule a best-effort INTERRUPT on a FRESH socket so the
+            # server releases the resources held by the in-flight query
+            # (Raft / WAL / memory). Mirrors go-dqlite's
+            # ``Rows.Close`` → ``Protocol.Interrupt`` discipline
+            # (``protocol.go:79-116``). Can't use the cancelled
+            # connection's socket — the wire is mid-frame and the lock
+            # is held; ``_invalidate`` is about to close it.
+            #
+            # Capture address + db_id BEFORE invalidate (it clears
+            # _db_id). Fire-and-forget: don't await — the cancel must
+            # propagate to the caller. Bounded by ``_interrupt_timeout``
+            # (default 1s) so the background task doesn't outlive the
+            # cancelled scope by an unbounded amount.
+            address = self._address
+            cancelled_db_id = self._db_id
+            if isinstance(e, asyncio.CancelledError) and cancelled_db_id is not None and address:
+                try:
+                    interrupt_task = asyncio.get_running_loop().create_task(
+                        _send_interrupt_on_fresh_socket(
+                            address,
+                            cancelled_db_id,
+                            dial_timeout=self._dial_timeout,
+                            interrupt_timeout=self._interrupt_timeout,
+                        ),
+                        name=f"dqlite-interrupt-{address}",
+                    )
+                    interrupt_task.add_done_callback(_observe_interrupt_task)
+                except RuntimeError:
+                    # Loop is closing / closed — the server-side
+                    # cleanup is best-effort and we're tearing down
+                    # anyway.
+                    pass
             self._invalidate(e)
             raise
         finally:
