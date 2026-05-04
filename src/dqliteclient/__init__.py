@@ -21,7 +21,7 @@ from dqliteclient.exceptions import (
     OperationalError,
     ProtocolError,
 )
-from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore
+from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore, YamlNodeStore
 from dqliteclient.pool import ConnectionPool
 from dqliteclient.protocol import validate_positive_int_or_none
 from dqlitewire import (
@@ -49,6 +49,7 @@ __all__ = [
     "OperationalError",
     "ProtocolError",
     "RedirectPolicy",
+    "YamlNodeStore",
     "__version__",
     "allowlist_policy",
     "connect",

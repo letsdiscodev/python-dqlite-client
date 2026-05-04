@@ -1,12 +1,20 @@
 """Node store interfaces for cluster discovery."""
 
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import os
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from dqliteclient.exceptions import ClusterError
 from dqlitewire import NodeRole
 
-__all__ = ["MemoryNodeStore", "NodeInfo", "NodeStore"]
+__all__ = ["MemoryNodeStore", "NodeInfo", "NodeStore", "YamlNodeStore"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,3 +205,229 @@ class MemoryNodeStore(NodeStore):
                 # by-address matches the canonical form.
                 unique.append(NodeInfo(node_id=node.node_id, address=addr, role=node.role))
         self._nodes = tuple(unique)
+
+
+# Role-string aliases accepted on read for ergonomics with hand-edited
+# files. ``write()`` always emits the canonical integer Role enum
+# value, matching go-dqlite's ``yaml.v2`` output of ``NodeRole int``.
+# Normalisation strips dashes and underscores so ``stand-by``,
+# ``stand_by``, and ``standby`` all map to the same role.
+_YAML_ROLE_STRING_ALIASES: dict[str, NodeRole] = {
+    "voter": NodeRole.VOTER,
+    "standby": NodeRole.STANDBY,
+    "spare": NodeRole.SPARE,
+}
+
+
+class YamlNodeStore(NodeStore):
+    """File-backed node store using YAML, byte-compatible with go-dqlite.
+
+    On-disk format matches go-dqlite's ``NewYamlNodeStore`` (verified
+    against ``client/store.go`` + ``internal/protocol/store.go`` at
+    commit ``d046c95``). The ``NodeInfo`` struct in Go has yaml tags
+    ``ID``, ``Address``, ``Role`` (PascalCase, NOT lowercase) and
+    ``Role`` is a ``NodeRole int`` with no custom MarshalYAML, so
+    ``yaml.v2`` serialises it as the integer enum value:
+
+    .. code-block:: yaml
+
+        - ID: 1
+          Address: node1:9001
+          Role: 0
+        - ID: 2
+          Address: node2:9002
+          Role: 1
+
+    where Role is 0=Voter, 1=StandBy, 2=Spare.
+
+    A mixed-language deployment (Go service + Python service sharing
+    one bootstrap file) requires this exact shape. Lowercased keys
+    or string roles will NOT round-trip against a Go reader.
+
+    On read we accept lowercase aliases (``id``, ``address``, ``role``)
+    and string role values for ergonomics with hand-edited files,
+    but ``write()`` always emits the canonical PascalCase + integer
+    form.
+
+    Writes go through atomic write-then-rename via
+    :func:`tempfile.NamedTemporaryFile` + :func:`os.replace`, with
+    file mode 0600 to match go-dqlite's ``renameio.WriteFile(...,
+    0600)``. Same-directory rename is atomic on POSIX.
+
+    Format pinning: this implementation tracks go-dqlite ``d046c95``.
+    Any future upstream format change must be reflected here AND in
+    the interop test fixture.
+
+    PyYAML is an optional dependency: install
+    ``python-dqlite-client[yaml-store]`` to use this class. The base
+    install does not pull PyYAML.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        # Defer-import so PyYAML stays an optional extra. Operators
+        # who don't use YamlNodeStore never need the dependency.
+        try:
+            import yaml as _yaml
+        except ImportError as e:
+            raise ImportError(
+                "YamlNodeStore requires PyYAML; install with "
+                "'pip install python-dqlite-client[yaml-store]'"
+            ) from e
+        self._yaml = _yaml
+        self._path = Path(path)
+        self._lock = asyncio.Lock()
+        # Eager-load and validate so a malformed file raises at
+        # construction (operator-facing) rather than at first
+        # ``get_nodes`` (deep inside ``find_leader``).
+        self._nodes: tuple[NodeInfo, ...] = self._load_from_disk()
+
+    @property
+    def path(self) -> Path:
+        """Path of the backing YAML file (read-only accessor)."""
+        return self._path
+
+    def _load_from_disk(self) -> tuple[NodeInfo, ...]:
+        # Three distinct paths:
+        #   1. Missing file -> empty tuple (matches go-dqlite which
+        #      tolerates a missing file at NewYamlNodeStore time).
+        #   2. Empty / whitespace-only file -> empty tuple.
+        #   3. Corrupt YAML -> ClusterError with file path.
+        if not self._path.exists():
+            return ()
+        try:
+            text = self._path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise ClusterError(f"YamlNodeStore: cannot read {self._path}: {e}") from e
+        if not text.strip():
+            return ()
+        try:
+            raw = self._yaml.safe_load(text)
+        except self._yaml.YAMLError as e:
+            raise ClusterError(f"YamlNodeStore: malformed YAML in {self._path}: {e}") from e
+        if raw is None:
+            return ()
+        if not isinstance(raw, list):
+            raise ClusterError(
+                f"YamlNodeStore: {self._path} top-level must be a "
+                f"YAML list, got {type(raw).__name__}"
+            )
+        # Local import to avoid cluster <-> node_store circular import
+        # (cluster imports NodeStore).
+        from dqliteclient.connection import _parse_address as _parse_addr_validator
+
+        result: list[NodeInfo] = []
+        for idx, entry in enumerate(raw):
+            if not isinstance(entry, dict):
+                raise ClusterError(
+                    f"YamlNodeStore: {self._path}[{idx}] must be a "
+                    f"mapping, got {type(entry).__name__}"
+                )
+            # Accept PascalCase (canonical / go-dqlite) and lowercase
+            # (hand-edited) keys.
+            node_id_raw = entry.get("ID", entry.get("id"))
+            address_raw = entry.get("Address", entry.get("address"))
+            role_raw = entry.get("Role", entry.get("role"))
+            if node_id_raw is None:
+                raise ClusterError(f"YamlNodeStore: {self._path}[{idx}] missing 'ID'")
+            if address_raw is None:
+                raise ClusterError(f"YamlNodeStore: {self._path}[{idx}] missing 'Address'")
+            # Reject bool BEFORE int(): bool is an int subclass in
+            # Python and ``int(True) == 1`` would silently coerce a
+            # ``True``-typed YAML value into node_id 1.
+            if isinstance(node_id_raw, bool) or not isinstance(node_id_raw, int):
+                try:
+                    node_id = int(node_id_raw)
+                except (TypeError, ValueError) as e:
+                    raise ClusterError(
+                        f"YamlNodeStore: {self._path}[{idx}] 'ID' must be "
+                        f"integer, got {node_id_raw!r}"
+                    ) from e
+            else:
+                node_id = node_id_raw
+            address = str(address_raw)
+            # Role: integer canonical (go-dqlite) OR string alias
+            # ("voter"/"stand-by"/"spare") for hand-edited files.
+            # Missing -> default Voter (matches the seed-list path
+            # in MemoryNodeStore.__init__ which assumes VOTER).
+            if role_raw is None:
+                role = NodeRole.VOTER
+            elif isinstance(role_raw, bool):
+                # bool slips through ``isinstance(_, int)`` — reject
+                # before the integer arm to avoid silent coercion.
+                raise ClusterError(
+                    f"YamlNodeStore: {self._path}[{idx}] 'Role' must be int or str, got bool"
+                )
+            elif isinstance(role_raw, int):
+                try:
+                    role = NodeRole(role_raw)
+                except ValueError as e:
+                    raise ClusterError(
+                        f"YamlNodeStore: {self._path}[{idx}] 'Role' "
+                        f"integer {role_raw} is not a valid NodeRole"
+                    ) from e
+            elif isinstance(role_raw, str):
+                # go-dqlite's ``String()`` emits "voter"/"stand-by"/"spare".
+                normalised = role_raw.strip().lower().replace("-", "").replace("_", "")
+                if normalised not in _YAML_ROLE_STRING_ALIASES:
+                    raise ClusterError(
+                        f"YamlNodeStore: {self._path}[{idx}] 'Role' "
+                        f"string {role_raw!r} not one of voter/stand-by/spare"
+                    )
+                role = _YAML_ROLE_STRING_ALIASES[normalised]
+            else:
+                raise ClusterError(
+                    f"YamlNodeStore: {self._path}[{idx}] 'Role' must be "
+                    f"int or str, got {type(role_raw).__name__}"
+                )
+            try:
+                _parse_addr_validator(address)
+            except ValueError as e:
+                raise ClusterError(
+                    f"YamlNodeStore: {self._path}[{idx}] address {address!r} invalid: {e}"
+                ) from e
+            result.append(NodeInfo(node_id=node_id, address=address, role=role))
+        return tuple(result)
+
+    async def get_nodes(self) -> Sequence[NodeInfo]:
+        return self._nodes
+
+    async def set_nodes(self, nodes: Sequence[NodeInfo]) -> None:
+        # Serialise concurrent writes — file rename is atomic but two
+        # writers racing the load -> serialise -> write sequence
+        # would lose one update. asyncio.Lock keeps the in-process
+        # last-writer-wins ordering deterministic.
+        async with self._lock:
+            payload = [
+                {
+                    "ID": int(n.node_id),
+                    "Address": str(n.address),
+                    "Role": int(n.role),  # integer enum value (go-dqlite shape)
+                }
+                for n in nodes
+            ]
+            text = self._yaml.safe_dump(payload, default_flow_style=False, sort_keys=False)
+            parent = self._path.parent if str(self._path.parent) else Path(".")
+            fd_path: str | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=parent,
+                    prefix=f".{self._path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as tmp:
+                    tmp.write(text)
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                    fd_path = tmp.name
+                # Match go-dqlite's 0600 mode before the rename so the
+                # final file's mode is correct atomically.
+                os.chmod(fd_path, 0o600)
+                os.replace(fd_path, self._path)
+                fd_path = None  # ownership transferred
+                self._nodes = tuple(nodes)
+            finally:
+                if fd_path is not None:
+                    with contextlib.suppress(OSError):
+                        os.unlink(fd_path)

@@ -34,7 +34,8 @@ Repository = "https://github.com/letsdiscodev/python-dqlite-client"
 Issues = "https://github.com/letsdiscodev/python-dqlite-client/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-cov>=4.0", "pytest-asyncio>=0.23", "mypy>=1.0", "ruff>=0.4"]
+dev = ["pytest>=8.0", "pytest-cov>=4.0", "pytest-asyncio>=0.23", "mypy>=1.0", "ruff>=0.4", "pyyaml>=6.0", "types-PyYAML>=6.0"]
+yaml-store = ["pyyaml>=6.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dqliteclient"]
