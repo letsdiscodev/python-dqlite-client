@@ -1354,6 +1354,11 @@ class ClusterClient:
         leader_addr = await self.find_leader()
         async with self.open_admin_connection(leader_addr) as protocol:
             await protocol.transfer(target_node_id)
+        # The connected leader has stepped down. Invalidate the
+        # last-known-leader cache so the next ``find_leader`` runs the
+        # full sweep instead of hitting the now-stale fast path that
+        # would probe the ex-leader, fall through, and waste one RTT.
+        self._set_last_known_leader(None)
 
     async def leader_info(self) -> LeaderInfo | None:
         """Return the current leader's ``(node_id, address)``, or
@@ -1488,6 +1493,12 @@ class ClusterClient:
         leader_addr = await self.find_leader()
         async with self.open_admin_connection(leader_addr) as protocol:
             await protocol.remove(node_id)
+        # The removed node may have been the cached leader; the server
+        # normally rejects removing the connected leader, but defense
+        # against future protocol changes that allow it. Unconditional
+        # invalidation is the conservative choice — at most we cost
+        # one fast-path probe miss on the next find_leader.
+        self._set_last_known_leader(None)
 
     async def describe(self, *, address: str | None = None) -> NodeMetadata:
         """Read a node's failure-domain + weight metadata.
