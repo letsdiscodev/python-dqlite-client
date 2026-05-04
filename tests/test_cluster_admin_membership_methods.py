@@ -419,14 +419,14 @@ async def test_dump_rejects_invalid_database_name() -> None:
         await cluster.dump(database=None)  # type: ignore[arg-type]
 
 
-# --- _admin_connection cleanup discipline (sanity for new methods) ---
+# --- open_admin_connection cleanup discipline (sanity for new methods) ---
 
 
 @pytest.mark.asyncio
 async def test_describe_closes_writer_on_exit() -> None:
     """The asynccontextmanager closes the writer on the happy path
-    for new methods too — sanity that ``_admin_connection`` discipline
-    applies to the new admin surface."""
+    for new methods too — sanity that ``open_admin_connection``
+    discipline applies to the new admin surface."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()

@@ -1167,7 +1167,7 @@ class ClusterClient:
             ProtocolError: on a wire-level shape mismatch.
         """
         leader_addr = await self.find_leader()
-        async with self._admin_connection(leader_addr) as protocol:
+        async with self.open_admin_connection(leader_addr) as protocol:
             return await protocol.cluster()
 
     async def transfer_leadership(self, target_node_id: int) -> None:
@@ -1215,7 +1215,7 @@ class ClusterClient:
             raise ValueError(f"target_node_id must be >= 1, got {target_node_id}")
 
         leader_addr = await self.find_leader()
-        async with self._admin_connection(leader_addr) as protocol:
+        async with self.open_admin_connection(leader_addr) as protocol:
             await protocol.transfer(target_node_id)
 
     async def leader_info(self) -> LeaderInfo | None:
@@ -1247,7 +1247,7 @@ class ClusterClient:
         # it discards and surface it here? Yes, but that is a wider
         # refactor of the single-flight slot map; deferred.
         leader_addr = await self.find_leader()
-        async with self._admin_connection(leader_addr) as protocol:
+        async with self.open_admin_connection(leader_addr) as protocol:
             node_id, address = await protocol.get_leader()
             if node_id == 0 or not address:
                 # Mid-election: the leader we just connected to no
@@ -1299,7 +1299,7 @@ class ClusterClient:
             raise TypeError(f"role must be a NodeRole, got {type(role).__name__}")
 
         leader_addr = await self.find_leader()
-        async with self._admin_connection(leader_addr) as protocol:
+        async with self.open_admin_connection(leader_addr) as protocol:
             await protocol.add(node_id, address)
             if role != NodeRole.SPARE:
                 # Mirror go-dqlite's `Client.Add` second phase: ADD
@@ -1328,7 +1328,7 @@ class ClusterClient:
             raise TypeError(f"role must be a NodeRole, got {type(role).__name__}")
 
         leader_addr = await self.find_leader()
-        async with self._admin_connection(leader_addr) as protocol:
+        async with self.open_admin_connection(leader_addr) as protocol:
             await protocol.assign(node_id, role)
 
     async def remove_node(self, node_id: int) -> None:
@@ -1349,7 +1349,7 @@ class ClusterClient:
         _validate_node_id(node_id)
 
         leader_addr = await self.find_leader()
-        async with self._admin_connection(leader_addr) as protocol:
+        async with self.open_admin_connection(leader_addr) as protocol:
             await protocol.remove(node_id)
 
     async def describe(self, *, address: str | None = None) -> NodeMetadata:
@@ -1373,7 +1373,7 @@ class ClusterClient:
             ProtocolError: on a wire-level shape mismatch.
         """
         target = address if address is not None else await self.find_leader()
-        async with self._admin_connection(target) as protocol:
+        async with self.open_admin_connection(target) as protocol:
             response = await protocol.describe()
             return NodeMetadata(
                 failure_domain=response.failure_domain,
@@ -1404,7 +1404,7 @@ class ClusterClient:
             raise ValueError(f"weight must be >= 0, got {weight}")
 
         target = address if address is not None else await self.find_leader()
-        async with self._admin_connection(target) as protocol:
+        async with self.open_admin_connection(target) as protocol:
             await protocol.weight(weight)
 
     async def dump(self, database: str = "default") -> dict[str, bytes]:
@@ -1436,22 +1436,38 @@ class ClusterClient:
             raise TypeError(f"database must be a non-empty str, got {type(database).__name__}")
 
         leader_addr = await self.find_leader()
-        async with self._admin_connection(leader_addr) as protocol:
+        async with self.open_admin_connection(leader_addr) as protocol:
             return await protocol.dump(database)
 
     @contextlib.asynccontextmanager
-    async def _admin_connection(self, address: str) -> AsyncIterator[DqliteProtocol]:
+    async def open_admin_connection(self, address: str) -> AsyncIterator[DqliteProtocol]:
         """Open a one-shot admin connection to ``address``, yield a
         handshaken :class:`DqliteProtocol`, and tear the socket down on
         exit.
 
-        Used by :meth:`cluster_info` and :meth:`transfer_leadership` —
-        admin requests that need a fresh connection (no pool, no
-        reuse) so admin traffic does not mix with the SQL-path
-        connection lifecycle. Mirrors :meth:`_query_leader`'s
-        transport discipline (bounded shutdown drain wrapped in
-        ``asyncio.shield``) so a cancelled outer task does not leak
-        a half-closed socket.
+        Public direct-to-node primitive. Mirrors go-dqlite's
+        ``NewDirectConnector(id, address, options...).Connect(ctx)``
+        (``client.go:358-367``): a freshly handshaken connection to a
+        named node, bypassing leader discovery. Used by every admin
+        method on this class (``cluster_info``, ``transfer_leadership``,
+        ``leader_info``, ``add_node``, ``assign_role``, ``remove_node``,
+        ``describe``, ``set_weight``, ``dump``) and available to
+        external callers building bespoke admin tooling against a
+        specific node.
+
+        Each call opens a fresh socket — no pool, no reuse — so admin
+        traffic does not mix with SQL-path connection lifecycle.
+        Mirrors :meth:`_query_leader`'s transport discipline (bounded
+        shutdown drain wrapped in ``asyncio.shield``) so a cancelled
+        outer task does not leak a half-closed socket. ``dial_timeout``
+        bounds the TCP-establish phase; ``timeout`` is the per-RPC
+        budget on the yielded protocol.
+
+        Args:
+            address: ``host:port`` string of the target node.
+
+        Yields:
+            A handshaken :class:`DqliteProtocol` ready for admin RPCs.
         """
         host, port = _parse_address(address)
         reader, writer = await asyncio.wait_for(

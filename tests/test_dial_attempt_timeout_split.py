@@ -260,7 +260,7 @@ async def test_top_level_connect_forwards_split_to_dqlite_connection() -> None:
 
 @pytest.mark.asyncio
 async def test_admin_connection_uses_dial_timeout() -> None:
-    """``_admin_connection`` must use ``dial_timeout`` for the
+    """``open_admin_connection`` must use ``dial_timeout`` for the
     TCP-establish call."""
     store = MemoryNodeStore(["localhost:9001"])
     cluster = ClusterClient(store, timeout=10.0, dial_timeout=0.3, attempt_timeout=2.0)
@@ -275,7 +275,7 @@ async def test_admin_connection_uses_dial_timeout() -> None:
     ):
         start = asyncio.get_running_loop().time()
         with pytest.raises(TimeoutError):
-            async with cluster._admin_connection("localhost:9001") as _proto:
+            async with cluster.open_admin_connection("localhost:9001") as _proto:
                 pass
         elapsed = asyncio.get_running_loop().time() - start
 

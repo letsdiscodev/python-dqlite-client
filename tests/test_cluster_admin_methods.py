@@ -2,7 +2,7 @@
 
 Mirrors the spec-level admin operations ``go-dqlite/client.Cluster``
 and ``go-dqlite/client.Transfer``. Both methods route through
-:meth:`ClusterClient._admin_connection`, which opens a one-shot
+:meth:`ClusterClient.open_admin_connection`, which opens a one-shot
 connection to the current leader, runs a single round-trip, and
 tears the socket down with a bounded shutdown drain.
 
@@ -38,8 +38,8 @@ def _make_cluster() -> ClusterClient:
 def _patch_admin_connection(
     fake_proto: MagicMock,
 ) -> tuple[_FakeOpenConnection, MagicMock]:
-    """Patch the network primitives so ``_admin_connection`` yields
-    ``fake_proto`` without touching a real socket."""
+    """Patch the network primitives so ``open_admin_connection``
+    yields ``fake_proto`` without touching a real socket."""
     reader = MagicMock()
     writer = MagicMock()
     writer.close = MagicMock()
@@ -203,7 +203,7 @@ async def test_transfer_leadership_propagates_server_rejection() -> None:
         await cluster.transfer_leadership(target_node_id=99)
 
 
-# --- _admin_connection cleanup discipline ---
+# --- open_admin_connection cleanup discipline ---
 
 
 @pytest.mark.asyncio
