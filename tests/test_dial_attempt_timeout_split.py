@@ -274,7 +274,9 @@ async def test_admin_connection_uses_dial_timeout() -> None:
         side_effect=slow_open,
     ):
         start = asyncio.get_running_loop().time()
-        with pytest.raises(TimeoutError):
+        # Dial timeout is wrapped as DqliteConnectionError("timed out")
+        # to match the documented exception class for admin paths.
+        with pytest.raises(DqliteConnectionError, match="timed out"):
             async with cluster.open_admin_connection("localhost:9001") as _proto:
                 pass
         elapsed = asyncio.get_running_loop().time() - start

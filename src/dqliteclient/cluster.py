@@ -1607,10 +1607,19 @@ class ClusterClient:
             A handshaken :class:`DqliteProtocol` ready for admin RPCs.
         """
         host, port = _parse_address(address)
-        reader, writer = await asyncio.wait_for(
-            open_connection_with_keepalive(host, port),
-            timeout=self._dial_timeout,
-        )
+        try:
+            reader, writer = await asyncio.wait_for(
+                open_connection_with_keepalive(host, port),
+                timeout=self._dial_timeout,
+            )
+        except TimeoutError as e:
+            raise DqliteConnectionError(
+                f"Connection to {_sanitize_display_text(address)} timed out"
+            ) from e
+        except OSError as e:
+            raise DqliteConnectionError(
+                f"Failed to connect to {_sanitize_display_text(address)}: {e}"
+            ) from e
         try:
             protocol = DqliteProtocol(
                 reader,
