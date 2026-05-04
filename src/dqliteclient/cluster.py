@@ -21,6 +21,7 @@ from dqliteclient.exceptions import (
     ProtocolError,
 )
 from dqliteclient.node_store import MemoryNodeStore, NodeStore
+from dqliteclient.node_store import NodeInfo as _StoreNodeInfo
 from dqliteclient.protocol import DqliteProtocol
 from dqliteclient.retry import retry_with_backoff
 from dqlitewire import (
@@ -47,6 +48,14 @@ RedirectPolicy = Callable[[str], bool]
 # connect". Operators can override via ClusterClient.connect(
 # max_attempts=...).
 _DEFAULT_CONNECT_MAX_ATTEMPTS: Final[int] = 3
+
+# Default cap on simultaneous in-flight leader probes during a single
+# ``find_leader`` sweep. Mirrors go-dqlite's
+# ``Config.ConcurrentLeaderConns`` (default 10, see
+# ``internal/protocol/config.go``). Bounds outbound TCP dials per sweep
+# so a 500-node cluster does not open 500 sockets at once. Operators
+# can override via ``ClusterClient(concurrent_leader_conns=...)``.
+_DEFAULT_CONCURRENT_LEADER_CONNS: Final[int] = 10
 
 # Cap per-node error messages at this length before concatenating them
 # into the final ClusterError. A failing peer that returns a multi-MB
@@ -169,6 +178,26 @@ class NodeMetadata:
     weight: int
 
 
+@dataclass(frozen=True, slots=True)
+class _LeaderHit:
+    # A parallel ``find_leader`` probe successfully resolved a leader
+    # address. ``address`` has already been redirect-policy-checked
+    # if it differs from the responding node's own address.
+    address: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ProbeMiss:
+    # A parallel ``find_leader`` probe finished without yielding a
+    # leader address. ``message`` is the per-node snippet that joins
+    # the aggregate ``ClusterError`` text. ``exc`` carries the
+    # underlying exception for ``BaseExceptionGroup`` chaining, or
+    # ``None`` for the legitimate ``no-leader-known`` reply (which is
+    # not an exceptional outcome on the wire).
+    message: str
+    exc: BaseException | None
+
+
 class ClusterClient:
     """Client that discovers the current dqlite leader.
 
@@ -196,6 +225,7 @@ class ClusterClient:
         node_store: NodeStore,
         *,
         timeout: float = 10.0,
+        concurrent_leader_conns: int = _DEFAULT_CONCURRENT_LEADER_CONNS,
         redirect_policy: RedirectPolicy | None = None,
     ) -> None:
         """Initialize cluster client.
@@ -203,6 +233,13 @@ class ClusterClient:
         Args:
             node_store: Store for cluster node information
             timeout: Connection timeout in seconds
+            concurrent_leader_conns: Maximum number of in-flight leader
+                probes during a single ``find_leader`` sweep. Mirrors
+                go-dqlite's ``Config.ConcurrentLeaderConns`` (default
+                10). Bounds simultaneous outbound TCP dials per sweep
+                so a 500-node cluster does not open 500 sockets at
+                once. Must be ``>= 1``; ``True``/``False`` are
+                rejected to avoid silent coercion to ``1`` / ``0``.
             redirect_policy: Optional callable ``(address) -> bool`` that
                 authorizes each leader redirect target. If None (default),
                 redirects are accepted — this preserves backward
@@ -212,8 +249,17 @@ class ClusterClient:
                 constrain where redirects can go.
         """
         _validate_timeout(timeout)
+        if isinstance(concurrent_leader_conns, bool) or not isinstance(
+            concurrent_leader_conns, int
+        ):
+            raise TypeError(
+                f"concurrent_leader_conns must be int, got {type(concurrent_leader_conns).__name__}"
+            )
+        if concurrent_leader_conns < 1:
+            raise ValueError(f"concurrent_leader_conns must be >= 1, got {concurrent_leader_conns}")
         self._node_store = node_store
         self._timeout = timeout
+        self._concurrent_leader_conns = concurrent_leader_conns
         self._redirect_policy = redirect_policy
         # Single-flight slot map for ``find_leader``. Concurrent callers
         # share the in-flight discovery task instead of each launching
@@ -246,11 +292,26 @@ class ClusterClient:
         addresses: list[str],
         timeout: float = 10.0,
         *,
+        concurrent_leader_conns: int = _DEFAULT_CONCURRENT_LEADER_CONNS,
         redirect_policy: RedirectPolicy | None = None,
     ) -> "ClusterClient":
-        """Create cluster client from list of addresses."""
+        """Create cluster client from list of addresses.
+
+        ``concurrent_leader_conns`` (default 10) bounds the number of
+        in-flight leader probes during a single ``find_leader`` sweep
+        and is forwarded to the underlying ``ClusterClient``. Mirrors
+        go-dqlite's ``Config.ConcurrentLeaderConns`` semantic. Note
+        that ``create_pool`` does not currently surface this knob —
+        operators wanting a non-default value can construct a
+        ``ClusterClient`` directly and pass it via ``cluster=``.
+        """
         store = MemoryNodeStore(addresses)
-        return cls(store, timeout=timeout, redirect_policy=redirect_policy)
+        return cls(
+            store,
+            timeout=timeout,
+            concurrent_leader_conns=concurrent_leader_conns,
+            redirect_policy=redirect_policy,
+        )
 
     def __reduce__(self) -> NoReturn:
         # Holds a per-client single-flight slot map keyed by loop-bound
@@ -366,16 +427,26 @@ class ClusterClient:
         for the public contract — this method is the single-flight
         backing implementation.
 
+        Probes nodes in parallel bounded by
+        ``self._concurrent_leader_conns`` (default 10, matching
+        go-dqlite's ``Config.ConcurrentLeaderConns``). The first probe
+        that resolves to a leader address wins; siblings are
+        cancelled and their sockets drained via ``_query_leader``'s
+        ``finally:`` 100 ms bounded drain. Mirrors
+        ``connector.go::connectAttemptAll``.
+
         Error-accumulator note: per-node failures (DqliteConnectionError,
         ProtocolError, OperationalError, OSError, TimeoutError) are
-        captured into the ``errors`` list so the final ClusterError
-        message names every probed node. ``ClusterPolicyError`` raised
-        by ``_check_redirect`` is NOT in that catch tuple and propagates
-        directly out of the loop, dropping any accumulated probe
-        history. That's intentional: policy rejections are deterministic
+        converted to ``_ProbeMiss`` outcomes and captured into the
+        ``errors`` / ``per_node_excs`` accumulators so the final
+        ``ClusterError`` message names every probed node.
+        ``ClusterPolicyError`` raised by ``_check_redirect`` is NOT
+        caught inside the per-probe coroutine: it surfaces via
+        ``task.exception()`` in the gather loop and propagates after
+        cancelling siblings, dropping any accumulated probe history.
+        That's intentional: policy rejections are deterministic
         configuration errors, so the same policy would apply to every
-        later node and the probe history is not actionable. Operators
-        triaging a policy short-circuit see only the policy decision.
+        other node and the probe history is not actionable.
         """
         nodes = await self._node_store.get_nodes()
 
@@ -397,6 +468,13 @@ class ClusterClient:
         _cluster_random.shuffle(nodes)
         nodes.sort(key=lambda n: 0 if n.role == NodeRole.VOTER else 1)
 
+        total_nodes = len(nodes)
+        # Cap simultaneous in-flight probes at
+        # ``concurrent_leader_conns`` so a 500-node cluster doesn't
+        # open 500 sockets at once. Mirrors go-dqlite's
+        # ``Config.ConcurrentLeaderConns`` semantic.
+        semaphore = asyncio.Semaphore(self._concurrent_leader_conns)
+
         errors: list[str] = []
         # Collect every per-node BaseException so the final
         # ``ClusterError`` can chain them all via
@@ -407,45 +485,73 @@ class ClusterClient:
         # deterministic decision based on iteration ordering. Mirrors
         # the discipline already applied to ``ConnectionPool.initialize``.
         per_node_excs: list[BaseException] = []
-        total_nodes = len(nodes)
 
-        for idx, node in enumerate(nodes):
-            try:
-                leader_address = await asyncio.wait_for(
-                    self._query_leader(
-                        node.address,
-                        trust_server_heartbeat=trust_server_heartbeat,
-                    ),
-                    timeout=self._timeout,
-                )
+        async def _probe_one(idx: int, node: _StoreNodeInfo) -> _LeaderHit | _ProbeMiss:
+            # Per-node probe coroutine. Returns ``_LeaderHit`` on a
+            # successful leader resolution, ``_ProbeMiss`` on transport/
+            # protocol failures or no-leader-known replies. Lets
+            # ``ClusterPolicyError`` propagate so the gather loop can
+            # cancel siblings and re-raise.
+            async with semaphore:
+                try:
+                    leader_address = await asyncio.wait_for(
+                        self._query_leader(
+                            node.address,
+                            trust_server_heartbeat=trust_server_heartbeat,
+                        ),
+                        timeout=self._timeout,
+                    )
+                except TimeoutError as e:
+                    _safe_addr = _sanitize_display_text(node.address)
+                    logger.debug(
+                        "find_leader: %s timed out after %.3fs (%d/%d)",
+                        _safe_addr,
+                        self._timeout,
+                        idx + 1,
+                        total_nodes,
+                    )
+                    return _ProbeMiss(message=f"{_safe_addr}: timed out", exc=e)
+                except (
+                    DqliteConnectionError,
+                    ProtocolError,
+                    OperationalError,
+                    OSError,
+                ) as e:
+                    # Narrow the catch so programming bugs (TypeError,
+                    # KeyError, etc.) propagate directly instead of
+                    # being stringified into a retryable ClusterError.
+                    _safe_addr = _sanitize_display_text(node.address)
+                    logger.debug(
+                        "find_leader: %s failed with %s: %s (%d/%d)",
+                        _safe_addr,
+                        type(e).__name__,
+                        _truncate_error(str(e)),
+                        idx + 1,
+                        total_nodes,
+                    )
+                    return _ProbeMiss(
+                        message=(
+                            f"{_sanitize_display_text(node.address)}: {_truncate_error(str(e))}"
+                        ),
+                        exc=e,
+                    )
+
                 if leader_address:
                     # Only leader_address values that did NOT come from
                     # node.address itself need authorizing — those are
-                    # real redirects. If the server returned its own
-                    # address, it's the leader and already in the store.
-                    # Compare via the canonical (host, port) tuple so an
-                    # IPv6 bracketing difference (server reports
-                    # ``[::1]:9001`` while the node store has
-                    # ``::1:9001``) does not look like a redirect.
+                    # real redirects. Compare via the canonical
+                    # (host, port) tuple so an IPv6 bracketing
+                    # difference does not look like a redirect.
                     if not _addr_equiv(leader_address, node.address):
+                        # Re-raises ClusterPolicyError on rejection;
+                        # the gather loop catches it and propagates.
                         self._check_redirect(leader_address)
-                    return leader_address
+                    return _LeaderHit(address=leader_address)
+
                 # ``_query_leader`` returns ``None`` for the legitimate
-                # ``(node_id=0, address="")`` "no leader known yet" reply.
-                # Without this branch the ``errors`` list silently stays
-                # empty and the final raise produces an uninformative
-                # ``"Could not find leader. Errors: "`` message — the
-                # operator cannot tell "all nodes returned no-leader"
-                # from "all nodes failed unreachable".
-                # Sanitise the address before interpolating into both
-                # the aggregate error AND the debug log line so a
-                # hostile leader cannot inject CRLF / control-chars /
-                # line separators into either user-facing surface.
-                # ``node.address`` flows through
-                # ``LeaderResponse.address`` which is deliberately NOT
-                # sanitised at wire decode (allowlist semantics) —
-                # sanitisation must happen at every display surface,
-                # debug logs included.
+                # ``(node_id=0, address="")`` "no leader known yet"
+                # reply. Without this branch the ``errors`` list
+                # silently stays empty.
                 _safe_addr = _sanitize_display_text(node.address)
                 logger.debug(
                     "find_leader: %s reports no leader known (%d/%d)",
@@ -453,36 +559,69 @@ class ClusterClient:
                     idx + 1,
                     total_nodes,
                 )
-                errors.append(f"{_safe_addr}: no leader known")
-                continue
-            except TimeoutError as e:
-                _safe_addr = _sanitize_display_text(node.address)
-                logger.debug(
-                    "find_leader: %s timed out after %.3fs (%d/%d)",
-                    _safe_addr,
-                    self._timeout,
-                    idx + 1,
-                    total_nodes,
-                )
-                errors.append(f"{_safe_addr}: timed out")
-                per_node_excs.append(e)
-                continue
-            except (DqliteConnectionError, ProtocolError, OperationalError, OSError) as e:
-                # Narrow the catch so programming bugs (TypeError, KeyError,
-                # etc.) propagate directly instead of being stringified into
-                # a retryable ClusterError.
-                _safe_addr = _sanitize_display_text(node.address)
-                logger.debug(
-                    "find_leader: %s failed with %s: %s (%d/%d)",
-                    _safe_addr,
-                    type(e).__name__,
-                    _truncate_error(str(e)),
-                    idx + 1,
-                    total_nodes,
-                )
-                errors.append(f"{_sanitize_display_text(node.address)}: {_truncate_error(str(e))}")
-                per_node_excs.append(e)
-                continue
+                return _ProbeMiss(message=f"{_safe_addr}: no leader known", exc=None)
+
+        pending: set[asyncio.Task[_LeaderHit | _ProbeMiss]] = {
+            asyncio.create_task(_probe_one(idx, n)) for idx, n in enumerate(nodes)
+        }
+
+        winning_address: str | None = None
+        policy_error: ClusterPolicyError | None = None
+        unexpected_exc: BaseException | None = None
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    # ``task.exception()`` returns the exception
+                    # without raising. Non-None means the per-probe
+                    # coroutine let it propagate — only
+                    # ``ClusterPolicyError`` does this intentionally
+                    # (deterministic config error → propagate fast).
+                    # Any other class is a programming bug; we
+                    # re-raise after cancelling siblings.
+                    exc = task.exception()
+                    if exc is not None:
+                        if isinstance(exc, ClusterPolicyError):
+                            if policy_error is None:
+                                policy_error = exc
+                            continue
+                        unexpected_exc = exc
+                        break
+
+                    outcome = task.result()
+                    if isinstance(outcome, _LeaderHit):
+                        winning_address = outcome.address
+                        break
+                    # ``_ProbeMiss`` → accumulate.
+                    errors.append(outcome.message)
+                    if outcome.exc is not None:
+                        per_node_excs.append(outcome.exc)
+
+                if (
+                    winning_address is not None
+                    or policy_error is not None
+                    or unexpected_exc is not None
+                ):
+                    break
+        finally:
+            # Cancel siblings on first success, on policy-error, on
+            # programming-bug raise, and on outer cancel of this
+            # coroutine. ``_query_leader``'s shielded ``finally:``
+            # drains each cancelled socket within 100 ms, so
+            # cancellation does not leak FDs even under leader-flip
+            # stampede. Await siblings so their drain completes
+            # within the same ``_find_leader_impl`` scope.
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        if unexpected_exc is not None:
+            raise unexpected_exc
+        if winning_address is not None:
+            return winning_address
+        if policy_error is not None:
+            raise policy_error
 
         joined = "; ".join(errors)
         if len(joined) > _MAX_AGGREGATE_ERROR_PAYLOAD:
