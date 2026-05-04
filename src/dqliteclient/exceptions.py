@@ -203,13 +203,16 @@ class OperationalError(DqliteError):
             )
         else:
             self.message = message
-        # Pass ``code`` and the display ``message`` through as separate
-        # args so ``self.args == (code, message)``; pickle / deepcopy
-        # reconstruct via ``OperationalError(*args)``. Pass
-        # ``raw_message=`` through to the base so the ``DqliteError``
-        # ``raw_message`` slot is set there (keeps a single source of
-        # truth across the hierarchy).
-        super().__init__(code, message, raw_message=resolved_raw_message)
+        # Pass ``code`` and the TRUNCATED display ``self.message``
+        # through as args so ``self.args == (code, truncated_message)``;
+        # pickle / deepcopy reconstruct via
+        # ``OperationalError(code, truncated_message,
+        # raw_message=truncated_raw_message)``. Without truncating
+        # ``args`` here, the pickled payload would still carry the
+        # original un-truncated ``message`` argument even after the
+        # raw_message cap — defeating the bound for cross-process
+        # exception graphs. ``raw_message=`` is the bounded value.
+        super().__init__(code, self.message, raw_message=resolved_raw_message)
 
     def __str__(self) -> str:
         return f"[{self.code}] {self.message}"
