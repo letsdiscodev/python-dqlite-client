@@ -299,6 +299,47 @@ async def test_set_nodes_atomic_rename_failure_preserves_original(
 
 
 @pytest.mark.asyncio
+async def test_set_nodes_fsyncs_parent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After ``os.replace``, the parent directory must be fsync'd so
+    the rename is durable across a hard reboot. Mirrors go-dqlite's
+    ``renameio.WriteFile`` discipline (which fsyncs both the temp
+    file and the parent directory). Without the parent-dir fsync,
+    POSIX guarantees the new content is on disk but the directory
+    entry change can revert after a power loss / kernel panic.
+    """
+    import os as _os
+    import stat as _stat
+
+    path = tmp_path / "durable.yaml"
+    store = YamlNodeStore(path)
+
+    fsync_targets: list[int] = []
+    real_fsync = _os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        fsync_targets.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr("dqliteclient.node_store.os.fsync", recording_fsync)
+
+    await store.set_nodes([NodeInfo(node_id=1, address="node1:9001", role=NodeRole.VOTER)])
+
+    # We expect two fsync calls: one for the temp file and one for
+    # the parent directory (after rename). Each fsync is on a
+    # distinct fd; we can't introspect fds post-close, but we can
+    # assert at least two were issued.
+    assert len(fsync_targets) >= 2, (
+        f"expected at least 2 fsync calls (temp file + parent dir), got {len(fsync_targets)}"
+    )
+
+    # Sanity: the parent dir must still be a directory after the
+    # operation (fsync on a dir fd shouldn't have closed it weirdly).
+    assert _stat.S_ISDIR(_os.stat(tmp_path).st_mode)
+
+
+@pytest.mark.asyncio
 async def test_concurrent_set_nodes_last_writer_wins(tmp_path: Path) -> None:
     """Two concurrent ``set_nodes`` calls must serialise via the
     asyncio.Lock; the final state is one of the two payloads, not

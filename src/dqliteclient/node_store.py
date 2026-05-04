@@ -426,6 +426,23 @@ class YamlNodeStore(NodeStore):
                 os.chmod(fd_path, 0o600)
                 os.replace(fd_path, self._path)
                 fd_path = None  # ownership transferred
+                # Sync the parent directory so the rename's metadata
+                # block is durable across a hard reboot. POSIX rename
+                # is atomic for visibility but the directory entry
+                # change can revert after a power loss / kernel
+                # panic / VM hard-stop without the directory fsync.
+                # Mirrors go-dqlite's ``renameio.WriteFile`` which
+                # does this. Best-effort: non-POSIX (Windows) and
+                # some FUSE filesystems don't support fsync on
+                # directories — suppress OSError so the rename is
+                # still visible even if the durability barrier
+                # isn't available.
+                with contextlib.suppress(OSError):
+                    dir_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
                 self._nodes = tuple(nodes)
             finally:
                 if fd_path is not None:
