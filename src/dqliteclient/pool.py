@@ -11,6 +11,7 @@ from types import TracebackType
 from typing import Any, Final, NoReturn, Self
 
 from dqliteclient import connection as _conn_mod
+from dqliteclient._dial import DialFunc
 from dqliteclient.cluster import ClusterClient
 from dqliteclient.connection import (
     _TRANSACTION_ROLLBACK_SQL,
@@ -168,6 +169,7 @@ class ConnectionPool:
         close_timeout: float = 0.5,
         max_attempts: int | None = None,
         max_elapsed_seconds: float | None = None,
+        dial_func: DialFunc | None = None,
     ) -> None:
         """Initialize connection pool.
 
@@ -244,6 +246,16 @@ class ConnectionPool:
                 positive finite number for go-dqlite-style total-time
                 bounding — composes with ``max_attempts``; whichever
                 bound trips first ends the loop.
+            dial_func: Optional caller-supplied dialer
+                (:data:`dqliteclient.DialFunc`) replacing the default
+                TCP path on every dial site. Forwarded to the
+                auto-built :class:`ClusterClient` (and through to
+                every pooled :class:`DqliteConnection`). Mutually
+                exclusive with ``cluster=``: an externally-owned
+                cluster already carries its own ``dial_func``, so
+                supplying both raises ``ValueError`` to avoid silent
+                divergence between the two paths. Mirrors go-dqlite's
+                ``WithDialFunc``.
         """
         # Reject ``bool`` first: ``True == 1`` and ``False == 0``
         # would silently coerce to valid sizes and mask caller bugs
@@ -294,6 +306,15 @@ class ConnectionPool:
             raise ValueError("pass only one of cluster= or node_store=")
         if cluster is None and node_store is None and not addresses:
             raise ValueError("pass one of addresses, cluster, or node_store")
+        # ``cluster=`` already carries its own ``dial_func``; supplying
+        # both here would silently desync the pool's intended dialer
+        # from the cluster's actual dialer (every pool dial goes
+        # through ``self._cluster``). Reject explicitly.
+        if cluster is not None and dial_func is not None:
+            raise ValueError(
+                "dial_func cannot be combined with cluster=; "
+                "configure dial_func on the externally-owned ClusterClient"
+            )
 
         self._addresses = addresses or []
         self._database = database
@@ -324,6 +345,7 @@ class ConnectionPool:
                 max_total_rows=max_total_rows,
                 max_continuation_frames=max_continuation_frames,
                 trust_server_heartbeat=trust_server_heartbeat,
+                dial_func=dial_func,
             )
         else:
             self._cluster = ClusterClient.from_addresses(
@@ -334,6 +356,7 @@ class ConnectionPool:
                 max_total_rows=max_total_rows,
                 max_continuation_frames=max_continuation_frames,
                 trust_server_heartbeat=trust_server_heartbeat,
+                dial_func=dial_func,
             )
         self._pool: asyncio.Queue[DqliteConnection] = asyncio.Queue(maxsize=max_size)
         self._size = 0

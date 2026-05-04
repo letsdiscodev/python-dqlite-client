@@ -31,7 +31,7 @@ def _patch_admin(cluster: ClusterClient, fake_proto: MagicMock):
 
     return [
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ]
 

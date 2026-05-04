@@ -9,6 +9,7 @@ Python (no-GIL) is not supported — the guard lives in
 raises ``ImportError`` at import time.
 """
 
+from dqliteclient._dial import DialFunc
 from dqliteclient.cluster import ClusterClient, RedirectPolicy, allowlist_policy
 from dqliteclient.connection import DqliteConnection, parse_address
 from dqliteclient.exceptions import (
@@ -39,6 +40,7 @@ __all__ = [
     "ClusterPolicyError",
     "ConnectionPool",
     "DataError",
+    "DialFunc",
     "DqliteConnection",
     "DqliteConnectionError",
     "DqliteError",
@@ -70,6 +72,7 @@ async def connect(
     max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
     trust_server_heartbeat: bool = False,
     close_timeout: float = 0.5,
+    dial_func: DialFunc | None = None,
 ) -> DqliteConnection:
     """Connect to a dqlite node.
 
@@ -115,6 +118,7 @@ async def connect(
         max_continuation_frames=max_continuation_frames,
         trust_server_heartbeat=trust_server_heartbeat,
         close_timeout=close_timeout,
+        dial_func=dial_func,
     )
     await conn.connect()
     return conn
@@ -137,6 +141,7 @@ async def create_pool(
     close_timeout: float = 0.5,
     max_attempts: int | None = None,
     max_elapsed_seconds: float | None = None,
+    dial_func: DialFunc | None = None,
 ) -> ConnectionPool:
     """Create a connection pool with automatic leader detection.
 
@@ -204,6 +209,7 @@ async def create_pool(
         close_timeout=close_timeout,
         max_attempts=max_attempts,
         max_elapsed_seconds=max_elapsed_seconds,
+        dial_func=dial_func,
     )
     await pool.initialize()
     return pool

@@ -53,7 +53,7 @@ async def test_open_admin_connection_forwards_trust_server_heartbeat() -> None:
         return fake_proto
 
     with (
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", side_effect=capture_protocol),
     ):
         async with cluster.open_admin_connection("localhost:9001"):
@@ -85,7 +85,7 @@ async def test_query_leader_forwards_governors() -> None:
         return fake_proto
 
     with (
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", side_effect=capture_protocol),
     ):
         await cluster._query_leader("localhost:9001", trust_server_heartbeat=True)

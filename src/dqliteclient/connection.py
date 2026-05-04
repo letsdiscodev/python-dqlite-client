@@ -14,7 +14,10 @@ from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any, Final, NoReturn, Self
 
-from dqliteclient._dial import open_connection_with_keepalive
+from dqliteclient._dial import (
+    DialFunc,
+    open_connection,
+)
 from dqliteclient.exceptions import (
     DataError,
     DqliteConnectionError,
@@ -873,6 +876,7 @@ async def _send_interrupt_on_fresh_socket(
     *,
     dial_timeout: float,
     interrupt_timeout: float,
+    dial_func: DialFunc | None = None,
 ) -> None:
     """Best-effort: open a fresh socket to ``address``, handshake,
     send INTERRUPT for ``db_id``, drain the response, close.
@@ -898,10 +902,9 @@ async def _send_interrupt_on_fresh_socket(
     """
     try:
         async with asyncio.timeout(interrupt_timeout):
-            host, port = parse_address(address)
             try:
                 reader, writer = await asyncio.wait_for(
-                    open_connection_with_keepalive(host, port),
+                    open_connection(address, dial_func=dial_func),
                     timeout=dial_timeout,
                 )
             except (OSError, TimeoutError):
@@ -967,6 +970,7 @@ class DqliteConnection:
         trust_server_heartbeat: bool = False,
         close_timeout: float = 0.5,
         interrupt_timeout: float = 1.0,
+        dial_func: DialFunc | None = None,
     ) -> None:
         """Initialize connection (does not connect yet).
 
@@ -1010,6 +1014,13 @@ class DqliteConnection:
                 is best-effort cleanup. An unresponsive peer must not
                 stall ``engine.dispose()`` or SIGTERM shutdown, so
                 the drain is bounded by this value.
+            dial_func: Optional caller-supplied dialer
+                (:data:`dqliteclient.DialFunc`) replacing the default
+                TCP path. When supplied the default helper's
+                SO_KEEPALIVE / TCP_KEEPIDLE / happy-eyeballs are
+                bypassed — the caller's dialer owns all socket
+                options. ``None`` (the default) preserves existing
+                behaviour. Mirrors go-dqlite's ``WithDialFunc``.
         """
         _validate_timeout(timeout)
         _validate_timeout(close_timeout, name="close_timeout")
@@ -1039,6 +1050,7 @@ class DqliteConnection:
         # the server-side resource release is best-effort regardless.
         _validate_timeout(interrupt_timeout, name="interrupt_timeout")
         self._interrupt_timeout = interrupt_timeout
+        self._dial_func: DialFunc | None = dial_func
         self._max_total_rows = _validate_positive_int_or_none(max_total_rows, "max_total_rows")
         self._max_continuation_frames = _validate_positive_int_or_none(
             max_continuation_frames, "max_continuation_frames"
@@ -1249,7 +1261,7 @@ class DqliteConnection:
             async with asyncio.timeout(self._attempt_timeout):
                 try:
                     reader, writer = await asyncio.wait_for(
-                        open_connection_with_keepalive(self._host, self._port),
+                        open_connection(self._address, dial_func=self._dial_func),
                         timeout=self._dial_timeout,
                     )
                 except TimeoutError as e:
@@ -1946,6 +1958,7 @@ class DqliteConnection:
                             cancelled_db_id,
                             dial_timeout=self._dial_timeout,
                             interrupt_timeout=self._interrupt_timeout,
+                            dial_func=self._dial_func,
                         ),
                         name=f"dqlite-interrupt-{address}",
                     )

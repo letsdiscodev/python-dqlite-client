@@ -67,7 +67,7 @@ async def test_leader_info_returns_leader_info_dataclass() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node7:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         result = await cluster.leader_info()
@@ -88,7 +88,7 @@ async def test_leader_info_returns_none_for_no_leader_known() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         result = await cluster.leader_info()
@@ -123,7 +123,7 @@ async def test_add_node_default_role_spare_no_assign_followup() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         await cluster.add_node(node_id=42, address="node42:9001")
@@ -146,7 +146,7 @@ async def test_add_node_voter_role_runs_assign_followup() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         await cluster.add_node(node_id=42, address="node42:9001", role=NodeRole.VOTER)
@@ -193,7 +193,7 @@ async def test_add_node_propagates_server_rejection() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
         pytest.raises(OperationalError, match="already in cluster"),
     ):
@@ -214,7 +214,7 @@ async def test_assign_role_dispatches_with_args() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         await cluster.assign_role(node_id=2, role=NodeRole.STANDBY)
@@ -247,7 +247,7 @@ async def test_remove_node_dispatches_with_node_id() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         await cluster.remove_node(node_id=3)
@@ -281,7 +281,7 @@ async def test_describe_returns_node_metadata_dataclass() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         result = await cluster.describe()
@@ -308,7 +308,7 @@ async def test_describe_explicit_address_skips_leader_lookup() -> None:
 
     with (
         patch.object(cluster, "find_leader", find_leader_mock),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         await cluster.describe(address="node3:9003")
@@ -330,7 +330,7 @@ async def test_set_weight_dispatches_with_value() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         await cluster.set_weight(weight=42)
@@ -351,7 +351,7 @@ async def test_set_weight_explicit_address_skips_leader_lookup() -> None:
 
     with (
         patch.object(cluster, "find_leader", find_leader_mock),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         await cluster.set_weight(weight=10, address="node2:9002")
@@ -384,7 +384,7 @@ async def test_dump_returns_files_dict() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         result = await cluster.dump(database="main")
@@ -435,7 +435,7 @@ async def test_describe_closes_writer_on_exit() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         await cluster.describe()

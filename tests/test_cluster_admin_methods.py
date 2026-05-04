@@ -75,7 +75,7 @@ async def test_cluster_info_returns_node_list_from_leader() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         result = await cluster.cluster_info()
@@ -112,7 +112,7 @@ async def test_cluster_info_propagates_operational_error_from_leader() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
         pytest.raises(OperationalError),
     ):
@@ -136,7 +136,7 @@ async def test_transfer_leadership_sends_request_with_target_id() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         # ``transfer_leadership`` is typed as -> None; the assertion
@@ -198,7 +198,7 @@ async def test_transfer_leadership_propagates_server_rejection() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
         pytest.raises(OperationalError, match="target is not a voter"),
     ):
@@ -222,7 +222,7 @@ async def test_admin_connection_closes_writer_on_normal_exit() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         await cluster.cluster_info()
@@ -244,7 +244,7 @@ async def test_admin_connection_closes_writer_on_protocol_error() -> None:
 
     with (
         patch.object(cluster, "find_leader", AsyncMock(return_value="node1:9001")),
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
         pytest.raises(OperationalError),
     ):

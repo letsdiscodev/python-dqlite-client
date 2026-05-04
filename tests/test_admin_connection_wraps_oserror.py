@@ -24,7 +24,7 @@ async def test_open_admin_connection_wraps_oserror_as_dqlite_connection_error(
     async def refusing_open(*_args: object, **_kwargs: object):
         raise ConnectionRefusedError("simulated ECONNREFUSED")
 
-    monkeypatch.setattr("dqliteclient.cluster.open_connection_with_keepalive", refusing_open)
+    monkeypatch.setattr("dqliteclient._dial.open_connection_with_keepalive", refusing_open)
 
     with pytest.raises(DqliteConnectionError, match="Failed to connect"):
         async with cluster.open_admin_connection("localhost:9001"):
@@ -41,7 +41,7 @@ async def test_open_admin_connection_wraps_timeout_as_dqlite_connection_error(
         await asyncio.sleep(2.0)
         raise AssertionError("should have timed out")
 
-    monkeypatch.setattr("dqliteclient.cluster.open_connection_with_keepalive", slow_open)
+    monkeypatch.setattr("dqliteclient._dial.open_connection_with_keepalive", slow_open)
 
     with pytest.raises(DqliteConnectionError, match="timed out"):
         async with cluster.open_admin_connection("localhost:9001"):

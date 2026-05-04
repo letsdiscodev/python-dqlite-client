@@ -46,7 +46,7 @@ async def test_open_admin_connection_yields_handshaken_protocol() -> None:
         return reader, writer
 
     with (
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         async with cluster.open_admin_connection("localhost:9001") as proto:
@@ -75,7 +75,7 @@ async def test_open_admin_connection_closes_writer_on_exception() -> None:
         return reader, writer
 
     with (  # noqa: SIM117
-        patch("dqliteclient.cluster.open_connection_with_keepalive", new=fake_open),
+        patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
         with pytest.raises(RuntimeError, match="caller error"):

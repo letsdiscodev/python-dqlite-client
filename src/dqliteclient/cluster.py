@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Final, NoReturn
 
 from dqliteclient import connection as _conn_mod
-from dqliteclient._dial import open_connection_with_keepalive
+from dqliteclient._dial import DialFunc, open_connection
 from dqliteclient.connection import DqliteConnection, _parse_address, _validate_timeout
 from dqliteclient.exceptions import (
     ClusterError,
@@ -244,6 +244,7 @@ class ClusterClient:
         max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
         max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
+        dial_func: DialFunc | None = None,
     ) -> None:
         """Initialize cluster client.
 
@@ -277,6 +278,16 @@ class ClusterClient:
                 clients to arbitrary hosts (SSRF-style). Supply a
                 callable or the :func:`allowlist_policy` helper to
                 constrain where redirects can go.
+            dial_func: Optional caller-supplied dialer
+                (:data:`dqliteclient.DialFunc`) replacing the default
+                TCP path on every dial site (leader probes, admin
+                connections, per-connection :meth:`connect`). When
+                supplied the default helper's SO_KEEPALIVE / TCP
+                keepalive tunables / happy-eyeballs are bypassed —
+                the caller's dialer owns all socket options. ``None``
+                preserves existing behaviour. Mirrors go-dqlite's
+                ``WithDialFunc``. Forwarded to every
+                :class:`DqliteConnection` this cluster builds.
         """
         _validate_timeout(timeout)
         if dial_timeout is not None:
@@ -316,6 +327,7 @@ class ClusterClient:
         self._max_total_rows = max_total_rows
         self._max_continuation_frames = max_continuation_frames
         self._trust_server_heartbeat = trust_server_heartbeat
+        self._dial_func: DialFunc | None = dial_func
         # Last-known-leader cache (mirror of go-dqlite's
         # ``LeaderTracker.lastKnownLeaderAddr``). On every successful
         # sweep we set this; on the next ``find_leader`` we probe it
@@ -366,6 +378,7 @@ class ClusterClient:
         max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
         max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
+        dial_func: DialFunc | None = None,
     ) -> "ClusterClient":
         """Create cluster client from list of addresses.
 
@@ -392,6 +405,7 @@ class ClusterClient:
             max_total_rows=max_total_rows,
             max_continuation_frames=max_continuation_frames,
             trust_server_heartbeat=trust_server_heartbeat,
+            dial_func=dial_func,
         )
 
     def __reduce__(self) -> NoReturn:
@@ -895,11 +909,9 @@ class ClusterClient:
         self, address: str, *, trust_server_heartbeat: bool = False
     ) -> str | None:
         """Query a node for the current leader."""
-        host, port = _parse_address(address)
-
         try:
             reader, writer = await asyncio.wait_for(
-                open_connection_with_keepalive(host, port),
+                open_connection(address, dial_func=self._dial_func),
                 timeout=self._dial_timeout,
             )
         except OSError:
@@ -1180,6 +1192,7 @@ class ClusterClient:
                         max_continuation_frames=max_continuation_frames,
                         trust_server_heartbeat=trust_server_heartbeat,
                         close_timeout=close_timeout,
+                        dial_func=self._dial_func,
                     )
                 except ValueError as e:
                     # ``DqliteConnection.__init__`` validates the
@@ -1636,10 +1649,9 @@ class ClusterClient:
         Yields:
             A handshaken :class:`DqliteProtocol` ready for admin RPCs.
         """
-        host, port = _parse_address(address)
         try:
             reader, writer = await asyncio.wait_for(
-                open_connection_with_keepalive(host, port),
+                open_connection(address, dial_func=self._dial_func),
                 timeout=self._dial_timeout,
             )
         except TimeoutError as e:

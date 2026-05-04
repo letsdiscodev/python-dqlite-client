@@ -31,7 +31,33 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import socket
+from collections.abc import Awaitable, Callable
 from typing import Final
+
+# Caller-supplied dialer for go-dqlite parity with ``WithDialFunc``.
+# A ``dial_func`` receives the FULL address string (opaque to
+# dqliteclient — typically ``"host:port"`` but may be any shape the
+# caller's dialer recognises) and returns the same ``(reader, writer)``
+# pair :func:`asyncio.open_connection` returns.
+#
+# Contract:
+#   * Caller-supplied dialer owns ALL socket options. The default
+#     helper's SO_KEEPALIVE / TCP_KEEPIDLE / happy-eyeballs are
+#     bypassed on the override path — operators wrapping in TLS or
+#     binding to Unix sockets take responsibility for their own
+#     keepalive / timeout discipline.
+#   * Errors must subclass ``OSError`` or ``TimeoutError`` for the
+#     existing per-call-site exception arms to recognise the failure
+#     as a transient transport fault. A ``dial_func`` raising any
+#     other class will surface unwrapped past the dial-arm except
+#     blocks (acceptable: indicates dialer misconfig rather than a
+#     transient peer fault).
+#   * ``CancelledError`` must propagate; the helper is always awaited
+#     inside ``asyncio.timeout(...)``.
+type DialFunc = Callable[
+    [str],
+    Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWriter]],
+]
 
 # Best-effort tunables for the per-socket keepalive interval. These
 # match the defaults Go's ``net.Dialer`` uses when KeepAlive is set to
@@ -115,3 +141,28 @@ async def open_connection_with_keepalive(
     if sock is not None:
         _apply_keepalive_options(sock)
     return reader, writer
+
+
+async def open_connection(
+    address: str,
+    *,
+    dial_func: DialFunc | None,
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Dial ``address`` via a caller-supplied :data:`DialFunc` if
+    provided, otherwise fall through to
+    :func:`open_connection_with_keepalive` after parsing
+    ``host:port`` out of the address.
+
+    Mirrors go-dqlite's ``Connector`` dial dispatch (default
+    ``net.Dialer{}.DialContext`` overridden by ``WithDialFunc``). The
+    custom-dial path bypasses every default socket option this module
+    sets on the TCP path; the caller owns SO_KEEPALIVE / TLS / etc.
+    """
+    if dial_func is not None:
+        return await dial_func(address)
+    # Local import: ``connection`` imports from ``_dial`` so the
+    # reverse import must stay function-scoped.
+    from dqliteclient.connection import parse_address
+
+    host, port = parse_address(address)
+    return await open_connection_with_keepalive(host, port)

@@ -138,7 +138,7 @@ async def test_cluster_query_leader_uses_dial_timeout_for_dial() -> None:
         return MagicMock(), MagicMock()
 
     with patch(
-        "dqliteclient.cluster.open_connection_with_keepalive",
+        "dqliteclient._dial.open_connection_with_keepalive",
         side_effect=slow_open,
     ):
         # ``_query_leader`` returns ``None`` on OSError-family
@@ -167,7 +167,7 @@ async def test_dqlite_connection_dial_timeout_used_for_open() -> None:
         return MagicMock(), MagicMock()
 
     with patch(
-        "dqliteclient.connection.open_connection_with_keepalive",
+        "dqliteclient._dial.open_connection_with_keepalive",
         side_effect=slow_open,
     ):
         start = asyncio.get_running_loop().time()
@@ -204,7 +204,7 @@ async def test_dqlite_connection_attempt_timeout_envelope_wraps_handshake() -> N
 
     with (
         patch(
-            "dqliteclient.connection.open_connection_with_keepalive",
+            "dqliteclient._dial.open_connection_with_keepalive",
             side_effect=fast_open,
         ),
         patch(
@@ -270,7 +270,7 @@ async def test_admin_connection_uses_dial_timeout() -> None:
         return MagicMock(), MagicMock()
 
     with patch(
-        "dqliteclient.cluster.open_connection_with_keepalive",
+        "dqliteclient._dial.open_connection_with_keepalive",
         side_effect=slow_open,
     ):
         start = asyncio.get_running_loop().time()

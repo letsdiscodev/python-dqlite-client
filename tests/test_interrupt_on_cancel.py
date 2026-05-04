@@ -27,7 +27,7 @@ async def test_send_interrupt_on_fresh_socket_best_effort_swallows_dial_failure(
     async def refusing_open(*_args: object, **_kwargs: object):
         raise ConnectionRefusedError("simulated")
 
-    with patch("dqliteclient.connection.open_connection_with_keepalive", refusing_open):
+    with patch("dqliteclient._dial.open_connection_with_keepalive", refusing_open):
         # Should not raise.
         await _send_interrupt_on_fresh_socket(
             "localhost:9001",
@@ -45,7 +45,7 @@ async def test_send_interrupt_on_fresh_socket_swallows_timeout() -> None:
         await asyncio.sleep(2.0)
         raise AssertionError("should have timed out")
 
-    with patch("dqliteclient.connection.open_connection_with_keepalive", slow_open):
+    with patch("dqliteclient._dial.open_connection_with_keepalive", slow_open):
         await _send_interrupt_on_fresh_socket(
             "localhost:9001",
             db_id=1,
