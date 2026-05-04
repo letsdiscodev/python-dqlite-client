@@ -135,6 +135,7 @@ async def create_pool(
     trust_server_heartbeat: bool = False,
     close_timeout: float = 0.5,
     max_attempts: int | None = None,
+    max_elapsed_seconds: float | None = None,
 ) -> ConnectionPool:
     """Create a connection pool with automatic leader detection.
 
@@ -177,6 +178,11 @@ async def create_pool(
             connect (forwarded to ``ClusterClient.connect``). ``None``
             (default) uses the cluster client's default of 3. Must be
             ``>= 1`` if not ``None``.
+        max_elapsed_seconds: Total wall-clock cap on the per-connect
+            retry loop (forwarded to ``ClusterClient.connect``).
+            ``None`` (default) means only ``max_attempts`` governs
+            termination. Set to a positive finite number for
+            go-dqlite-style total-time bounding.
 
     Returns:
         An initialized ConnectionPool
@@ -196,6 +202,7 @@ async def create_pool(
         trust_server_heartbeat=trust_server_heartbeat,
         close_timeout=close_timeout,
         max_attempts=max_attempts,
+        max_elapsed_seconds=max_elapsed_seconds,
     )
     await pool.initialize()
     return pool

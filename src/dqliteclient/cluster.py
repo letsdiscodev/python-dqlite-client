@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import random
 from collections.abc import AsyncIterator, Callable, Iterable
@@ -48,6 +49,17 @@ RedirectPolicy = Callable[[str], bool]
 # connect". Operators can override via ClusterClient.connect(
 # max_attempts=...).
 _DEFAULT_CONNECT_MAX_ATTEMPTS: Final[int] = 3
+
+# Per-iteration backoff cap for ``ClusterClient.connect``'s retry
+# loop. Matches go-dqlite's ``Config.BackoffCap`` default of 1 s
+# (see ``internal/protocol/config.go``). Lower than ``retry.py``'s
+# global ``max_delay=10.0`` because leader discovery has a tighter
+# latency SLO than a generic retry path: under sustained leader
+# churn, a 10 s ceiling means a 6th attempt waits 10 s before
+# trying again, whereas 1 s keeps pacing aligned with go-dqlite's
+# observed behaviour. Other ``retry_with_backoff`` callers keep
+# the 10 s default.
+_DEFAULT_CONNECT_MAX_DELAY: Final[float] = 1.0
 
 # Default cap on simultaneous in-flight leader probes during a single
 # ``find_leader`` sweep. Mirrors go-dqlite's
@@ -922,6 +934,7 @@ class ClusterClient:
         trust_server_heartbeat: bool = False,
         close_timeout: float = 0.5,
         max_attempts: int | None = None,
+        max_elapsed_seconds: float | None = None,
     ) -> DqliteConnection:
         """Connect to the cluster leader.
 
@@ -932,7 +945,24 @@ class ClusterClient:
         governors from one place.
 
         ``max_attempts`` overrides the default
-        :data:`_DEFAULT_CONNECT_MAX_ATTEMPTS`.
+        :data:`_DEFAULT_CONNECT_MAX_ATTEMPTS`. ``None`` selects the
+        package default of 3 — covers one leader change plus one
+        transport hiccup.
+
+        ``max_elapsed_seconds`` is the total wall-clock cap on the
+        retry loop. ``None`` (default) means only ``max_attempts``
+        governs termination. Set to a positive finite number to
+        abort the retry loop once cumulative elapsed time crosses
+        the budget. This is the go-dqlite parity knob — go-dqlite
+        retries until the caller's context expires; here, callers
+        pass the budget explicitly so misconfiguration (no parent
+        timeout, ``max_elapsed_seconds=None``) cannot become a
+        silent infinite hang. Compose with ``max_attempts`` to
+        bound either dimension first.
+
+        Per-iteration backoff is capped at 1 s (matching
+        go-dqlite's ``Config.BackoffCap``); other
+        ``retry_with_backoff`` users keep the 10 s default.
 
         Each attempt's failure is logged at DEBUG level with the
         attempted leader address and the error, so operators can
@@ -962,6 +992,25 @@ class ClusterClient:
             # so operator-facing error parsing matches whichever layer
             # validated first.
             raise ValueError(f"max_attempts must be at least 1 if provided, got {attempts_cap}")
+        # ``max_elapsed_seconds`` validation is duplicated here (in
+        # addition to the validator inside ``retry_with_backoff``) so
+        # a misconfiguration surfaces at the public connect() call
+        # site rather than after attempt 1 burned its time budget.
+        # Wording matches ``retry.py`` exactly so test assertions
+        # pinning either layer's message stay green.
+        if max_elapsed_seconds is not None:
+            if isinstance(max_elapsed_seconds, bool) or not isinstance(
+                max_elapsed_seconds, (int, float)
+            ):
+                raise TypeError(
+                    f"max_elapsed_seconds must be a number or None, "
+                    f"got {type(max_elapsed_seconds).__name__}"
+                )
+            if not math.isfinite(max_elapsed_seconds) or max_elapsed_seconds <= 0:
+                raise ValueError(
+                    f"max_elapsed_seconds must be a positive finite number, "
+                    f"got {max_elapsed_seconds}"
+                )
 
         attempt_counter = [0]
 
@@ -1070,6 +1119,8 @@ class ClusterClient:
             return await retry_with_backoff(
                 try_connect,
                 max_attempts=attempts_cap,
+                max_delay=_DEFAULT_CONNECT_MAX_DELAY,
+                max_elapsed_seconds=max_elapsed_seconds,
                 # OSError subsumes TimeoutError / BrokenPipeError /
                 # ConnectionError / ConnectionResetError, so a single
                 # OSError entry covers every stdlib transport-error shape.

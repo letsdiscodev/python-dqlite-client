@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import math
 import os
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -166,6 +167,7 @@ class ConnectionPool:
         trust_server_heartbeat: bool = False,
         close_timeout: float = 0.5,
         max_attempts: int | None = None,
+        max_elapsed_seconds: float | None = None,
     ) -> None:
         """Initialize connection pool.
 
@@ -235,6 +237,13 @@ class ConnectionPool:
                 eyes open: hiding genuine cluster instability behind
                 a long retry loop just delays the diagnosis. Must be
                 ``>= 1`` if not ``None``.
+            max_elapsed_seconds: Total wall-clock cap on the
+                per-connect retry loop (forwarded to
+                ``ClusterClient.connect``). ``None`` (default) means
+                only ``max_attempts`` governs termination. Set to a
+                positive finite number for go-dqlite-style total-time
+                bounding — composes with ``max_attempts``; whichever
+                bound trips first ends the loop.
         """
         # Reject ``bool`` first: ``True == 1`` and ``False == 0``
         # would silently coerce to valid sizes and mask caller bugs
@@ -257,6 +266,24 @@ class ConnectionPool:
             raise ValueError(f"min_size ({min_size}) must not exceed max_size ({max_size})")
         if max_attempts is not None and max_attempts < 1:
             raise ValueError(f"max_attempts must be at least 1 if provided, got {max_attempts}")
+        # ``max_elapsed_seconds`` validation parallels the
+        # ``ClusterClient.connect`` validator: bool rejected, finite
+        # positive only. Wording mirrors ``retry.py`` exactly so any
+        # caller-side parsing of the message stays consistent across
+        # layers.
+        if max_elapsed_seconds is not None:
+            if isinstance(max_elapsed_seconds, bool) or not isinstance(
+                max_elapsed_seconds, (int, float)
+            ):
+                raise TypeError(
+                    f"max_elapsed_seconds must be a number or None, "
+                    f"got {type(max_elapsed_seconds).__name__}"
+                )
+            if not math.isfinite(max_elapsed_seconds) or max_elapsed_seconds <= 0:
+                raise ValueError(
+                    f"max_elapsed_seconds must be a positive finite number, "
+                    f"got {max_elapsed_seconds}"
+                )
         _validate_timeout(timeout)
         _validate_timeout(close_timeout, name="close_timeout")
         if dial_timeout is not None:
@@ -282,6 +309,7 @@ class ConnectionPool:
         self._trust_server_heartbeat = trust_server_heartbeat
         self._close_timeout = close_timeout
         self._max_attempts = max_attempts
+        self._max_elapsed_seconds = max_elapsed_seconds
 
         if cluster is not None:
             # Externally-owned cluster — caller-supplied; pool does
@@ -585,6 +613,7 @@ class ConnectionPool:
             trust_server_heartbeat=self._trust_server_heartbeat,
             close_timeout=self._close_timeout,
             max_attempts=self._max_attempts,
+            max_elapsed_seconds=self._max_elapsed_seconds,
         )
 
     async def _put_back_or_release_late_winner(self, conn: DqliteConnection) -> None:
