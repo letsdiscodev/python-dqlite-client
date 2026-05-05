@@ -26,7 +26,7 @@ from dqliteclient.exceptions import (
     ProtocolError,
 )
 from dqliteclient.node_store import NodeStore
-from dqliteclient.protocol import _validate_positive_int_or_none
+from dqliteclient.protocol import validate_positive_int_or_none
 from dqlitewire import (
     DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
 )
@@ -323,8 +323,8 @@ class ConnectionPool:
         self._timeout = timeout
         self._dial_timeout = dial_timeout
         self._attempt_timeout = attempt_timeout
-        self._max_total_rows = _validate_positive_int_or_none(max_total_rows, "max_total_rows")
-        self._max_continuation_frames = _validate_positive_int_or_none(
+        self._max_total_rows = validate_positive_int_or_none(max_total_rows, "max_total_rows")
+        self._max_continuation_frames = validate_positive_int_or_none(
             max_continuation_frames, "max_continuation_frames"
         )
         self._trust_server_heartbeat = trust_server_heartbeat

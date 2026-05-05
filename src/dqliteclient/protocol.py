@@ -111,12 +111,6 @@ def validate_positive_int_or_none(value: int | None, name: str) -> int | None:
     return value
 
 
-# Backwards-compatibility alias for any caller that still imports the
-# leading-underscore name. Slated for removal in a future minor — the
-# public name is ``validate_positive_int_or_none``.
-_validate_positive_int_or_none = validate_positive_int_or_none
-
-
 class DqliteProtocol:
     """Low-level protocol handler for a single dqlite connection."""
 
@@ -169,12 +163,12 @@ class DqliteProtocol:
         # the per-operation deadline; without a cumulative cap, clients
         # could legitimately allocate hundreds of millions of rows over
         # the full deadline. None disables the cap.
-        self._max_total_rows = _validate_positive_int_or_none(max_total_rows, "max_total_rows")
+        self._max_total_rows = validate_positive_int_or_none(max_total_rows, "max_total_rows")
         # Per-query frame cap. Complements max_total_rows: a server
         # sending 10M 1-row frames to reach the row cap would still
         # burn 10M × decode-cost of Python work; the frame cap bounds
         # that at ~100k iterations.
-        self._max_continuation_frames = _validate_positive_int_or_none(
+        self._max_continuation_frames = validate_positive_int_or_none(
             max_continuation_frames, "max_continuation_frames"
         )
         # When True, the client honors the server-advertised heartbeat

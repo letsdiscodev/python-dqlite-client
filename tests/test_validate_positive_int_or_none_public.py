@@ -52,10 +52,11 @@ def test_public_validator_rejects_non_int() -> None:
         dqliteclient.validate_positive_int_or_none(1.5, "x")  # type: ignore[arg-type]
 
 
-def test_legacy_underscore_alias_still_works() -> None:
-    """The leading-underscore alias is preserved for one release as a
-    deprecation cushion. Pin so a future deletion of the alias is an
-    explicit, reviewed change."""
-    from dqliteclient.protocol import _validate_positive_int_or_none
+def test_legacy_underscore_alias_removed() -> None:
+    """The leading-underscore alias was a transitional bridge during
+    the public-name promotion. It is now removed; importing it must
+    fail so future callers cannot re-introduce the cross-package
+    coupling."""
+    import dqliteclient.protocol as protocol_module
 
-    assert _validate_positive_int_or_none is dqliteclient.validate_positive_int_or_none
+    assert not hasattr(protocol_module, "_validate_positive_int_or_none")
