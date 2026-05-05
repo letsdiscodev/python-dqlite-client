@@ -544,7 +544,13 @@ class ConnectionPool:
                         # reservation before the raise propagates.
                         if len(failures) == 1:
                             raise failures[0]
-                        raise BaseExceptionGroup(
+                        # Bounded aggregate: at most
+                        # ``_MAX_AGGREGATE_CHILDREN`` children so the
+                        # exception graph stays picklable for cross-
+                        # process error capture (Celery, multiprocessing).
+                        from dqliteclient.cluster import _bounded_group
+
+                        raise _bounded_group(
                             f"pool.initialize: {len(failures)} of {self._min_size} connects failed",
                             failures,
                         )

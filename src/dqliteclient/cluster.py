@@ -97,6 +97,45 @@ _MAX_ERROR_MESSAGE_SNIPPET: Final[int] = 200
 # cluster while keeping the exception payload bounded.
 _MAX_AGGREGATE_ERROR_PAYLOAD: Final[int] = 16 * 1024
 
+# Cap on the number of child exceptions packed into a
+# ``BaseExceptionGroup`` constructed from per-node failures. The
+# joined display string is already capped (see above); this cap
+# bounds the chain length itself so a 500-node hostile-cap-sized
+# cluster cannot produce a multi-megabyte exception graph that
+# survives cross-process pickling (Celery / multiprocessing pool /
+# structured-error capture). 20 is the knee for typical cluster
+# sizes (3-9 nodes); the cap fires only on unusually large clusters
+# where per-node detail is mostly redundant noise anyway.
+_MAX_AGGREGATE_CHILDREN: Final[int] = 20
+
+
+def _bounded_group(message: str, excs: list[BaseException]) -> BaseExceptionGroup[BaseException]:
+    """Build a ``BaseExceptionGroup`` with at most
+    ``_MAX_AGGREGATE_CHILDREN`` children. Excess children are
+    summarised by a synthetic ``DqliteError`` so the operator sees
+    "and N more" without losing the chain entirely.
+
+    Used by every site that constructs a per-node aggregate
+    exception graph (find_leader, pool.initialize, retry exhaustion)
+    so the chain length itself is bounded — the joined display string
+    is capped separately by ``_MAX_AGGREGATE_ERROR_PAYLOAD``.
+    """
+    # Local import to avoid the module-level cluster -> exceptions
+    # cycle (exceptions.py is imported by cluster.py at module load
+    # time; the synthetic class here is constructed at call time
+    # which is safe).
+    from dqliteclient.exceptions import DqliteError
+
+    if len(excs) <= _MAX_AGGREGATE_CHILDREN:
+        return BaseExceptionGroup(message, excs)
+    kept = excs[:_MAX_AGGREGATE_CHILDREN]
+    overflow = DqliteError(
+        f"... and {len(excs) - _MAX_AGGREGATE_CHILDREN} more per-node failures "
+        "(aggregate truncated to keep the exception graph picklable)"
+    )
+    return BaseExceptionGroup(message, [*kept, overflow])
+
+
 # Use OS-entropy randomness for the per-sweep node shuffle so that the
 # stampede-avoidance is not defeated by a downstream call to
 # ``random.seed(...)``. Test suites and some libraries seed the global
@@ -914,7 +953,7 @@ class ClusterClient:
         # raises with no chain — the message itself is the
         # diagnostic. Mirrors ``ConnectionPool.initialize``'s discipline.
         if len(per_node_excs) > 1:
-            raise ClusterError(f"Could not find leader. Errors: {joined}") from BaseExceptionGroup(
+            raise ClusterError(f"Could not find leader. Errors: {joined}") from _bounded_group(
                 "find_leader: per-node failures", per_node_excs
             )
         if per_node_excs:
