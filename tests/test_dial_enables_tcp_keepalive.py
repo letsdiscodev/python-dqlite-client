@@ -70,6 +70,15 @@ async def test_open_connection_helper_enables_so_keepalive() -> None:
                 "Half-open peers will not be detected within the kernel "
                 "keepalive interval."
             )
+            # TCP_NODELAY pin: dqlite RPCs are small and latency-
+            # sensitive; without TCP_NODELAY, Nagle's algorithm
+            # combined with delayed-ACK can stall each request up to
+            # ~40 ms. Mirror Go's net.Dialer default.
+            nodelay = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+            assert nodelay == 1, (
+                f"TCP_NODELAY not set on dialed socket; got {nodelay}. "
+                "Nagle's algorithm will stall small RPCs."
+            )
         finally:
             writer.close()
             with contextlib.suppress(Exception):

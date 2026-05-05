@@ -85,11 +85,21 @@ _HAPPY_EYEBALLS_INTERLEAVE: Final[int] = 1
 
 
 def _apply_keepalive_options(sock: socket.socket) -> None:
-    """Enable SO_KEEPALIVE on ``sock`` and tune the per-socket
-    keepalive interval where the platform supports it. Best-effort:
-    failures on individual setsockopt calls are silently absorbed
-    (they should never fire on Linux/macOS, but a kernel-level
-    rejection on an exotic platform must not break the dial)."""
+    """Enable SO_KEEPALIVE on ``sock``, disable Nagle's algorithm
+    (TCP_NODELAY=1), and tune the per-socket keepalive interval
+    where the platform supports it. Best-effort: failures on
+    individual setsockopt calls are silently absorbed (they should
+    never fire on Linux/macOS, but a kernel-level rejection on an
+    exotic platform must not break the dial)."""
+    # Disable Nagle's algorithm. Every dqlite RPC is small (<MSS) and
+    # latency-sensitive; combined with delayed-ACK on the server,
+    # Nagle stalls each request up to ~40 ms waiting for either an
+    # ACK or buffered data to fill an MSS. Mirrors Go's net.Dialer
+    # default (newTCPConn → setNoDelay(true)). AF_UNIX sockets and
+    # other non-TCP transports ignore the option and may raise
+    # ``OSError`` — silently absorb so the dial still succeeds.
+    with contextlib.suppress(OSError):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
     except OSError:

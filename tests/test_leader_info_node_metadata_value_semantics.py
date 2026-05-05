@@ -17,7 +17,6 @@ import pickle
 
 from dqliteclient import LeaderInfo, NodeMetadata
 
-
 # ---- LeaderInfo ----
 
 
