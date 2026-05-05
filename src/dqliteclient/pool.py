@@ -798,6 +798,17 @@ class ConnectionPool:
                         exc_info=True,
                     )
                 finally:
+                    # Restore ``_pool_released`` so a stale-reference
+                    # caller (e.g. a weakref proxy held from before
+                    # the drain) attempting close() again hits the
+                    # documented "user-side close on a checked-in
+                    # conn is a no-op" early-return. Functionally
+                    # safe today (``_protocol`` is None after close,
+                    # so a second close falls through harmlessly),
+                    # but the contract that "True ⇔ pool owns the
+                    # close path" is restored — brittle to refactor
+                    # otherwise.
+                    conn._pool_released = True
                     # Shield the reservation decrement against outer cancel:
                     # an ``asyncio.timeout`` around ``pool.close()`` can fire
                     # during ``_release_reservation``'s lock acquire; without
@@ -1075,8 +1086,15 @@ class ConnectionPool:
             # pool-side close on a dead conn we just dequeued would
             # be silently absorbed and the writer would leak.
             conn._pool_released = False
-            with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                await asyncio.shield(conn.close())
+            try:
+                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
+                    await asyncio.shield(conn.close())
+            finally:
+                # Restore the flag for contract symmetry with
+                # ``_drain_idle``: any stale-reference second close()
+                # falls through the documented early-return rather
+                # than re-running close on a dead conn.
+                conn._pool_released = True
             # Wrap _drain_idle so a cancel mid-drain releases the dead
             # conn's reservation. Without this guard, a CancelledError
             # delivered to a checkpoint inside _drain_idle propagates
