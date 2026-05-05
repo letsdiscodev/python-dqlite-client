@@ -8,6 +8,7 @@ import math
 import os
 import re
 import string
+import warnings
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -884,6 +885,44 @@ def parse_address(address: str) -> tuple[str, int]:
 _parse_address = parse_address
 
 
+def _connection_unclosed_warning(
+    closed_flag: list[bool], connected_flag: list[bool], address: str
+) -> None:
+    """Emit a ``ResourceWarning`` when a ``DqliteConnection`` is
+    GC'd without ``await close()``.
+
+    Mirrors the dbapi sibling at
+    ``dqlitedbapi.aio.connection._async_unclosed_warning`` so direct
+    dqliteclient consumers — sqlalchemy-dqlite and third-party
+    adopters embedding the wire-layer — get a driver-attributable
+    diagnostic rather than asyncio's generic
+    "Task was destroyed but it is pending" pointing at the wrong
+    layer.
+
+    Two-flag gate:
+
+    - ``closed_flag[0]`` flipped to True by ``close()`` /
+      ``_close_impl`` so the warning skips orderly cleanup.
+    - ``connected_flag[0]`` flipped to True by ``connect()`` so a
+      never-connected instance (early-error / test-fixture flow)
+      has nothing to clean up — the warning would be a false
+      positive.
+
+    ``RuntimeError`` suppress narrows interpreter-shutdown races
+    (the warnings module may have been torn down by GC).
+    """
+    if closed_flag[0] or not connected_flag[0]:
+        return
+    with contextlib.suppress(RuntimeError):
+        warnings.warn(
+            f"DqliteConnection(address={address!r}) was garbage-collected "
+            f"without await close(). Call ``await conn.close()`` "
+            f"explicitly to release the underlying socket promptly.",
+            ResourceWarning,
+            stacklevel=2,
+        )
+
+
 class DqliteConnection:
     """High-level async connection to a dqlite database.
 
@@ -1006,6 +1045,22 @@ class DqliteConnection:
         # never-connected instance has both False — close() is still
         # a no-op but the predicate distinguishes the states.
         self._closed = False
+        # ResourceWarning finalizer: emit a driver-attributable
+        # warning when this connection is GC'd without close().
+        # Mirrors the dbapi-layer ``AsyncConnection`` finalizer so
+        # direct dqliteclient consumers get the same diagnostic.
+        # Two-flag gate via list cells so the finalizer reads the
+        # latest values even after ``close()`` has run; lists are
+        # picked up by the WeakRef-bound closure naturally.
+        self._closed_flag: list[bool] = [False]
+        self._connected_flag: list[bool] = [False]
+        self._finalizer: weakref.finalize | None = weakref.finalize(  # type: ignore[type-arg]
+            self,
+            _connection_unclosed_warning,
+            self._closed_flag,
+            self._connected_flag,
+            self._address,
+        )
         # Hold the bound loop via weakref so a long-lived
         # ``DqliteConnection`` whose loop has been closed (but the
         # connection itself was not properly ``close()``d) does NOT pin
@@ -1274,6 +1329,9 @@ class DqliteConnection:
                         self._protocol._client_id,
                     )
                     self._db_id = await self._protocol.open_database(self._database)
+                    # Flip the connected gate so the unclosed-warning
+                    # finalizer fires if the user GC's without close().
+                    self._connected_flag[0] = True
                     logger.debug(
                         "connect: db opened address=%s db_id=%d database=%r",
                         self._address,
@@ -1374,6 +1432,13 @@ class DqliteConnection:
         # the "close() has been called" marker; ``is_connected``
         # remains the "transport alive" marker.
         self._closed = True
+        # Detach the unclosed-warning finalizer — orderly shutdown
+        # owns the cleanup; firing the warning now would be a false
+        # positive.
+        self._closed_flag[0] = True
+        if self._finalizer is not None:
+            self._finalizer.detach()
+            self._finalizer = None
         # Fork-after-init: the inherited socket FD is shared with the
         # parent. ``writer.close()`` would send a FIN that the parent
         # still depends on. Flip the local state to closed without

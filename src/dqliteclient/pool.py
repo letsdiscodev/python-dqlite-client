@@ -5,6 +5,8 @@ import contextlib
 import logging
 import math
 import os
+import warnings
+import weakref
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from types import TracebackType
@@ -138,6 +140,37 @@ def _socket_looks_dead(conn: DqliteConnection) -> bool:
     except (AttributeError, RuntimeError):
         eof = False
     return (isinstance(closing, bool) and closing) or (isinstance(eof, bool) and eof)
+
+
+def _pool_unclosed_warning(closed_flag: list[bool], reserved_flag: list[bool]) -> None:
+    """Emit a ``ResourceWarning`` when a ``ConnectionPool`` is GC'd
+    without ``await close()``.
+
+    Pool owns up to ``max_size`` live transports plus loop-bound
+    asyncio primitives. A user that drops the pool reference
+    without closing leaks the queued connections — this finalizer
+    surfaces the leak as a driver-attributable diagnostic.
+
+    Two-flag gate:
+
+    - ``closed_flag[0]`` flipped True by ``close()`` so orderly
+      shutdown skips the warning.
+    - ``reserved_flag[0]`` flipped True the first time the pool
+      reserves a slot (either via ``initialize()`` warm-up OR
+      ``acquire()``'s lazy-reservation arm). A pool that was
+      constructed and dropped without ever acquiring has nothing
+      to clean up — the warning would be a false positive.
+    """
+    if closed_flag[0] or not reserved_flag[0]:
+        return
+    with contextlib.suppress(RuntimeError):
+        warnings.warn(
+            "ConnectionPool was garbage-collected without await close(); "
+            "queued connections may have leaked their transports. Call "
+            "``await pool.close()`` explicitly to release them promptly.",
+            ResourceWarning,
+            stacklevel=2,
+        )
 
 
 class ConnectionPool:
@@ -382,6 +415,21 @@ class ConnectionPool:
         # silently corrupting the wire by interleaving writes.
         # Symmetric with ``__reduce__`` and the per-connection guard.
         self._creator_pid = os.getpid()
+        # ResourceWarning finalizer mirrors the dbapi-layer pattern.
+        # The flags are mutable cells so the finalizer reads the
+        # latest values even after ``close()`` has run.
+        # ``_reserved_flag`` flips True the first time a slot is
+        # reserved (initialize() warm-up OR acquire()'s lazy-
+        # reservation arm) — a never-acquired pool stays silent at
+        # GC.
+        self._closed_flag: list[bool] = [False]
+        self._reserved_flag: list[bool] = [False]
+        self._finalizer: weakref.finalize | None = weakref.finalize(  # type: ignore[type-arg]
+            self,
+            _pool_unclosed_warning,
+            self._closed_flag,
+            self._reserved_flag,
+        )
 
     @property
     def closed(self) -> bool:
@@ -466,6 +514,8 @@ class ConnectionPool:
             if self._min_size > 0:
                 logger.debug("pool.initialize: requesting %d connections", self._min_size)
                 self._size += self._min_size
+                if self._size > 0:
+                    self._reserved_flag[0] = True
                 # Count reservations that still need to be released. Each
                 # successful put into the pool queue "commits" one slot
                 # (the connection stays and must remain counted in
@@ -919,6 +969,7 @@ class ConnectionPool:
                     raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
                 if self._size < self._max_size:
                     self._size += 1
+                    self._reserved_flag[0] = True
                     reserved = True
             if reserved:
                 try:
@@ -1610,6 +1661,10 @@ class ConnectionPool:
         # the child's fresh loop hangs forever.
         if _conn_mod._current_pid != self._creator_pid:
             self._closed = True
+            self._closed_flag[0] = True
+            if self._finalizer is not None:
+                self._finalizer.detach()
+                self._finalizer = None
             return
         if self._closed:
             if self._close_done is not None:
@@ -1636,6 +1691,10 @@ class ConnectionPool:
         # short-circuited without waiting on the first caller's drain.
         self._close_done = asyncio.Event()
         self._closed = True
+        self._closed_flag[0] = True
+        if self._finalizer is not None:
+            self._finalizer.detach()
+            self._finalizer = None
         try:
             logger.debug(
                 "pool.close: draining idle=%d in_flight=%d",
