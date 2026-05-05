@@ -1,7 +1,5 @@
 """Node store interfaces for cluster discovery."""
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import os

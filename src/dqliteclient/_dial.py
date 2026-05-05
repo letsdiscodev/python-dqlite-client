@@ -26,8 +26,6 @@ dead peer faster than ``tcp_retries2`` without aggressive probing on
 healthy idle connections.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import socket
