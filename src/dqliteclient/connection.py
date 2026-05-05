@@ -1696,8 +1696,27 @@ class DqliteConnection:
         # reaper are at risk. Mirror the discipline used by
         # ``ConnectionPool._release``. Caller's outer
         # ``asyncio.timeout`` still bounds the absolute wall clock.
-        with contextlib.suppress(asyncio.CancelledError):
+        #
+        # Distinguish a body-originated cancel from a fresh outer
+        # cancel landing during the shielded close: only a fresh outer
+        # cancel must propagate (structured-concurrency contract); a
+        # body-originated cancel that we already ack'd by entering
+        # __aexit__ can be suppressed. ``Task.cancelling()`` increments
+        # for each ``cancel()`` call; if it grew while we were inside
+        # the shielded await, a NEW cancel landed and must propagate.
+        self_task = asyncio.current_task()
+        cancelling_before = self_task.cancelling() if self_task is not None else 0
+        try:
             await asyncio.shield(self.close())
+        except asyncio.CancelledError:
+            cancelling_after = self_task.cancelling() if self_task is not None else 0
+            if cancelling_after > cancelling_before:
+                # Fresh outer cancel — propagate.
+                raise
+            # Body-originated cancel that close() observed via the
+            # shield; suppress per the structured-concurrency contract
+            # (the body's CancelledError flows through __aexit__'s
+            # exc_val argument to the caller).
 
     def _ensure_connected(self) -> tuple[DqliteProtocol, int]:
         """Ensure we're connected and return protocol and db_id."""
