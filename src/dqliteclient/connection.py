@@ -1807,8 +1807,21 @@ class DqliteConnection:
             return await fn(protocol, db_id)
         except _WireEncodeError as e:
             # Client-side parameter-encoding error. The wire bytes were
-            # never written, so the connection is still usable — convert
-            # into the client-level DataError and let it propagate.
+            # never written, so the connection is still usable —
+            # convert into the client-level DataError and let it
+            # propagate.
+            #
+            # Invariant: ``Message.encode()`` returns a fully-built
+            # ``bytes`` object (see ``messages/base.py``); the sender
+            # writes the whole object atomically via
+            # ``StreamWriter.write``. A future migration to a streaming
+            # encoder that calls ``writer.write`` mid-encode would
+            # break this assumption — the partial bytes would be on
+            # the wire and the connection would no longer be reusable.
+            # Any such refactor must replace this arm with an
+            # ``_invalidate(e)`` call. Pinned by
+            # ``test_message_encode_returns_bytes`` in the wire suite
+            # and by ``test_wire_encode_error_does_not_invalidate`` here.
             raise DataError(str(e)) from e
         except (DqliteConnectionError, ProtocolError) as e:
             self._invalidate(e)
