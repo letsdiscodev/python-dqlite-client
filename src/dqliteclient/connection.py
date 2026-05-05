@@ -755,6 +755,9 @@ def _validate_timeout(value: float, *, name: str = "timeout") -> float:
     return float(value)
 
 
+_MAX_ADDRESS_LEN: Final[int] = 1024
+
+
 def parse_address(address: str) -> tuple[str, int]:
     """Parse a host:port address string, handling IPv6 brackets.
 
@@ -769,6 +772,23 @@ def parse_address(address: str) -> tuple[str, int]:
     ``create_engine`` time rather than inside a SA retry loop. The
     legacy underscore alias is kept for backwards compatibility.
     """
+    # Up-front length cap. The wire-side ``LeaderResponse.address`` is
+    # already capped at 256 bytes server-side, but ``parse_address``
+    # is also reachable from caller-supplied seed URLs (env vars,
+    # config files). A misconfigured megabyte-sized address would
+    # otherwise produce a ``ValueError`` whose message interpolates
+    # the full input via ``{address!r}`` — multi-MB log lines, large
+    # tracebacks, expensive ``except ValueError`` formatting. Reject
+    # up front with a small, bounded message; downstream sites that
+    # interpolate ``address`` then operate on a known-bounded value.
+    if not isinstance(address, str):
+        raise ValueError(f"Invalid address: expected str, got {type(address).__name__}")
+    if len(address) > _MAX_ADDRESS_LEN:
+        raise ValueError(
+            f"Invalid address: length {len(address)} exceeds "
+            f"maximum {_MAX_ADDRESS_LEN}"
+        )
+
     if address.startswith("["):
         # Bracketed IPv6: [host]:port. RFC 3986 §3.2.2 reserves the
         # bracket form for ``IP-literal = IPv6address / IPvFuture``;
