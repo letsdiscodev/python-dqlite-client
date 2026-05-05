@@ -1136,9 +1136,24 @@ class ClusterClient:
         uniformly. The verification adds one decision: the responder
         must report ITSELF as leader, otherwise we discard the hint.
         """
+        # Wrap the verify call in its own ``dial_timeout`` envelope.
+        # Without this, the outer ``asyncio.wait_for(_query_leader,
+        # timeout=attempt_timeout)`` enclosing the original probe
+        # already covered ONE round-trip; chaining a verify here adds
+        # a SECOND ``_query_leader`` inside the same envelope,
+        # doubling the worst-case attempt-timeout cost. A pathological
+        # attacker could chain redirects A→B (verify of B costs an
+        # extra dial+handshake+leader_rpc) without the inner bound.
+        # Operators sizing ``attempt_timeout`` based on single-RTT
+        # estimates undersized by 2× before this. ``dial_timeout`` is
+        # the right inner budget — the verify is "is this server
+        # alive and still leader?", not a full discovery sweep.
         try:
-            reported = await self._query_leader(
-                hint_address, trust_server_heartbeat=trust_server_heartbeat
+            reported = await asyncio.wait_for(
+                self._query_leader(
+                    hint_address, trust_server_heartbeat=trust_server_heartbeat
+                ),
+                timeout=self._dial_timeout,
             )
         except (
             DqliteConnectionError,
