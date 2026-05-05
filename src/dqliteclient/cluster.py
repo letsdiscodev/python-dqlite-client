@@ -32,8 +32,13 @@ from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
 from dqlitewire import NodeRole
-from dqlitewire.messages.responses import NodeInfo
-from dqlitewire.messages.responses import _sanitize_server_text as _sanitize_display_text
+from dqlitewire.messages.responses import (
+    NodeInfo,
+    _sanitize_for_log,
+)
+from dqlitewire.messages.responses import (
+    _sanitize_server_text as _sanitize_display_text,
+)
 
 __all__ = [
     "ClusterClient",
@@ -946,10 +951,15 @@ class ClusterClient:
         # outcome is the one event operators paged on cluster-wide
         # unreachable need to see at default verbosity. The errors
         # string is already capped above so the log line is bounded.
+        # Sanitise server-supplied text against log-injection: a
+        # hostile FailureResponse.message containing ``\n`` would
+        # otherwise split the log line in syslog / journald.
+        # _sanitize_for_log escapes LF / CR; the exception messages
+        # below keep the original wording for interactive debugging.
         logger.warning(
             "cluster: leader discovery failed across %d nodes; errors=%s",
             total_nodes,
-            joined,
+            _sanitize_for_log(joined),
         )
         # Chain via ``BaseExceptionGroup`` when more than one node
         # contributed a real exception (the no-leader-known arm
