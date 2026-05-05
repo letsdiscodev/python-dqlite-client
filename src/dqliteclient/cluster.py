@@ -614,7 +614,12 @@ class ClusterClient:
                             return cached_leader
                     else:
                         # Cached node confirmed itself as leader.
-                        self._set_last_known_leader(cached_leader)
+                        # Re-validate against the redirect policy so a
+                        # tightened allowlist takes effect without
+                        # waiting for the next leader flip. The cache
+                        # is already correct for this address; no
+                        # write needed.
+                        self._check_redirect(cached_leader)
                         return cached_leader
                 else:
                     # Cached node replied with no-leader-known: the
