@@ -458,35 +458,33 @@ class TestDqliteProtocol:
         # Verify the request was written (meaning params=() was accepted)
         mock_writer.write.assert_called()
 
-    async def test_exec_sql_reads_single_response(
+    async def test_exec_sql_rejects_extra_response(
         self,
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """exec_sql reads exactly one ResultResponse — it must not drain extras.
+        """exec_sql reads exactly one ResultResponse — extra response
+        bytes from the server are a wire-spec violation and must
+        invalidate the connection rather than be silently buffered.
 
-        The C dqlite server emits exactly one RESULT per EXEC_SQL call, even
-        for multi-statement SQL: handle_exec_sql_done_cb recurses internally
-        on exec->tail and calls SUCCESS(..., RESULT) only after the last
-        statement completes. fill_result reports sqlite3_changes() of the
-        last statement only.
-
-        If any additional response bytes are buffered (server protocol
-        violation, pipelining, test artefact), the client must leave them
-        alone rather than silently consuming them.
+        The C dqlite server emits exactly one RESULT per EXEC_SQL
+        call, even for multi-statement SQL: handle_exec_sql_done_cb
+        recurses internally on exec->tail and calls SUCCESS(...,
+        RESULT) only after the last statement completes. Extra bytes
+        could only come from a hostile or buggy server, and silently
+        buffering them would let the next user RPC consume the stray
+        as its own response (misclassified error against an
+        unrelated operation).
         """
+        from dqliteclient.exceptions import ProtocolError
         from dqlitewire.messages import ResultResponse
 
         result1 = ResultResponse(last_insert_id=1, rows_affected=1)
         stray = ResultResponse(last_insert_id=99, rows_affected=99)
         mock_reader.read.return_value = result1.encode() + stray.encode()
 
-        last_id, rows_affected = await protocol.exec_sql(1, "INSERT INTO t VALUES (1)")
-
-        assert last_id == 1
-        assert rows_affected == 1
-        # The stray message must still be buffered — not silently consumed.
-        assert protocol._decoder.has_message()
+        with pytest.raises(ProtocolError, match="extra response"):
+            await protocol.exec_sql(1, "INSERT INTO t VALUES (1)")
 
     async def test_query_sql_reads_single_response(
         self,
