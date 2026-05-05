@@ -10,7 +10,13 @@ raises ``ImportError`` at import time.
 """
 
 from dqliteclient._dial import DialFunc
-from dqliteclient.cluster import ClusterClient, RedirectPolicy, allowlist_policy
+from dqliteclient.cluster import (
+    ClusterClient,
+    LeaderInfo,
+    NodeMetadata,
+    RedirectPolicy,
+    allowlist_policy,
+)
 from dqliteclient.connection import DqliteConnection, parse_address
 from dqliteclient.exceptions import (
     ClusterError,
@@ -45,8 +51,10 @@ __all__ = [
     "DqliteConnectionError",
     "DqliteError",
     "InterfaceError",
+    "LeaderInfo",
     "MemoryNodeStore",
     "NodeInfo",
+    "NodeMetadata",
     "NodeStore",
     "OperationalError",
     "ProtocolError",
