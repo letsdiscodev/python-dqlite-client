@@ -18,6 +18,7 @@ from dqliteclient.cluster import (
     NodeMetadata,
     RedirectPolicy,
     allowlist_policy,
+    default_safe_redirect_policy,
 )
 from dqliteclient.connection import DqliteConnection, parse_address
 from dqliteclient.exceptions import (
@@ -67,6 +68,7 @@ __all__ = [
     "allowlist_policy",
     "connect",
     "create_pool",
+    "default_safe_redirect_policy",
     "parse_address",
     "retry_with_backoff",
     "validate_positive_int_or_none",

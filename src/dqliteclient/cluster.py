@@ -35,7 +35,14 @@ from dqlitewire import NodeRole
 from dqlitewire.messages.responses import NodeInfo
 from dqlitewire.messages.responses import _sanitize_server_text as _sanitize_display_text
 
-__all__ = ["ClusterClient", "LeaderInfo", "NodeMetadata", "RedirectPolicy", "allowlist_policy"]
+__all__ = [
+    "ClusterClient",
+    "LeaderInfo",
+    "NodeMetadata",
+    "RedirectPolicy",
+    "allowlist_policy",
+    "default_safe_redirect_policy",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -1809,5 +1816,62 @@ def allowlist_policy(addresses: Iterable[str]) -> RedirectPolicy:
             return _parse_address(addr) in allowed
         except ValueError:
             return False
+
+    return policy
+
+
+def default_safe_redirect_policy(
+    *,
+    include_rfc1918: bool = True,
+    include_loopback: bool = False,
+) -> RedirectPolicy:
+    """Build the recommended-default redirect policy.
+
+    Rejects link-local (e.g. AWS / GCP metadata IP
+    ``169.254.169.254``) by default — the canonical SSRF target.
+    By default also rejects loopback (a redirect to ``127.0.0.1`` is
+    rarely a legitimate cluster topology), but operators running
+    integration tests that bind to loopback can pass
+    ``include_loopback=True``.
+
+    ``include_rfc1918`` defaults to ``True`` because most production
+    dqlite clusters live on RFC 1918 / private subnets and would
+    otherwise be locked out. Operators with internet-facing clusters
+    can pass ``include_rfc1918=False`` to harden further.
+
+    Use as the default value of ``redirect_policy`` when no
+    operator-specific allowlist is configured. Pair with
+    :func:`allowlist_policy` for stricter allowlists.
+
+    Returns a callable ``RedirectPolicy``: ``True`` if the address
+    is allowed, ``False`` to reject. Malformed input returns
+    ``False`` (a hostile server cannot crash the policy by sending
+    garbage).
+    """
+    import ipaddress
+
+    def policy(addr: str) -> bool:
+        try:
+            host, _port = _parse_address(addr)
+        except ValueError:
+            return False
+        # Try to interpret host as a literal IP. DNS hostnames pass
+        # through (the policy is applied BEFORE resolution; the
+        # operator's DNS layer is the source of truth for hostname
+        # mapping). For literal IPs, apply the address-class filter.
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return True  # hostname; rely on DNS / allowlist for finer control
+        # Link-local: reject unconditionally (no operator override)
+        # because the only realistic use case is an exfiltration
+        # target like the metadata endpoint.
+        if ip.is_link_local:
+            return False
+        if ip.is_loopback and not include_loopback:
+            return False
+        # ``is_private`` covers RFC 1918 plus other private
+        # ranges (RFC 4193 ULA, etc.) — same posture for all.
+        return not (ip.is_private and not include_rfc1918)
 
     return policy
