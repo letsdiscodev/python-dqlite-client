@@ -797,8 +797,7 @@ def parse_address(address: str) -> tuple[str, int]:
         raise ValueError(f"Invalid address: expected str, got {type(address).__name__}")
     if len(address) > _MAX_ADDRESS_LEN:
         raise ValueError(
-            f"Invalid address: length {len(address)} exceeds "
-            f"maximum {_MAX_ADDRESS_LEN}"
+            f"Invalid address: length {len(address)} exceeds maximum {_MAX_ADDRESS_LEN}"
         )
 
     if address.startswith("["):
