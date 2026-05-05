@@ -4,11 +4,10 @@
 Adds a caller-supplied dialer at every dial site:
 :meth:`DqliteConnection.__init__`, :meth:`ClusterClient.__init__`
 (forwarded via :meth:`ClusterClient.from_addresses` and through
-:class:`ConnectionPool`), and the cancel-time
-``_send_interrupt_on_fresh_socket`` helper. Default-``None`` callers
-fall through to the existing :func:`open_connection_with_keepalive`
-helper unchanged — this set of pins fences both the override path and
-the default fall-through.
+:class:`ConnectionPool`). Default-``None`` callers fall through to the
+existing :func:`open_connection_with_keepalive` helper unchanged —
+this set of pins fences both the override path and the default
+fall-through.
 
 Mutual-exclusion: ``ConnectionPool(cluster=, dial_func=)`` rejects with
 ``ValueError`` because an externally-owned ``ClusterClient`` already
@@ -233,32 +232,3 @@ async def test_open_admin_connection_uses_cluster_dial_func() -> None:
             pass
 
     stub.assert_awaited_once_with("admin.example:9001")
-
-
-@pytest.mark.asyncio
-async def test_send_interrupt_on_fresh_socket_uses_dial_func() -> None:
-    """The cancel-arm ``_send_interrupt_on_fresh_socket`` helper
-    accepts and uses the parent connection's ``dial_func`` so a
-    TLS-configured connection's INTERRUPT also goes via TLS."""
-    from unittest.mock import MagicMock
-
-    from dqliteclient.connection import _send_interrupt_on_fresh_socket
-
-    fake_streams = _stub_streams()
-    stub = AsyncMock(return_value=fake_streams)
-
-    with patch("dqliteclient.connection.DqliteProtocol") as proto_cls:
-        proto = MagicMock()
-        proto.handshake = AsyncMock()
-        proto._interrupt = AsyncMock()
-        proto_cls.return_value = proto
-
-        await _send_interrupt_on_fresh_socket(
-            "leader.example:9001",
-            db_id=42,
-            dial_timeout=1.0,
-            interrupt_timeout=1.0,
-            dial_func=stub,
-        )
-
-    stub.assert_awaited_once_with("leader.example:9001")

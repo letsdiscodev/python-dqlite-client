@@ -1,121 +1,75 @@
-"""``DqliteConnection._run_protocol`` schedules a best-effort
-INTERRUPT on a FRESH socket when CancelledError lands mid-operation,
-mirroring go-dqlite's ``Rows.Close`` → ``Protocol.Interrupt``
-discipline (``protocol.go:79-116``). The fire-and-forget background
-task releases server-side resources held by the cancelled query
-(Raft / WAL / memory) without holding up the cancel propagation.
+"""``DqliteConnection._run_protocol``'s CancelledError arm invalidates
+the connection (FIN to the server, transport closed) but does NOT
+send INTERRUPT on a fresh socket.
+
+The dqlite C server's ``handle_interrupt`` (gateway.c:951-967, dispatch
+at 1373-1383) is keyed on the cancelled connection's ``g->req`` slot.
+A fresh socket has ``g->req == NULL``; the server's interrupt handler
+returns SUCCESS_V0 without aborting the in-flight query — pure wasted
+dial + handshake. Sending INTERRUPT on the cancelled socket would
+require holding the cancelled task's ``op_lock`` past cancel
+propagation, which defeats the cancel.
+
+The dqlite gateway tears down the per-connection slot when the
+cancelled connection's FIN reaches it on the next write attempt.
 """
 
-from __future__ import annotations
-
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from dqliteclient.connection import (
-    DqliteConnection,
-    _send_interrupt_on_fresh_socket,
-)
+from dqliteclient.connection import DqliteConnection
 
 
 @pytest.mark.asyncio
-async def test_send_interrupt_on_fresh_socket_best_effort_swallows_dial_failure() -> None:
-    """The helper swallows OSError from a refused dial — server-side
-    cleanup is best-effort and a failed interrupt does not propagate."""
-
-    async def refusing_open(*_args: object, **_kwargs: object):
-        raise ConnectionRefusedError("simulated")
-
-    with patch("dqliteclient._dial.open_connection_with_keepalive", refusing_open):
-        # Should not raise.
-        await _send_interrupt_on_fresh_socket(
-            "localhost:9001",
-            db_id=1,
-            dial_timeout=0.1,
-            interrupt_timeout=0.5,
-        )
-
-
-@pytest.mark.asyncio
-async def test_send_interrupt_on_fresh_socket_swallows_timeout() -> None:
-    """A slow dial that exceeds the interrupt budget is swallowed."""
-
-    async def slow_open(*_args: object, **_kwargs: object):
-        await asyncio.sleep(2.0)
-        raise AssertionError("should have timed out")
-
-    with patch("dqliteclient._dial.open_connection_with_keepalive", slow_open):
-        await _send_interrupt_on_fresh_socket(
-            "localhost:9001",
-            db_id=1,
-            dial_timeout=0.05,
-            interrupt_timeout=0.1,
-        )
-
-
-@pytest.mark.asyncio
-async def test_run_protocol_schedules_interrupt_on_cancel() -> None:
-    """When _run_protocol catches CancelledError, it schedules a
-    fire-and-forget interrupt task on a fresh socket. The task is
-    named ``dqlite-interrupt-<address>`` for log correlation."""
+async def test_run_protocol_invalidates_on_cancel() -> None:
+    """When ``_run_protocol`` catches CancelledError, it invalidates
+    the connection (writer closed, _protocol cleared) and re-raises.
+    No background task is scheduled."""
     conn = DqliteConnection("localhost:9001", timeout=2.0)
-    # Pretend the connection is established.
+
     fake_protocol = MagicMock()
     conn._protocol = fake_protocol
     conn._db_id = 7
     conn._invalidation_cause = None
-
-    # Make _ensure_connected return our fake protocol.
     conn._ensure_connected = MagicMock(return_value=(fake_protocol, 7))
 
-    # The fn passed to _run_protocol raises CancelledError.
     async def cancelled_op(_p: object, _db: int) -> None:
         raise asyncio.CancelledError()
 
-    interrupt_called = asyncio.Event()
+    with pytest.raises(asyncio.CancelledError):
+        await conn._run_protocol(cancelled_op)
 
-    async def fake_interrupt(*_args: object, **_kwargs: object) -> None:
-        interrupt_called.set()
-
-    with patch(
-        "dqliteclient.connection._send_interrupt_on_fresh_socket",
-        fake_interrupt,
-    ):
-        with pytest.raises(asyncio.CancelledError):
-            await conn._run_protocol(cancelled_op)
-
-        # Yield to let the fire-and-forget task run.
-        await asyncio.wait_for(interrupt_called.wait(), timeout=1.0)
+    assert conn._protocol is None
+    assert conn._invalidation_cause is not None
 
 
 @pytest.mark.asyncio
-async def test_run_protocol_skips_interrupt_when_db_id_is_none() -> None:
-    """No INTERRUPT is sent when ``_db_id`` is ``None`` (the connection
-    never reached open_database)."""
+async def test_run_protocol_no_background_task_scheduled_on_cancel() -> None:
+    """Cancellation must not leave any orphan task in the running
+    loop. If a future regression re-introduces a fire-and-forget
+    interrupt task, this test catches it."""
     conn = DqliteConnection("localhost:9001", timeout=2.0)
     fake_protocol = MagicMock()
     conn._protocol = fake_protocol
-    conn._db_id = None
+    conn._db_id = 7
     conn._invalidation_cause = None
-    conn._ensure_connected = MagicMock(return_value=(fake_protocol, 0))  # noqa: SLF001  # type: ignore[method-assign]
+    conn._ensure_connected = MagicMock(return_value=(fake_protocol, 7))
 
     async def cancelled_op(_p: object, _db: int) -> None:
         raise asyncio.CancelledError()
 
-    interrupt_called = False
+    pre_tasks = {id(t) for t in asyncio.all_tasks()}
 
-    async def fake_interrupt(*_args: object, **_kwargs: object) -> None:
-        nonlocal interrupt_called
-        interrupt_called = True
+    with pytest.raises(asyncio.CancelledError):
+        await conn._run_protocol(cancelled_op)
 
-    with patch(
-        "dqliteclient.connection._send_interrupt_on_fresh_socket",
-        fake_interrupt,
-    ):
-        with pytest.raises(asyncio.CancelledError):
-            await conn._run_protocol(cancelled_op)
-        # Brief yield so any spurious task would have run.
-        await asyncio.sleep(0)
+    # Drain any scheduled callbacks.
+    await asyncio.sleep(0)
 
-    assert not interrupt_called
+    # Any task created after the snapshot would be visible here. Only
+    # the running test's own task should still be present.
+    new_tasks = {id(t) for t in asyncio.all_tasks() if not t.done()} - pre_tasks
+    new_tasks.discard(id(asyncio.current_task()))
+    assert not new_tasks, f"unexpected background tasks: {new_tasks}"
