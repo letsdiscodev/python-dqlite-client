@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 # ``frozenset.__contains__`` lookup) the synchronous shape is right.
 # A future async variant would arrive as a separate type alias if a
 # real use case appears.
-RedirectPolicy = Callable[[str], bool]
+type RedirectPolicy = Callable[[str], bool]
 
 # Default attempt count for connect(). Three attempts cover one leader
 # change plus one transport hiccup; substantially higher counts risk
