@@ -1,6 +1,6 @@
 """Exceptions for dqlite client."""
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from dqlitewire.exceptions import ProtocolError as _WireProtocolError
 
@@ -40,28 +40,46 @@ class DqliteError(Exception):
         super().__init__(*args)
         self.raw_message = raw_message
 
+    def __getstate__(self) -> dict[str, object]:
+        """State capture for pickle.
+
+        Default ``Exception.__reduce__`` returns ``(cls, self.args)``
+        which reconstructs via ``cls(*args)``. That loses every
+        field set on the instance after ``Exception.__init__`` —
+        most notably ``raw_message`` (set on the ``DqliteError``
+        base) and the ``code`` carried by ``DqliteConnectionError``.
+        The carriers exist precisely so the wire-level signal
+        survives cross-process pickling (``ProcessPoolExecutor``,
+        ``multiprocessing.Queue``, Celery task results, SA's
+        multiprocess pool).
+
+        Pair with :meth:`__setstate__` so the explicit
+        ``__getstate__`` / ``__setstate__`` shape replaces the
+        previous ``__reduce__``-with-dict-overlay. The new shape
+        makes the captured state visible in stack traces (no longer
+        hidden behind ``self.__dict__.copy()``) and tolerates
+        future subclass refactors that add slot-based attributes
+        (those slot values can be added to the dict explicitly in
+        the subclass override rather than silently lost behind
+        ``__dict__``).
+        """
+        return self.__dict__.copy()
+
+    def __setstate__(self, state: dict[str, Any] | None) -> None:
+        if state:
+            self.__dict__.update(state)
+
     def __reduce__(
         self,
     ) -> tuple[type["DqliteError"], tuple[object, ...], dict[str, object]]:
-        # Default ``Exception.__reduce__`` returns ``(cls, self.args)``,
-        # which reconstructs via ``cls(*args)``. That loses every field
-        # set on the instance after ``Exception.__init__`` — most
-        # notably ``raw_message`` (set on the ``DqliteError`` base) and
-        # the ``code`` carried by ``DqliteConnectionError``. The
-        # carriers were added in cycle 27 (XP2 / XP3) precisely so the
-        # wire-level signal would survive cross-process pickling
-        # (``ProcessPoolExecutor``, ``multiprocessing.Queue``, Celery
-        # task results, SA's multiprocess pool); without overriding
-        # ``__reduce__`` the round-trip silently drops them.
-        #
-        # Return the 3-tuple ``(callable, args, state)`` form so pickle
-        # reconstructs via ``cls(*args)`` then applies state via
-        # ``self.__dict__.update(state)`` — preserving every attribute
-        # we set on the instance (``raw_message`` on the base, ``code``
-        # on subclasses, the truncated ``message`` on
-        # ``OperationalError``). All subclasses of ``DqliteError``
-        # inherit this discipline automatically.
-        return (self.__class__, self.args, self.__dict__.copy())
+        # 3-tuple form: pickle reconstructs via ``cls(*args)`` then
+        # invokes ``__setstate__`` with the dict from
+        # ``__getstate__``. Subclasses inherit this discipline
+        # automatically — every subclass we ship today carries its
+        # extra fields on ``__dict__`` (no ``__slots__``), so the
+        # default ``__getstate__`` returning ``self.__dict__.copy()``
+        # captures them.
+        return (self.__class__, self.args, self.__getstate__())
 
 
 class DqliteConnectionError(DqliteError):
