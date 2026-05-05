@@ -10,6 +10,7 @@ raises ``ImportError`` at import time.
 """
 
 from collections.abc import Sequence
+from typing import Final
 
 from dqliteclient._dial import DialFunc
 from dqliteclient.cluster import (
@@ -42,7 +43,7 @@ from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
 
-__version__ = "0.1.3"
+__version__: Final[str] = "0.1.3"
 
 __all__ = [
     "ClusterClient",
