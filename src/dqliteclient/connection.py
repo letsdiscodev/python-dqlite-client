@@ -1739,6 +1739,19 @@ class DqliteConnection:
                 # parity.
                 prior = self._pending_drain
                 if prior is not None and not prior.done():
+                    # Attach the drain-observer BEFORE cancelling so a
+                    # non-CancelledError raised by the prior task
+                    # (e.g. a future regression in ``_bounded_drain``
+                    # that lets an exception escape) is consumed via
+                    # ``task.exception()``. Without the observer,
+                    # asyncio's task-finalisation logger emits
+                    # "Task exception was never retrieved" at GC.
+                    # Mirrors the cluster.py:1134 / cluster.py:1863 /
+                    # connection.py:1450-1453 sibling sites and the
+                    # dbapi's ``_cancel_and_observe`` pattern.
+                    from dqliteclient.cluster import _observe_drain_exception
+
+                    prior.add_done_callback(_observe_drain_exception)
                     prior.cancel()
                 # Strong-ref on self so the task is not GC'd before
                 # close() awaits it.
