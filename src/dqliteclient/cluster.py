@@ -732,7 +732,7 @@ class ClusterClient:
         # already return tuples; the cost is O(N) at typical 3-7
         # node store sizes. The list is mutable so the subsequent
         # shuffle + stable-sort can operate in place.
-        nodes = list(await self._node_store.get_nodes())
+        nodes = list(await self._safe_node_snapshot())
 
         if not nodes:
             raise ClusterError("No nodes configured")
@@ -976,6 +976,26 @@ class ClusterClient:
         if per_node_excs:
             raise ClusterError(f"Could not find leader. Errors: {joined}") from per_node_excs[0]
         raise ClusterError(f"Could not find leader. Errors: {joined}")
+
+    async def _safe_node_snapshot(self) -> tuple[_StoreNodeInfo, ...]:
+        """Defensive snapshot of the node store's current view.
+
+        The :class:`NodeStore` Protocol's ``get_nodes`` contract says
+        the returned ``Sequence`` "will not be mutated after return"
+        — but that is a constraint on the implementer, not a
+        defensive guarantee from the caller. A third-party
+        ``NodeStore`` returning its internal storage and mutating it
+        from a concurrent ``set_nodes()`` would produce a torn
+        iteration deep inside the parallel sweep. ``MemoryNodeStore``
+        and ``YamlNodeStore`` already return tuples; the cost of the
+        snapshot is O(N) at typical 3-7 node store sizes.
+
+        Use this helper at every call site that iterates the node
+        store rather than ``await self._node_store.get_nodes()``
+        directly, so future code paths inherit the snapshot
+        discipline.
+        """
+        return tuple(await self._node_store.get_nodes())
 
     async def _query_leader(
         self, address: str, *, trust_server_heartbeat: bool = False
