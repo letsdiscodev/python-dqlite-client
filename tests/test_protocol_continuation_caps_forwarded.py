@@ -16,7 +16,6 @@ Pin both directions.
 
 from __future__ import annotations
 
-import sys
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -44,15 +43,14 @@ def test_forwards_explicit_max_continuation_frames_to_decoder() -> None:
 
 def test_none_max_total_rows_disables_codec_cap() -> None:
     """``None`` at the protocol layer means "client-layer disabled";
-    the codec must not enforce a stricter cap. Forward as
-    ``sys.maxsize`` so the codec never trips."""
+    the codec accepts ``None`` directly and skips the cap check."""
     proto = _build_protocol(max_total_rows=None)
-    assert proto._decoder._max_total_rows == sys.maxsize
+    assert proto._decoder._max_total_rows is None
 
 
 def test_none_max_continuation_frames_disables_codec_cap() -> None:
     proto = _build_protocol(max_continuation_frames=None)
-    assert proto._decoder._max_continuation_frames == sys.maxsize
+    assert proto._decoder._max_continuation_frames is None
 
 
 def test_default_caps_match_protocol_defaults() -> None:

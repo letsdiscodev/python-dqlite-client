@@ -1150,9 +1150,7 @@ class ClusterClient:
         # alive and still leader?", not a full discovery sweep.
         try:
             reported = await asyncio.wait_for(
-                self._query_leader(
-                    hint_address, trust_server_heartbeat=trust_server_heartbeat
-                ),
+                self._query_leader(hint_address, trust_server_heartbeat=trust_server_heartbeat),
                 timeout=self._dial_timeout,
             )
         except (
