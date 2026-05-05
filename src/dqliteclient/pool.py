@@ -383,6 +383,23 @@ class ConnectionPool:
         # Symmetric with ``__reduce__`` and the per-connection guard.
         self._creator_pid = os.getpid()
 
+    @property
+    def closed(self) -> bool:
+        """Whether ``close()`` has been called on this pool.
+
+        Mirrors ``Connection.closed`` / ``Cursor.closed`` discipline
+        used by every other connection-shaped class in the dbapi
+        siblings (and by psycopg / asyncpg / aiosqlite). A
+        long-running supervisor that owns the pool reference can use
+        ``if not pool.closed: await pool.close()`` rather than
+        reading the private ``_closed`` flag.
+
+        Idempotent: ``close()`` on an already-closed pool is a silent
+        no-op so reading this flag is the cheap predicate to skip the
+        redundant call.
+        """
+        return self._closed
+
     def __repr__(self) -> str:
         state = "closed" if self._closed else "open"
         # Address list is part of the public configuration (no secrets

@@ -999,6 +999,13 @@ class DqliteConnection:
         self._db_id: int | None = None
         self._in_transaction = False
         self._in_use = False
+        # Lifecycle predicate distinct from ``is_connected``: flipped
+        # to True at the top of ``close()`` / ``_close_impl`` and
+        # never flipped back. ``is_connected`` reports "transport is
+        # alive"; ``closed`` reports "close() has been called". A
+        # never-connected instance has both False — close() is still
+        # a no-op but the predicate distinguishes the states.
+        self._closed = False
         # Hold the bound loop via weakref so a long-lived
         # ``DqliteConnection`` whose loop has been closed (but the
         # connection itself was not properly ``close()``d) does NOT pin
@@ -1072,6 +1079,27 @@ class DqliteConnection:
     def is_connected(self) -> bool:
         """Check if connected."""
         return self._protocol is not None
+
+    @property
+    def closed(self) -> bool:
+        """Whether ``close()`` has been called on this connection.
+
+        Distinct from ``is_connected``: a never-connected instance
+        has ``is_connected == False`` AND ``closed == False``
+        (close() has not been called yet, but no transport was
+        opened either). Use ``closed`` for "should I avoid calling
+        close() again?"; use ``is_connected`` for "is the wire
+        alive?".
+
+        Mirrors ``dqlitedbapi.aio.AsyncConnection.closed`` and
+        psycopg / asyncpg / aiosqlite parity. PEP 249 does not
+        require it, but the dbapi layer exposes it; this fills the
+        client-layer parity gap so direct dqliteclient consumers and
+        the SA dialect (which touches ``_async_conn`` on the inner
+        client connection) get the same lifecycle predicate at every
+        layer.
+        """
+        return self._closed
 
     def __repr__(self) -> str:
         state = "connected" if self._protocol is not None else "disconnected"
@@ -1341,6 +1369,11 @@ class DqliteConnection:
         # close path has already run under pool ownership.
         if self._pool_released:
             return
+        # Flip the public predicate even if we early-return below
+        # (fork branch / already-disconnected path). ``closed`` is
+        # the "close() has been called" marker; ``is_connected``
+        # remains the "transport alive" marker.
+        self._closed = True
         # Fork-after-init: the inherited socket FD is shared with the
         # parent. ``writer.close()`` would send a FIN that the parent
         # still depends on. Flip the local state to closed without

@@ -42,7 +42,7 @@ def _make_conn_with_protocol() -> DqliteConnection:
     conn._in_transaction = False
     conn._tx_owner = None
     conn._savepoint_stack = []
-    conn._closed = False  # type: ignore[attr-defined]
+    conn._closed = False
     conn._close_timeout = 0.05
     conn._address = "test:9001"
     conn._bound_loop_ref = None

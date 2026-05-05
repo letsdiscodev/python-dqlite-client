@@ -24,7 +24,7 @@ def _make_conn() -> DqliteConnection:
     """Skeleton DqliteConnection sufficient for the validate +
     _run_protocol-mock paths; bypasses actual transport."""
     conn = DqliteConnection.__new__(DqliteConnection)
-    conn._closed = False  # type: ignore[attr-defined]
+    conn._closed = False
     conn._db_id = 1
     conn._protocol = MagicMock()
     return conn

@@ -32,7 +32,7 @@ def _prime_in_transaction(owner_task: asyncio.Task[object]) -> DqliteConnection:
     import os
 
     conn = DqliteConnection.__new__(DqliteConnection)
-    conn._closed = False  # type: ignore[attr-defined]
+    conn._closed = False
     conn._in_transaction = True
     conn._tx_owner = owner_task
     conn._has_untracked_savepoint = False
