@@ -41,6 +41,17 @@ logger = logging.getLogger(__name__)
 
 # Type alias for a redirect-target policy. Returns True if the address
 # should be accepted, False to reject with a ClusterError.
+#
+# The callable is invoked **synchronously** from inside the
+# leader-probe loop, holding the per-sweep semaphore. It MUST be cheap
+# and non-blocking: no socket I/O, no DNS resolution, no LDAP /
+# directory lookup. A slow policy serialises every probe through the
+# bound (defeating the parallel sweep) and blocks the asyncio event
+# loop, stalling other unrelated tasks. For in-process / in-memory
+# allowlist checks (``allowlist_policy(...)`` or a
+# ``frozenset.__contains__`` lookup) the synchronous shape is right.
+# A future async variant would arrive as a separate type alias if a
+# real use case appears.
 RedirectPolicy = Callable[[str], bool]
 
 # Default attempt count for connect(). Three attempts cover one leader
