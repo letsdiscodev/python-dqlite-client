@@ -1271,6 +1271,23 @@ class DqliteConnection:
                             raw_message=e.raw_message,
                         ) from e
                     raise
+                except ProtocolError as e:
+                    # Wire-decode failures during the handshake are
+                    # transport-class transient: a peer mid-restart
+                    # responding with a torn frame, an in-flight
+                    # leader flip producing a partial reply, etc.
+                    # Without rewrapping, ``ProtocolError`` would not
+                    # match the ``connect()`` retry tuple at
+                    # ``cluster.py:_DEFAULT_RETRYABLE_EXCEPTIONS``
+                    # (DqliteConnectionError, ClusterError, OSError),
+                    # so the operator's 3-attempt retry budget would
+                    # not fire on a real transient failure. Surface
+                    # as DqliteConnectionError so the retry classifier
+                    # sees the right shape.
+                    await self._abort_protocol()
+                    raise DqliteConnectionError(
+                        f"Wire decode failed during handshake to {self._safe_address}: {e}"
+                    ) from e
                 except BaseException:
                     await self._abort_protocol()
                     raise
