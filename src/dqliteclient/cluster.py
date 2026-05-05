@@ -6,7 +6,7 @@ import logging
 import math
 import os
 import random
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final, NoReturn
 
@@ -368,7 +368,7 @@ class ClusterClient:
     @classmethod
     def from_addresses(
         cls,
-        addresses: list[str],
+        addresses: Sequence[str],
         timeout: float = 10.0,
         *,
         dial_timeout: float | None = None,

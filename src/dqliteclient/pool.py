@@ -153,7 +153,7 @@ class ConnectionPool:
 
     def __init__(
         self,
-        addresses: list[str] | None = None,
+        addresses: Sequence[str] | None = None,
         *,
         database: str = "default",
         min_size: int = 1,

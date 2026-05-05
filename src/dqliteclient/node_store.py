@@ -95,9 +95,9 @@ class MemoryNodeStore(NodeStore):
 
     def __init__(
         self,
-        addresses: list[str] | None = None,
+        addresses: Sequence[str] | None = None,
         *,
-        initial_addresses: list[str] | None = None,
+        initial_addresses: Sequence[str] | None = None,
     ) -> None:
         """Seed with a list of ``host:port`` addresses.
 

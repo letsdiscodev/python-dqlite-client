@@ -9,6 +9,8 @@ Python (no-GIL) is not supported — the guard lives in
 raises ``ImportError`` at import time.
 """
 
+from collections.abc import Sequence
+
 from dqliteclient._dial import DialFunc
 from dqliteclient.cluster import (
     ClusterClient,
@@ -135,7 +137,7 @@ async def connect(
 
 
 async def create_pool(
-    addresses: list[str] | None = None,
+    addresses: Sequence[str] | None = None,
     *,
     database: str = "default",
     min_size: int = 1,
