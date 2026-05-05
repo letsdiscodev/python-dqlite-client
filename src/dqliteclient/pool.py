@@ -1493,19 +1493,26 @@ class ConnectionPool:
                     # awaiter-side raise delivered when the
                     # surrounding scope is cancelled). Do NOT suppress
                     # KeyboardInterrupt / SystemExit — those must
-                    # propagate. Mirrors the ``_release_reservation``
-                    # shield two lines below.
+                    # propagate.
                     #
-                    # Also suppress Exception to cover the drain task
-                    # itself raising — production drains run inside
-                    # ``_bounded_drain`` which already wraps in
-                    # ``suppress(Exception)``, but the
-                    # belt-and-braces inner suppress here keeps the
-                    # cleanup path immune to a synthetic drain failure
-                    # (and to a future refactor that drops
-                    # ``_bounded_drain``'s wrap).
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                    # The Exception arm is belt-and-braces: production
+                    # drains run inside ``_bounded_drain`` which
+                    # already wraps in ``suppress(Exception)``. Log
+                    # the suppressed exception at DEBUG so a future
+                    # drain bug isn't completely invisible — sibling
+                    # discipline to ``_drain_idle``'s per-iteration
+                    # ``logger.debug("close failed", exc_info=True)``.
+                    try:
                         await asyncio.shield(pending)
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.debug(
+                            "pool _release: suppressed pending-drain "
+                            "exception on conn %r",
+                            getattr(conn, "_address", "?"),
+                            exc_info=True,
+                        )
                 conn._pool_released = True
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.shield(self._release_reservation())
