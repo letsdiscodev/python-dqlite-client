@@ -14,6 +14,7 @@ from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
 from dqlitewire import MessageDecoder, MessageEncoder, NodeRole
+from dqlitewire import sanitize_server_text as _sanitize_server_text
 from dqlitewire.exceptions import (
     ProtocolError as _WireProtocolError,
 )
@@ -50,7 +51,7 @@ from dqlitewire.messages import (
     WelcomeResponse,
 )
 from dqlitewire.messages.base import Message
-from dqlitewire.messages.responses import NodeInfo, _sanitize_server_text
+from dqlitewire.messages.responses import NodeInfo
 
 __all__ = ["DqliteProtocol"]
 

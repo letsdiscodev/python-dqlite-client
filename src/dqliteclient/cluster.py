@@ -32,12 +32,10 @@ from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
 from dqlitewire import NodeRole
+from dqlitewire import sanitize_server_text as _sanitize_display_text
 from dqlitewire.messages.responses import (
     NodeInfo,
     _sanitize_for_log,
-)
-from dqlitewire.messages.responses import (
-    _sanitize_server_text as _sanitize_display_text,
 )
 
 __all__ = [
