@@ -163,9 +163,18 @@ class MemoryNodeStore(NodeStore):
             )
         else:
             self._nodes = ()
-        # Lazy lock so the constructor stays loop-agnostic.
-        # Materialised on the first ``set_nodes`` call.
-        self._set_nodes_lock: asyncio.Lock | None = None
+        # Lock the ``set_nodes`` critical section. Constructed eagerly
+        # in ``__init__`` — `asyncio.Lock` is loop-agnostic at
+        # construction time on Python 3.10+ (binds to the loop on
+        # first ``acquire()``). The previous lazy ``None``-then-
+        # initialise shape lost the mutual-exclusion contract under
+        # concurrent first-time callers: both observed ``None`` on the
+        # same scheduling slice, each constructed a fresh ``Lock``,
+        # and the second STORE_ATTR won — both proceeded to
+        # ``_set_nodes_locked`` in parallel and one update was lost.
+        # Mirrors ``YamlFileNodeStore.__init__`` at line 296 which has
+        # always done eager init.
+        self._set_nodes_lock: asyncio.Lock = asyncio.Lock()
 
     async def get_nodes(self) -> Sequence[NodeInfo]:
         """Get list of known nodes."""
@@ -185,8 +194,6 @@ class MemoryNodeStore(NodeStore):
         ``set_nodes`` invocations race-free on the final tuple
         assignment so neither caller's update is silently lost.
         """
-        if self._set_nodes_lock is None:
-            self._set_nodes_lock = asyncio.Lock()
         async with self._set_nodes_lock:
             await self._set_nodes_locked(nodes)
 

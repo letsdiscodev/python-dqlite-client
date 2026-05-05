@@ -42,11 +42,13 @@ async def test_concurrent_set_nodes_serialised() -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_nodes_lock_is_lazy_and_loop_safe() -> None:
-    """The lock is created lazily on the first set_nodes call so
-    the constructor remains loop-agnostic — a MemoryNodeStore can be
-    constructed at module import time."""
+async def test_set_nodes_lock_eager_constructed() -> None:
+    """The lock is constructed eagerly in __init__ — asyncio.Lock
+    is loop-agnostic at construction time on Python 3.10+ (binds
+    to the loop on first acquire). Lazy construction would lose
+    the mutual-exclusion contract under concurrent first-time
+    callers (each builds its own private Lock)."""
     store = MemoryNodeStore(["seed:9001"])
-    assert store._set_nodes_lock is None  # not materialised yet
+    assert isinstance(store._set_nodes_lock, asyncio.Lock)
     await store.set_nodes([NodeInfo(1, "a:9001", NodeRole.VOTER)])
     assert isinstance(store._set_nodes_lock, asyncio.Lock)
