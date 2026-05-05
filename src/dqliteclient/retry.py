@@ -136,6 +136,7 @@ async def retry_with_backoff[T](
     deadline = None if max_elapsed_seconds is None else loop.time() + max_elapsed_seconds
 
     last_error: BaseException | None = None
+    history: list[BaseException] = []
 
     for attempt in range(max_attempts):
         # Deadline re-check BEFORE the next func() call: a previous
@@ -153,6 +154,7 @@ async def retry_with_backoff[T](
             raise
         except retryable_exceptions as e:
             last_error = e
+            history.append(e)
 
             if attempt == max_attempts - 1:
                 break
@@ -182,4 +184,17 @@ async def retry_with_backoff[T](
     # would still leave the invariant intact at this point because the
     # break path always sets last_error first).
     assert last_error is not None
+    if len(history) > 1:
+        # Chain prior-attempt failures so a forensic walker can see
+        # the full timeline rather than only the last error. Mirrors
+        # the discipline ``_find_leader_impl`` and
+        # ``ConnectionPool.initialize`` apply for per-node aggregates.
+        # ``_bounded_group`` caps children so the chain stays
+        # picklable for cross-process error capture. Local import to
+        # avoid the retry <-> cluster import cycle at module load.
+        from dqliteclient.cluster import _bounded_group
+
+        raise last_error from _bounded_group(
+            f"retry exhausted after {len(history)} attempts", history
+        )
     raise last_error
