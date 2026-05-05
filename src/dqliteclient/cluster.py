@@ -1811,42 +1811,58 @@ class ClusterClient:
         Yields:
             A handshaken :class:`DqliteProtocol` ready for admin RPCs.
         """
+        # Wrap the entire dial+handshake in ``attempt_timeout`` to
+        # mirror the SQL path (``connection.py:_connect_impl``) and
+        # the Go canonical ``NewDirectConnector.Connect``
+        # (``connector.go:148-150``). Without this outer envelope, a
+        # slow-handshaking peer (TLS-terminating proxy with delayed
+        # welcome, mid-restart node) hangs admin RPCs for up to the
+        # per-RPC ``timeout`` (default 10 s) even when the operator
+        # sized ``attempt_timeout`` at e.g. 0.5 s for fast control-
+        # plane fail-over. The inner ``wait_for(timeout=dial_timeout)``
+        # still bounds the TCP-establish phase; the protocol's
+        # ``self._timeout`` still bounds per-RPC reads on the yielded
+        # protocol.
+        protocol: DqliteProtocol | None = None
+        writer = None
         try:
-            reader, writer = await asyncio.wait_for(
-                open_connection(address, dial_func=self._dial_func),
-                timeout=self._dial_timeout,
-            )
-        except TimeoutError as e:
-            raise DqliteConnectionError(
-                f"Connection to {_sanitize_display_text(address)} timed out"
-            ) from e
-        except OSError as e:
-            raise DqliteConnectionError(
-                f"Failed to connect to {_sanitize_display_text(address)}: {e}"
-            ) from e
-        try:
-            protocol = DqliteProtocol(
-                reader,
-                writer,
-                timeout=self._timeout,
-                trust_server_heartbeat=self._trust_server_heartbeat,
-                max_total_rows=self._max_total_rows,
-                max_continuation_frames=self._max_continuation_frames,
-                address=address,
-            )
-            await protocol.handshake()
+            try:
+                async with asyncio.timeout(self._attempt_timeout):
+                    reader, writer = await asyncio.wait_for(
+                        open_connection(address, dial_func=self._dial_func),
+                        timeout=self._dial_timeout,
+                    )
+                    protocol = DqliteProtocol(
+                        reader,
+                        writer,
+                        timeout=self._timeout,
+                        trust_server_heartbeat=self._trust_server_heartbeat,
+                        max_total_rows=self._max_total_rows,
+                        max_continuation_frames=self._max_continuation_frames,
+                        address=address,
+                    )
+                    await protocol.handshake()
+            except TimeoutError as e:
+                raise DqliteConnectionError(
+                    f"Connection to {_sanitize_display_text(address)} timed out"
+                ) from e
+            except OSError as e:
+                raise DqliteConnectionError(
+                    f"Failed to connect to {_sanitize_display_text(address)}: {e}"
+                ) from e
             yield protocol
         finally:
-            writer.close()
-            inner_drain: asyncio.Task[None] = asyncio.ensure_future(
-                asyncio.wait_for(
-                    writer.wait_closed(),
-                    timeout=_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS,
+            if writer is not None:
+                writer.close()
+                inner_drain: asyncio.Task[None] = asyncio.ensure_future(
+                    asyncio.wait_for(
+                        writer.wait_closed(),
+                        timeout=_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS,
+                    )
                 )
-            )
-            inner_drain.add_done_callback(_observe_drain_exception)
-            with contextlib.suppress(OSError, TimeoutError):
-                await asyncio.shield(inner_drain)
+                inner_drain.add_done_callback(_observe_drain_exception)
+                with contextlib.suppress(OSError, TimeoutError):
+                    await asyncio.shield(inner_drain)
 
 
 def allowlist_policy(addresses: Iterable[str]) -> RedirectPolicy:
@@ -1877,7 +1893,7 @@ def allowlist_policy(addresses: Iterable[str]) -> RedirectPolicy:
         try:
             parsed.append(_parse_address(raw))
         except ValueError as e:
-            raise ValueError(f"allowlist_policy: invalid address {raw!r} ({e})") from None
+            raise ValueError(f"allowlist_policy: invalid address {raw!r} ({e})") from e
     allowed = frozenset(parsed)
 
     def policy(addr: str) -> bool:
