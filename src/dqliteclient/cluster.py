@@ -1478,6 +1478,13 @@ class ClusterClient:
                 # so the second call lands on the same leader (avoids
                 # a re-election window between the two requests).
                 await protocol.assign(node_id, role)
+        # Raft membership changes can interleave with elections.
+        # Adding a new VOTER changes quorum size; the new majority can
+        # elect a different leader during commit. Invalidate the
+        # cached leader so the next find_leader() runs the full sweep
+        # rather than paying a fast-path miss against the (possibly
+        # former) leader.
+        self._set_last_known_leader(None)
 
     async def assign_role(self, node_id: int, role: NodeRole) -> None:
         """Change a node's role (promote or demote).
@@ -1500,6 +1507,10 @@ class ClusterClient:
         leader_addr = await self.find_leader()
         async with self.open_admin_connection(leader_addr) as protocol:
             await protocol.assign(node_id, role)
+        # Promoting STANDBY → VOTER widens the voting set; the
+        # election window applies. Invalidate the cached leader for
+        # the same reason as add_node above.
+        self._set_last_known_leader(None)
 
     async def remove_node(self, node_id: int) -> None:
         """Remove a node from the cluster (Raft membership change).
@@ -1582,6 +1593,12 @@ class ClusterClient:
         target = address if address is not None else await self.find_leader()
         async with self.open_admin_connection(target) as protocol:
             await protocol.weight(weight)
+        # ``set_weight`` does not directly change quorum, but a
+        # marginal cluster on the edge of an election can be tipped by
+        # the weight shift. Invalidate the cached leader so the next
+        # find_leader() rediscovers without paying a fast-path miss
+        # against an ex-leader.
+        self._set_last_known_leader(None)
 
     async def dump(self, database: str) -> dict[str, bytes]:
         """Dump a database to ``{filename: bytes}``.

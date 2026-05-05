@@ -77,8 +77,11 @@ async def test_remove_node_invalidates_last_known_leader() -> None:
 
 
 @pytest.mark.asyncio
-async def test_add_node_does_not_invalidate_last_known_leader() -> None:
-    """add_node does not change leadership; the cache survives."""
+async def test_add_node_invalidates_last_known_leader() -> None:
+    """Adding a new VOTER changes quorum size; the new majority can
+    elect a different leader during commit. Invalidate the cache so
+    the next find_leader runs the full sweep rather than paying a
+    fast-path miss against the (possibly former) leader."""
     cluster = _make_cluster_with_cached_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
@@ -94,4 +97,49 @@ async def test_add_node_does_not_invalidate_last_known_leader() -> None:
         for p in reversed(patches):
             p.stop()
 
-    assert cluster._get_last_known_leader() == "node1:9001"
+    assert cluster._get_last_known_leader() is None
+
+
+@pytest.mark.asyncio
+async def test_assign_role_invalidates_last_known_leader() -> None:
+    """Promoting STANDBY → VOTER widens the voting set; the
+    election window applies. Invalidate the cache."""
+    from dqlitewire import NodeRole
+
+    cluster = _make_cluster_with_cached_leader()
+    fake_proto = MagicMock()
+    fake_proto.handshake = AsyncMock()
+    fake_proto.assign = AsyncMock()
+
+    patches = _patch_admin(cluster, fake_proto)
+    for p in patches:
+        p.start()
+    try:
+        await cluster.assign_role(node_id=2, role=NodeRole.VOTER)
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+    assert cluster._get_last_known_leader() is None
+
+
+@pytest.mark.asyncio
+async def test_set_weight_invalidates_last_known_leader() -> None:
+    """Changing weight does not directly change quorum, but a
+    marginal cluster on the edge of an election can be tipped by
+    the weight shift. Invalidate the cache."""
+    cluster = _make_cluster_with_cached_leader()
+    fake_proto = MagicMock()
+    fake_proto.handshake = AsyncMock()
+    fake_proto.weight = AsyncMock()
+
+    patches = _patch_admin(cluster, fake_proto)
+    for p in patches:
+        p.start()
+    try:
+        await cluster.set_weight(weight=5)
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+    assert cluster._get_last_known_leader() is None
