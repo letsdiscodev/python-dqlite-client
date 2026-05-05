@@ -1136,7 +1136,10 @@ class DqliteConnection:
 
     def __repr__(self) -> str:
         state = "connected" if self._protocol is not None else "disconnected"
-        return f"<DqliteConnection address={self._address!r} database={self._database!r} {state}>"
+        return (
+            f"<DqliteConnection address={self._address!r} "
+            f"database={self._database!r} {state} at 0x{id(self):x}>"
+        )
 
     def __reduce__(self) -> NoReturn:
         # ``DqliteConnection`` holds a live socket (writer transport),
