@@ -91,6 +91,12 @@ class MemoryNodeStore(NodeStore):
     Backs storage with an immutable tuple so readers can safely be
     handed a direct reference without defensive copies and so a
     concurrent ``set_nodes()`` never produces a torn view.
+
+    Concurrent writers are serialised by an ``asyncio.Lock``: two
+    callers each invoking ``set_nodes`` no longer race on the final
+    tuple assignment (last-writer-wins lost-update). Mirrors the
+    discipline ``YamlNodeStore`` already applies for the same
+    reason.
     """
 
     def __init__(
@@ -157,6 +163,9 @@ class MemoryNodeStore(NodeStore):
             )
         else:
             self._nodes = ()
+        # Lazy lock so the constructor stays loop-agnostic.
+        # Materialised on the first ``set_nodes`` call.
+        self._set_nodes_lock: asyncio.Lock | None = None
 
     async def get_nodes(self) -> Sequence[NodeInfo]:
         """Get list of known nodes."""
@@ -171,7 +180,17 @@ class MemoryNodeStore(NodeStore):
         and surface deep inside ``find_leader`` (whitespace) or
         inflate the probe count and per-node error lines
         (duplicates).
+
+        Concurrent callers are serialised via an asyncio.Lock: two
+        ``set_nodes`` invocations race-free on the final tuple
+        assignment so neither caller's update is silently lost.
         """
+        if self._set_nodes_lock is None:
+            self._set_nodes_lock = asyncio.Lock()
+        async with self._set_nodes_lock:
+            await self._set_nodes_locked(nodes)
+
+    async def _set_nodes_locked(self, nodes: Sequence[NodeInfo]) -> None:
         seen: set[str] = set()
         unique: list[NodeInfo] = []
         for node in nodes:
