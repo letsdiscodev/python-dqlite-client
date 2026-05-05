@@ -52,6 +52,20 @@ logger = logging.getLogger(__name__)
 # the comparison is a Python int-equality (~10 ns) regardless of
 # arch. ``register_at_fork`` is unavailable on Windows; fall back to
 # ``os.getpid`` there (Windows has no fork anyway).
+#
+# Callback-ordering caveat: ``register_at_fork(after_in_child=...)``
+# callbacks run in registration order (CPython 3.13). A third-party
+# ``after_in_child`` callback registered AFTER ``dqliteclient.connection``
+# is imported, but that itself dispatches into dqliteclient (e.g. a
+# logging handler whose own fork callback emits a debug message via a
+# custom handler that touches the pool), would observe the cached
+# ``_current_pid`` BEFORE ``_refresh_pid_cache`` has run — and the
+# fork guard would not trip. The cache is best-effort under such
+# pathological hook ordering; the only fully-correct posture is
+# ``os.getpid()`` directly, which costs ~700 ns/call on aarch64.
+# Production code paths reach ``_check_in_use`` via the pool's
+# acquire path which is far more expensive than 700 ns regardless,
+# so a future profile-guided revisit may simplify this.
 _current_pid: int = os.getpid()
 
 
