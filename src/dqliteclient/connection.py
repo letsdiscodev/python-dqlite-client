@@ -75,6 +75,18 @@ def _refresh_pid_cache() -> None:
     _current_pid = os.getpid()
 
 
+def get_current_pid() -> int:
+    """Return the cached current pid as observed by the dqliteclient
+    atfork machinery.
+
+    Public accessor for cross-package callers (notably
+    ``python-dqlite-dbapi``'s connection / cursor close paths). The
+    underlying ``_current_pid`` module attribute is private and may
+    move; the accessor is the stable surface.
+    """
+    return _current_pid
+
+
 if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_refresh_pid_cache)
 
