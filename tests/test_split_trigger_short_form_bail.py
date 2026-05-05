@@ -34,10 +34,7 @@ def test_full_form_trigger_with_begin_returns_offset() -> None:
     """Positive control: full-form trigger with BEGIN returns the
     offset just past BEGIN so the outer splitter knows to ignore
     semicolons until matching END."""
-    sql = (
-        "CREATE TRIGGER x AFTER INSERT ON t WHEN (a > 0) "
-        "BEGIN INSERT INTO log VALUES(1); END;"
-    )
+    sql = "CREATE TRIGGER x AFTER INSERT ON t WHEN (a > 0) BEGIN INSERT INTO log VALUES(1); END;"
     after_create = len("CREATE")
     result = _scan_for_trigger_begin(sql, after_create, len(sql))
     assert result > 0, "full-form trigger must locate BEGIN"
