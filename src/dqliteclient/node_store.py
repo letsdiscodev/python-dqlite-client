@@ -289,16 +289,22 @@ class YamlNodeStore(NodeStore):
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
-        # Defer-import so PyYAML stays an optional extra. Operators
-        # who don't use YamlNodeStore never need the dependency.
+        # Verify PyYAML is importable so a malformed install raises
+        # at construction (operator-facing) rather than at first
+        # ``get_nodes``. Do NOT cache the module reference on
+        # ``self`` — module objects are not picklable, and caching
+        # one would break ``pickle.dumps(store)`` with a confusing
+        # generic ``TypeError: cannot pickle 'module' object``
+        # (no class name, no remediation hint). Re-import on demand
+        # in ``_load_from_disk`` / ``_save_to_disk``; the import is
+        # cached after first use (~µs cost per call site).
         try:
-            import yaml as _yaml
+            import yaml as _yaml  # noqa: F401  - import-time presence check only
         except ImportError as e:
             raise ImportError(
                 "YamlNodeStore requires PyYAML; install with "
                 "'pip install python-dqlite-client[yaml-store]'"
             ) from e
-        self._yaml = _yaml
         self._path = Path(path)
         self._lock = asyncio.Lock()
         # Eager-load and validate so a malformed file raises at
@@ -325,9 +331,11 @@ class YamlNodeStore(NodeStore):
             raise ClusterError(f"YamlNodeStore: cannot read {self._path}: {e}") from e
         if not text.strip():
             return ()
+        import yaml
+
         try:
-            raw = self._yaml.safe_load(text)
-        except self._yaml.YAMLError as e:
+            raw = yaml.safe_load(text)
+        except yaml.YAMLError as e:
             raise ClusterError(f"YamlNodeStore: malformed YAML in {self._path}: {e}") from e
         if raw is None:
             return ()
@@ -421,6 +429,8 @@ class YamlNodeStore(NodeStore):
         # writers racing the load -> serialise -> write sequence
         # would lose one update. asyncio.Lock keeps the in-process
         # last-writer-wins ordering deterministic.
+        import yaml
+
         async with self._lock:
             payload = [
                 {
@@ -430,7 +440,7 @@ class YamlNodeStore(NodeStore):
                 }
                 for n in nodes
             ]
-            text = self._yaml.safe_dump(payload, default_flow_style=False, sort_keys=False)
+            text = yaml.safe_dump(payload, default_flow_style=False, sort_keys=False)
             parent = self._path.parent if str(self._path.parent) else Path(".")
             fd_path: str | None = None
             try:
