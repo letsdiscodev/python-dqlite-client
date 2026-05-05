@@ -20,25 +20,46 @@ class DqliteError(Exception):
     """Base exception for dqlite client errors.
 
     Carries an optional ``raw_message`` attribute — the verbatim
-    server-supplied diagnostic, un-truncated and un-suffixed — so
-    callers (the dbapi-layer classifier, SA's ``is_disconnect``)
-    can read forensic-grade text without falling back to
-    ``str(e)`` (which can be truncated by display caps or padded
-    by per-class wrap prefixes). Defaults to ``None`` for raises
-    that are purely client-side (no server text in scope).
+    server-supplied diagnostic, un-suffixed (but capped at
+    ``_MAX_RAW_MESSAGE`` codepoints to bound cross-process pickled
+    exception graphs) — so callers (the dbapi-layer classifier, SA's
+    ``is_disconnect``) can read forensic-grade text without falling
+    back to ``str(e)`` (which can be truncated by display caps or
+    padded by per-class wrap prefixes). Defaults to ``None`` for
+    raises that are purely client-side (no server text in scope).
 
-    The ``OperationalError`` subclass overrides ``__init__`` to keep
-    its existing display-truncation semantics (a 1 KiB cap on the
-    user-facing ``message`` field with the un-truncated text on
-    ``raw_message``); all other subclasses inherit this base
-    constructor unchanged.
+    The ``OperationalError`` subclass adds an extra display-message
+    cap on top (``_MAX_DISPLAY_MESSAGE`` — a stricter bound on the
+    user-facing string than ``raw_message``); all other subclasses
+    inherit this base constructor unchanged and get the
+    ``_MAX_RAW_MESSAGE`` cap automatically.
     """
+
+    # Cap on ``raw_message``. The wire layer caps
+    # ``FailureResponse.message`` at ~64 KiB; combined with
+    # ``BaseExceptionGroup`` chains in ``find_leader`` and
+    # ``pool.initialize``, a 100-node sweep against hostile peers
+    # would otherwise produce ~6 MB exception payloads that flow
+    # through cross-process pickling (``ProcessPoolExecutor``, Celery,
+    # structured-error capture). 4 KiB is well above any realistic
+    # SQLite error string while bounding the worst-case fan-out.
+    _MAX_RAW_MESSAGE: ClassVar[int] = 4 * 1024
 
     raw_message: str | None
 
     def __init__(self, *args: object, raw_message: str | None = None) -> None:
         super().__init__(*args)
-        self.raw_message = raw_message
+        self.raw_message = self._cap_raw_message(raw_message)
+
+    @classmethod
+    def _cap_raw_message(cls, raw_message: str | None) -> str | None:
+        if raw_message is None or len(raw_message) <= cls._MAX_RAW_MESSAGE:
+            return raw_message
+        overflow = len(raw_message) - cls._MAX_RAW_MESSAGE
+        return (
+            raw_message[: cls._MAX_RAW_MESSAGE]
+            + f"... [raw_message truncated, {overflow} codepoints]"
+        )
 
     def __getstate__(self) -> dict[str, object]:
         """State capture for pickle.
@@ -165,16 +186,6 @@ class OperationalError(DqliteError):
     """
 
     _MAX_DISPLAY_MESSAGE: ClassVar[int] = 1024
-    # Cap on the un-truncated ``raw_message``. The wire layer caps
-    # ``FailureResponse.message`` at ~64 KiB; combined with
-    # ``BaseExceptionGroup`` chains in ``find_leader`` and
-    # ``pool.initialize``, a 100-node sweep against hostile peers
-    # would otherwise produce ~6 MB exception payloads that flow
-    # through cross-process pickling (``ProcessPoolExecutor``,
-    # Celery, structured-error capture). 4 KiB is well above any
-    # realistic SQLite error string (the longest in CPython's test
-    # suite is ~200 chars) while bounding the worst-case fan-out.
-    _MAX_RAW_MESSAGE: ClassVar[int] = 4 * 1024
 
     code: int
     message: str
@@ -188,23 +199,15 @@ class OperationalError(DqliteError):
         raw_message: str | None = None,
     ) -> None:
         self.code = code
-        # ``raw_message`` is the verbatim server text (un-truncated,
-        # un-suffixed). Callers compose the display ``message`` with
-        # peer-address suffix / "Failed to connect:" prefix etc. and
-        # pass the unadorned server text as ``raw_message=`` so the
-        # contract that raw_message is the verbatim server text is
-        # preserved through the dbapi-layer plumbing. Old call sites
-        # that omit the kwarg still get the previous behaviour
-        # (``raw_message`` defaults to ``message``).
+        # ``raw_message`` is the verbatim server text. Callers compose
+        # the display ``message`` with peer-address suffix / "Failed to
+        # connect:" prefix etc. and pass the unadorned server text as
+        # ``raw_message=`` so the contract that raw_message is the
+        # verbatim server text is preserved through the dbapi-layer
+        # plumbing. Old call sites that omit the kwarg still get the
+        # previous behaviour (``raw_message`` defaults to ``message``).
+        # The ~4 KiB cap on raw_message is applied by ``DqliteError``.
         resolved_raw_message = message if raw_message is None else raw_message
-        # Bound ``raw_message`` so cross-process pickled exception
-        # graphs stay small even under hostile-peer fan-out.
-        if len(resolved_raw_message) > self._MAX_RAW_MESSAGE:
-            raw_overflow = len(resolved_raw_message) - self._MAX_RAW_MESSAGE
-            resolved_raw_message = (
-                resolved_raw_message[: self._MAX_RAW_MESSAGE]
-                + f"... [raw_message truncated, {raw_overflow} codepoints]"
-            )
         if len(message) > self._MAX_DISPLAY_MESSAGE:
             # ``len(message)`` and the slice cap count Python codepoints,
             # not UTF-8 bytes. Match the unit in the marker so an
@@ -225,11 +228,10 @@ class OperationalError(DqliteError):
         # through as args so ``self.args == (code, truncated_message)``;
         # pickle / deepcopy reconstruct via
         # ``OperationalError(code, truncated_message,
-        # raw_message=truncated_raw_message)``. Without truncating
-        # ``args`` here, the pickled payload would still carry the
-        # original un-truncated ``message`` argument even after the
-        # raw_message cap — defeating the bound for cross-process
-        # exception graphs. ``raw_message=`` is the bounded value.
+        # raw_message=...)``. Without truncating ``args`` here, the
+        # pickled payload would carry the original un-truncated
+        # ``message`` argument — defeating the bound for cross-process
+        # exception graphs. ``DqliteError`` then caps ``raw_message``.
         super().__init__(code, self.message, raw_message=resolved_raw_message)
 
     def __str__(self) -> str:

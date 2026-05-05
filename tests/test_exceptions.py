@@ -7,7 +7,13 @@ import pickle
 
 import pytest
 
-from dqliteclient.exceptions import OperationalError
+from dqliteclient.exceptions import (
+    ClusterError,
+    DataError,
+    DqliteConnectionError,
+    InterfaceError,
+    OperationalError,
+)
 
 
 class TestOperationalErrorPickling:
@@ -118,3 +124,41 @@ class TestOperationalErrorMessageTruncation:
         # After round-trip the display truncation is re-applied.
         assert len(restored.message) < 1200
         assert "truncated" in restored.message
+
+
+class TestDqliteErrorRawMessageCap:
+    """The ~4 KiB ``_MAX_RAW_MESSAGE`` cap was added on the
+    ``OperationalError`` subclass first; lift to ``DqliteError`` so
+    every code-bearing exception (e.g. ``DqliteConnectionError`` rewrap
+    on leader-flip retry) inherits the bound. Defense-in-depth across
+    the cap discipline so a hostile-peer 64 KiB FailureResponse cannot
+    flow uncapped into a cross-process pickled exception graph through
+    any path.
+    """
+
+    @pytest.mark.parametrize(
+        "cls,kwargs",
+        [
+            (DqliteConnectionError, {"code": 10250}),
+            (InterfaceError, {}),
+            (ClusterError, {}),
+            (DataError, {}),
+        ],
+    )
+    def test_raw_message_capped_on_dqlite_error_subclass(
+        self, cls: type, kwargs: dict[str, object]
+    ) -> None:
+        big = "X" * 63_000
+        e = cls("trunc msg", raw_message=big, **kwargs)
+        assert e.raw_message is not None
+        assert len(e.raw_message) < 5000
+        assert "raw_message truncated" in e.raw_message
+
+    def test_short_raw_message_is_not_touched(self) -> None:
+        short = "ordinary error"
+        e = DqliteConnectionError("msg", code=1, raw_message=short)
+        assert e.raw_message == short
+
+    def test_none_raw_message_round_trips(self) -> None:
+        e = DqliteConnectionError("msg", code=1, raw_message=None)
+        assert e.raw_message is None
