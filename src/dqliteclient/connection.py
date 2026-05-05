@@ -1425,6 +1425,18 @@ class DqliteConnection:
             # loop in production logs.
             stuck = self._pending_drain
             if stuck is not None and not stuck.done():
+                # Attach an observer so a non-CancelledError raise
+                # from the residual task does not surface as
+                # asyncio's "Task exception was never retrieved"
+                # warning at GC. Mirrors the
+                # ``_observe_drain_exception`` discipline used in
+                # cluster.py. Adversarial mocks in tests may not
+                # supply ``add_done_callback`` — guard with hasattr
+                # so the resnapshot-cap path stays test-friendly.
+                if hasattr(stuck, "add_done_callback"):
+                    from dqliteclient.cluster import _observe_drain_exception
+
+                    stuck.add_done_callback(_observe_drain_exception)
                 stuck.cancel()
             self._pending_drain = None
             logger.warning(

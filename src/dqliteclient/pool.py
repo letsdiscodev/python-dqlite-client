@@ -1508,8 +1508,7 @@ class ConnectionPool:
                         pass
                     except Exception:
                         logger.debug(
-                            "pool _release: suppressed pending-drain "
-                            "exception on conn %r",
+                            "pool _release: suppressed pending-drain exception on conn %r",
                             getattr(conn, "_address", "?"),
                             exc_info=True,
                         )
