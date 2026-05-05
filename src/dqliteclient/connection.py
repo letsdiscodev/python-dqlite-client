@@ -879,6 +879,15 @@ class DqliteConnection:
     use ``asyncio.run_coroutine_threadsafe()`` — the coroutines execute
     safely in the event loop thread. Free-threaded Python (no-GIL) is
     not supported.
+
+    Loop affinity: the connection lazily binds to the first event loop
+    that uses it. Subsequent uses from a different loop on the same
+    thread raise ``InterfaceError`` via ``_check_in_use``. Cross-thread
+    usage with one loop per thread is fundamentally unsupported — the
+    lazy bind is best-effort and a determined caller can race the
+    initial assignment. Construct one ``DqliteConnection`` per loop;
+    share via ``ConnectionPool`` (which is also single-loop) or
+    explicit per-loop pools.
     """
 
     def __init__(
