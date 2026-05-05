@@ -1381,7 +1381,7 @@ class ClusterClient:
             )
             raise
 
-    async def cluster_info(self) -> list[NodeInfo]:
+    async def cluster_info(self, *, policy: RedirectPolicy | None = None) -> list[NodeInfo]:
         """Return the current cluster's node list (id, address, role).
 
         Sends ``ClusterRequest(format=1)`` to the current leader and
@@ -1394,6 +1394,18 @@ class ClusterClient:
         freshest one available. A stale follower could otherwise
         report a configuration that is one Raft log entry behind.
 
+        ``policy`` is an optional :data:`RedirectPolicy` callable
+        applied to every returned address. Nodes whose address fails
+        the policy are excluded from the returned list and a
+        ``logger.warning`` is emitted with the rejected address. Use
+        when the result is fed into ``node_store.set_nodes(...)``: a
+        hostile leader could otherwise smuggle attacker-controlled
+        addresses into your membership rotation. Pair with
+        :func:`default_safe_redirect_policy` /
+        :func:`allowlist_policy`. ``None`` (default) preserves the
+        existing pass-through behaviour for callers that are not
+        building a control plane.
+
         Raises:
             ClusterError: when no leader is reachable across the
                 configured node store (same condition that
@@ -1404,7 +1416,21 @@ class ClusterClient:
         """
         leader_addr = await self.find_leader()
         async with self.open_admin_connection(leader_addr) as protocol:
-            return await protocol.cluster()
+            nodes = await protocol.cluster()
+        if policy is None:
+            return nodes
+        filtered: list[NodeInfo] = []
+        for node in nodes:
+            if policy(node.address):
+                filtered.append(node)
+            else:
+                logger.warning(
+                    "cluster_info: dropping node %s (id=%d, role=%s) — address rejected by policy",
+                    _sanitize_display_text(node.address),
+                    node.node_id,
+                    node.role.name,
+                )
+        return filtered
 
     async def transfer_leadership(self, target_node_id: int) -> None:
         """Transfer leadership to ``target_node_id``.
