@@ -141,15 +141,16 @@ async def test_cluster_query_leader_uses_dial_timeout_for_dial() -> None:
         "dqliteclient._dial.open_connection_with_keepalive",
         side_effect=slow_open,
     ):
-        # ``_query_leader`` returns ``None`` on OSError-family
-        # (which subsumes TimeoutError on cancellation). The test
-        # passes if it returns within the dial_timeout budget, NOT
-        # after the full ``timeout=10.0``.
+        # ``_query_leader`` raises TimeoutError when the dial budget
+        # is exhausted (the per-node attribution is the caller's
+        # job — see ``_probe_one``). The test passes if the raise
+        # arrives within the dial_timeout budget, NOT after the
+        # full ``timeout=10.0``.
         start = asyncio.get_running_loop().time()
-        result = await cluster._query_leader("localhost:9001")
+        with pytest.raises(TimeoutError):
+            await cluster._query_leader("localhost:9001")
         elapsed = asyncio.get_running_loop().time() - start
 
-    assert result is None
     assert elapsed < 1.5, (
         f"expected query_leader to give up within ~dial_timeout (0.5s); "
         f"actually took {elapsed:.3f}s"

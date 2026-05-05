@@ -924,19 +924,33 @@ class ClusterClient:
     async def _query_leader(
         self, address: str, *, trust_server_heartbeat: bool = False
     ) -> str | None:
-        """Query a node for the current leader."""
-        try:
-            reader, writer = await asyncio.wait_for(
-                open_connection(address, dial_func=self._dial_func),
-                timeout=self._dial_timeout,
-            )
-        except OSError:
-            # OSError subsumes TimeoutError, BrokenPipeError,
-            # ConnectionError, ConnectionRefusedError, and the rest
-            # of the stdlib transport-error shapes. Any one of those
-            # here means the node is unreachable; surface "unknown
-            # leader" to the caller so it can try another node.
-            return None
+        """Query a node for the current leader.
+
+        Raises ``OSError`` (or a subclass) if the dial itself fails;
+        ``DqliteConnectionError`` / ``ProtocolError`` /
+        ``OperationalError`` for handshake-or-later failures. The
+        caller (``_probe_one``) attributes each failure class to the
+        per-node aggregate ``ClusterError``. Returns ``None`` when
+        the node is reachable but reports no leader (the
+        "unknown leader" branch the wire-level ``LeaderResponse``
+        handles).
+
+        Pre-fix this swallowed pre-handshake ``OSError`` as ``None``,
+        losing per-node attribution: a node that consistently
+        refused connection contributed to the aggregate as
+        ``"<addr>: no leader known"`` rather than
+        ``"<addr>: ConnectionRefusedError"``. Operators reading the
+        aggregate cannot remediate without distinguishing
+        "node unreachable" from "node up, no leader elected".
+        """
+        # Let OSError (subsumes TimeoutError, ConnectionRefused,
+        # BrokenPipe, etc.) propagate to the caller. ``_probe_one``
+        # already wraps this call in a try/except that classifies
+        # transport errors per node into the aggregate ClusterError.
+        reader, writer = await asyncio.wait_for(
+            open_connection(address, dial_func=self._dial_func),
+            timeout=self._dial_timeout,
+        )
 
         try:
             protocol = DqliteProtocol(
