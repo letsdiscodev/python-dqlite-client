@@ -205,6 +205,7 @@ async def test_query_leader_uses_cluster_dial_func() -> None:
     with patch("dqliteclient.cluster.DqliteProtocol") as proto_cls:
         proto = MagicMock()
         proto.handshake = AsyncMock()
+        proto.negotiate_protocol_only = AsyncMock()
         proto.get_leader = AsyncMock(return_value=(1, "leader.example:9001"))
         proto.close = MagicMock()
         proto_cls.return_value = proto

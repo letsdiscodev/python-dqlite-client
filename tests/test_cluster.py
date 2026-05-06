@@ -71,13 +71,12 @@ class TestClusterClient:
         mock_writer.close = MagicMock()
         mock_writer.wait_closed = AsyncMock()
 
-        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+        from dqlitewire.messages import LeaderResponse
 
         # Upstream raft_leader sets id and address atomically: a voter
         # that IS the leader returns its own id AND its own address
         # (never (nonzero, "")).
         responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
             LeaderResponse(node_id=1, address="localhost:9001").encode(),
         ]
         mock_reader.read.side_effect = responses
@@ -97,14 +96,12 @@ class TestClusterClient:
         mock_writer.close = MagicMock()
         mock_writer.wait_closed = AsyncMock()
 
-        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+        from dqlitewire.messages import LeaderResponse
 
         # First probe: localhost:9001 redirects to localhost:9002.
         # Second probe (N1 verification): localhost:9002 self-confirms.
         responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
             LeaderResponse(node_id=2, address="localhost:9002").encode(),
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
             LeaderResponse(node_id=2, address="localhost:9002").encode(),
         ]
         mock_reader.read.side_effect = responses
@@ -125,10 +122,9 @@ class TestClusterClient:
         mock_writer.close = MagicMock()
         mock_writer.wait_closed = AsyncMock()
 
-        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+        from dqlitewire.messages import LeaderResponse
 
         responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
             LeaderResponse(node_id=0, address="").encode(),  # No leader known
         ]
         mock_reader.read.side_effect = responses
@@ -155,13 +151,12 @@ class TestClusterClient:
         mock_writer.close = MagicMock()
         mock_writer.wait_closed = AsyncMock()
 
-        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+        from dqlitewire.messages import LeaderResponse
 
         # Each node consumed independently — the connect handler is
         # called twice and replays the same Welcome+NoLeader pair.
         def fresh_no_leader_responses() -> list[bytes]:
             return [
-                WelcomeResponse(heartbeat_timeout=15000).encode(),
                 LeaderResponse(node_id=0, address="").encode(),
             ]
 
@@ -254,10 +249,9 @@ class TestClusterClient:
         mock_writer.close = MagicMock()
         mock_writer.wait_closed = AsyncMock()
 
-        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+        from dqlitewire.messages import LeaderResponse
 
         responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
             LeaderResponse(node_id=1, address="localhost:9001").encode(),
         ]
         mock_reader.read.side_effect = responses
@@ -333,34 +327,25 @@ class TestClusterClient:
         mock_writer.close = MagicMock()
         mock_writer.wait_closed = AsyncMock()
 
-        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+        from dqlitewire.messages import LeaderResponse
 
-        # Node A responds with 64 bytes of zeros: that decodes as a
-        # FAILURE-typed frame with a zero-byte body, and FailureResponse.
-        # decode_body raises DecodeError because the body is too short
-        # for the uint64 code. The wire ProtocolError is wrapped into
-        # the client ProtocolError by DqliteProtocol._read_response and
+        # Probes use ``negotiate_protocol_only`` (no Welcome consumed),
+        # so each probe expects exactly one LeaderResponse to be read
+        # back. Node A responds with 64 bytes of zeros which the wire
+        # decoder interprets as a FAILURE-typed frame with a too-short
+        # body; the resulting wire ProtocolError is wrapped into the
+        # client ProtocolError by DqliteProtocol._read_response and
         # caught by find_leader, which moves on to Node B.
-        #
-        # Node B responds with a valid Welcome + Leader pair, so
-        # find_leader returns Node B's address.
-        #
-        # Two extra Welcome+Leader pairs are appended so that — under
-        # the parallel sweep + N1 verify-redirect interleaving — if
-        # Probe A happens to read Node B's responses first (a redirect
-        # from its perspective: "localhost:9001" reports "localhost:9002"
-        # as leader), the verify-redirect probe and the second node's
-        # own probe still find responses and the test passes
-        # deterministically regardless of probe-order.
-        welcome = WelcomeResponse(heartbeat_timeout=15000).encode()
+        # Node B responds with a valid LeaderResponse so find_leader
+        # returns Node B's address.
+        # Extra LeaderResponse pairs are appended so that — under the
+        # parallel sweep + N1 verify-redirect interleaving — every
+        # probe finds a response regardless of probe-order.
         leader_b = LeaderResponse(node_id=2, address="localhost:9002").encode()
         responses = [
             b"\x00" * 64,
-            welcome,
             leader_b,
-            welcome,
             leader_b,
-            welcome,
             leader_b,
         ]
         mock_reader.read.side_effect = responses
@@ -391,10 +376,9 @@ class TestClusterClient:
 
         mock_writer.wait_closed = hang_forever
 
-        from dqlitewire.messages import LeaderResponse, WelcomeResponse
+        from dqlitewire.messages import LeaderResponse
 
         responses = [
-            WelcomeResponse(heartbeat_timeout=15000).encode(),
             LeaderResponse(node_id=1, address="localhost:9001").encode(),
         ]
         mock_reader.read.side_effect = responses
@@ -671,6 +655,9 @@ class TestQueryLeaderTrustsHeartbeat:
             async def handshake(self) -> None:
                 pass
 
+            async def negotiate_protocol_only(self) -> None:
+                pass
+
             async def get_leader(self) -> tuple[int, str]:
                 return (1, "localhost:9001")
 
@@ -699,6 +686,9 @@ class TestQueryLeaderTrustsHeartbeat:
                 captured.update(kwargs)
 
             async def handshake(self) -> None:
+                pass
+
+            async def negotiate_protocol_only(self) -> None:
                 pass
 
             async def get_leader(self) -> tuple[int, str]:
@@ -735,6 +725,9 @@ class TestQueryLeaderRejectsUnreachableCombo:
                 pass
 
             async def handshake(self) -> None:
+                pass
+
+            async def negotiate_protocol_only(self) -> None:
                 pass
 
             async def get_leader(self) -> tuple[int, str]:
@@ -821,6 +814,9 @@ class TestQueryLeaderRejectsUnreachableCombo:
             async def handshake(self) -> None:
                 pass
 
+            async def negotiate_protocol_only(self) -> None:
+                pass
+
             async def get_leader(self) -> tuple[int, str]:
                 return (5, "")
 
@@ -856,6 +852,9 @@ class TestQueryLeaderRejectsUnreachableCombo:
                 pass
 
             async def handshake(self) -> None:
+                pass
+
+            async def negotiate_protocol_only(self) -> None:
                 pass
 
             async def get_leader(self) -> tuple[int, str]:

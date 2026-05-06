@@ -69,6 +69,7 @@ async def test_query_leader_forwards_governors() -> None:
     cluster = _make_cluster_with_governors()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.get_leader = AsyncMock(return_value=(1, "localhost:9001"))
     reader = MagicMock()
     writer = MagicMock()

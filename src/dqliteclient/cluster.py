@@ -1036,7 +1036,17 @@ class ClusterClient:
                 max_continuation_frames=self._max_continuation_frames,
                 address=address,
             )
-            await protocol.handshake()
+            # Probe-only handshake: write the protocol version and
+            # IMMEDIATELY issue the LeaderRequest, skipping the
+            # ``ClientRequest`` registration. The C server's
+            # ``handle_leader`` does not require ``g->client_id`` to
+            # be set, so probes against non-leader peers no longer
+            # allocate a per-client server slot. Saves one wire RTT
+            # per probe and removes a stream of bogus
+            # ``ClientRequest`` log lines on non-leader nodes.
+            # The chosen leader gets the full registration via
+            # ``handshake()`` inside ``DqliteConnection.connect``.
+            await protocol.negotiate_protocol_only()
             node_id, leader_addr = await protocol.get_leader()
 
             # Upstream dqlite's ``raft_leader`` sets ``id`` and ``address``

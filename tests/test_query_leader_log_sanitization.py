@@ -47,6 +47,7 @@ async def test_query_leader_empty_addr_with_nonzero_id_sanitizes_debug_log(
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock(return_value=10_000)
+    fake_proto.negotiate_protocol_only = AsyncMock()
     # node_id != 0 with empty address triggers the first malformed-redirect arm.
     fake_proto.get_leader = AsyncMock(return_value=(7, ""))
 
@@ -91,6 +92,7 @@ async def test_query_leader_zero_id_with_hostile_addr_sanitizes_debug_log(
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock(return_value=10_000)
+    fake_proto.negotiate_protocol_only = AsyncMock()
     # node_id == 0 with non-empty hostile address triggers the second arm.
     fake_proto.get_leader = AsyncMock(return_value=(0, _HOSTILE_ADDR))
 
@@ -126,6 +128,7 @@ async def test_query_leader_bidi_addr_in_debug_log_is_sanitized(
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock(return_value=10_000)
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.get_leader = AsyncMock(return_value=(0, _BIDI_ADDR))
 
     from unittest.mock import patch

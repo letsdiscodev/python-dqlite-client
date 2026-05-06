@@ -237,6 +237,26 @@ class DqliteProtocol:
         """
         return not self._decoder.is_poisoned
 
+    async def negotiate_protocol_only(self) -> None:
+        """Probe-only handshake: write the protocol version bytes
+        WITHOUT a follow-up ``ClientRequest``.
+
+        The C server reads 8 bytes (the version) and validates them
+        BEFORE expecting the next message; no response is sent. The
+        server's request handlers (notably ``handle_leader``) do not
+        require ``g->client_id`` to be set, so a leader probe can skip
+        registration. ``cluster._query_leader`` uses this lighter path
+        so probes against non-leader peers don't allocate a per-client
+        server slot.
+
+        DO NOT use this for connections that issue real queries —
+        ``handle_open`` / ``handle_exec`` etc. depend on a registered
+        client in some code paths and on per-connection state set up
+        by ``handle_client``. Use :meth:`handshake` for those paths.
+        """
+        self._writer.write(MessageEncoder().encode_handshake())
+        await self._send()
+
     async def handshake(self, client_id: int | None = None) -> int:
         """Perform protocol handshake.
 
@@ -244,6 +264,13 @@ class DqliteProtocol:
         generated so each connection is distinguishable in server logs,
         traces, and per-client metrics. Returns the heartbeat timeout
         from the server.
+
+        Bundles the protocol-version exchange and the ``ClientRequest``
+        registration into a SINGLE writer-write so the kernel can pack
+        them into one TCP segment. Splitting into two writes would
+        double the syscall count and the per-segment overhead on the
+        connect hot path. The probe path (leader discovery) uses the
+        lighter :meth:`negotiate_protocol_only` instead.
         """
         if client_id is None:
             # Deliberate divergence from go-dqlite: Go leaves the default
