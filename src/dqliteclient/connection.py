@@ -1939,6 +1939,26 @@ class DqliteConnection:
         # operators triaging a leader flip.
         if cause is not None and self._invalidation_cause is None:
             self._invalidation_cause = cause
+        # Mark the GC-finalizer's "no leak" flag and detach the
+        # finalizer. The transport is gone (the synchronous
+        # ``proto.close()`` above + the bounded-drain Task we just
+        # scheduled together cover the close-on-the-loop-thread
+        # contract that ``close()`` uses). A direct
+        # ``DqliteConnection`` consumer that drops the reference
+        # without ``await close()`` after this point would otherwise
+        # see a false-positive ``ResourceWarning`` from the finalizer
+        # on GC, even though the transport is already torn down.
+        # ``_closed`` is intentionally NOT flipped here — that stays
+        # the explicit-close marker so a follow-up ``await close()``
+        # still proceeds idempotently. ``getattr`` fallbacks tolerate
+        # bare-``__new__`` test fixtures that bypass ``__init__``.
+        closed_flag = getattr(self, "_closed_flag", None)
+        if closed_flag is not None:
+            closed_flag[0] = True
+        finalizer = getattr(self, "_finalizer", None)
+        if finalizer is not None:
+            finalizer.detach()
+            self._finalizer = None
 
     @staticmethod
     def _validate_params(params: object) -> None:

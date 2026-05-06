@@ -76,3 +76,25 @@ def test_finalizer_detached_after_close_via_flags() -> None:
     del conn
     gc.collect()
     # No warning — closed_flag was set, finalizer was detached.
+
+
+def test_invalidate_flips_closed_flag_and_detaches_finalizer() -> None:
+    """``_invalidate`` must flip ``_closed_flag[0] = True`` and detach
+    the GC finalizer — the transport is gone after invalidate so a
+    user dropping the reference WITHOUT ``await close()`` should not
+    see a false-positive ``ResourceWarning`` from the finalizer.
+    Mirrors ``close()``'s end-state for the GC-readable flag."""
+    conn = DqliteConnection("h:9001")
+    assert conn._finalizer is not None
+    assert conn._closed_flag[0] is False
+    # _invalidate doesn't need a real protocol; just call it.
+    conn._invalidate(Exception("dummy"))
+    assert conn._closed_flag[0] is True, (
+        "_invalidate must flip _closed_flag[0] to True so the GC "
+        "finalizer suppresses the false-positive ResourceWarning"
+    )
+    assert conn._finalizer is None, "_invalidate must detach the GC finalizer"
+    # Sanity: a subsequent _close_impl is still a no-op idempotent path
+    # (the explicit-close flag _closed is intentionally NOT set by
+    # invalidate, so an awaited close() after invalidate proceeds).
+    assert conn._closed is False
