@@ -193,11 +193,18 @@ class OperationalError(DqliteError):
 
     def __init__(
         self,
-        code: int,
         message: str,
+        code: int,
         *,
         raw_message: str | None = None,
     ) -> None:
+        """Positional shape: ``(message, code)``. Aligned with
+        ``dqlitedbapi.exceptions.OperationalError.__init__`` so cross-
+        package bridges (SA dialect ``is_disconnect``, retry middleware,
+        custom decorators) can pass args positionally without silently
+        swapping fields. Mirrors stdlib ``sqlite3.Error.__init__(msg, *)``
+        single-message convention.
+        """
         self.code = code
         # ``raw_message`` is the verbatim server text. Callers compose
         # the display ``message`` with peer-address suffix / "Failed to
@@ -224,15 +231,15 @@ class OperationalError(DqliteError):
             )
         else:
             self.message = message
-        # Pass ``code`` and the TRUNCATED display ``self.message``
-        # through as args so ``self.args == (code, truncated_message)``;
+        # Pass the TRUNCATED display ``self.message`` and ``code``
+        # through as args so ``self.args == (truncated_message, code)``;
         # pickle / deepcopy reconstruct via
-        # ``OperationalError(code, truncated_message,
-        # raw_message=...)``. Without truncating ``args`` here, the
-        # pickled payload would carry the original un-truncated
-        # ``message`` argument — defeating the bound for cross-process
-        # exception graphs. ``DqliteError`` then caps ``raw_message``.
-        super().__init__(code, self.message, raw_message=resolved_raw_message)
+        # ``OperationalError(truncated_message, code, raw_message=...)``.
+        # Without truncating ``args`` here, the pickled payload would
+        # carry the original un-truncated ``message`` argument —
+        # defeating the bound for cross-process exception graphs.
+        # ``DqliteError`` then caps ``raw_message``.
+        super().__init__(self.message, code, raw_message=resolved_raw_message)
 
     def __str__(self) -> str:
         return f"[{self.code}] {self.message}"

@@ -203,7 +203,7 @@ class TestRetryDeadlineRecheck:
 
         async def func() -> None:
             calls.append(1)
-            raise OperationalError(0, "fail")
+            raise OperationalError("fail", 0)
 
         with pytest.raises(OperationalError):
             await retry_with_backoff(

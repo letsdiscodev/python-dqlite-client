@@ -574,7 +574,7 @@ class TestClusterClient:
         async def always_sql_error(**_kwargs: object) -> str:
             nonlocal call_count
             call_count += 1
-            raise OperationalError(1, "some sql error")
+            raise OperationalError("some sql error", 1)
 
         with (
             patch.object(client, "find_leader", side_effect=always_sql_error),

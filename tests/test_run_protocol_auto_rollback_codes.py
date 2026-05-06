@@ -44,7 +44,7 @@ async def test_auto_rollback_codes_clear_tx_flags(code: int, description: str) -
     conn._protocol = object()  # type: ignore[assignment]
 
     async def fake_send(protocol, db_id):
-        raise OperationalError(code, f"simulated {description}")
+        raise OperationalError(f"simulated {description}", code)
 
     # Set tx + savepoint state so we can observe them being cleared.
     conn._in_transaction = True
@@ -85,7 +85,7 @@ async def test_non_auto_rollback_codes_keep_tx_flags(code: int, description: str
     conn._protocol = object()  # type: ignore[assignment]
 
     async def fake_send(protocol, db_id):
-        raise OperationalError(code, f"simulated {description}")
+        raise OperationalError(f"simulated {description}", code)
 
     owner = asyncio.current_task()
     conn._in_transaction = True
@@ -118,7 +118,7 @@ async def test_busy_with_checkpoint_message_clears_tx_state() -> None:
     conn._protocol = object()  # type: ignore[assignment]
 
     async def fake_send(protocol, db_id):
-        raise OperationalError(5, "checkpoint in progress")
+        raise OperationalError("checkpoint in progress", 5)
 
     conn._in_transaction = True
     conn._tx_owner = asyncio.current_task()
@@ -145,7 +145,7 @@ async def test_busy_with_engine_message_preserves_tx_state() -> None:
     conn._protocol = object()  # type: ignore[assignment]
 
     async def fake_send(protocol, db_id):
-        raise OperationalError(5, "database is locked")
+        raise OperationalError("database is locked", 5)
 
     owner = asyncio.current_task()
     conn._in_transaction = True
@@ -173,7 +173,7 @@ async def test_leader_class_codes_invalidate_and_clear_flags() -> None:
 
     async def fake_send(protocol, db_id):
         # SQLITE_IOERR_NOT_LEADER (10250) — leader class.
-        raise OperationalError(10250, "not the leader")
+        raise OperationalError("not the leader", 10250)
 
     conn._in_transaction = True
     conn._tx_owner = asyncio.current_task()
@@ -209,7 +209,7 @@ async def test_busy_with_checkpoint_substring_only_in_raw_message_clears_tx_stat
     # but preserves the full text on ``raw_message``.
     long_prefix = "context: " + ("X" * 1100)
     full = f"{long_prefix} checkpoint in progress"
-    err = OperationalError(5, full)
+    err = OperationalError(full, 5)
     assert "checkpoint in progress" not in err.message.lower()
     assert "checkpoint in progress" in err.raw_message.lower()
 

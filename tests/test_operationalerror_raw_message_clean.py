@@ -23,8 +23,8 @@ def test_operational_error_raw_message_keyword_preserves_server_text() -> None:
     preserved while the display ``message`` carries the
     composed addr suffix."""
     err = OperationalError(
-        5,
         "database is locked to localhost:9001",
+        5,
         raw_message="database is locked",
     )
     assert err.message == "database is locked to localhost:9001"
@@ -36,7 +36,7 @@ def test_operational_error_default_raw_message_back_compat() -> None:
     """Old call sites that omit ``raw_message=`` still get the
     previous behaviour (``raw_message`` defaults to the
     display ``message``) so external callers do not break."""
-    err = OperationalError(5, "database is locked")
+    err = OperationalError("database is locked", 5)
     assert err.raw_message == "database is locked"
 
 
@@ -45,7 +45,7 @@ def test_operational_error_truncation_preserves_raw_message_full_length() -> Non
     ``_MAX_DISPLAY_MESSAGE`` codepoints; ``raw_message``
     stays un-truncated for forensic / log-aggregator views."""
     long_text = "x" * 4096
-    err = OperationalError(1, long_text, raw_message=long_text)
+    err = OperationalError(long_text, 1, raw_message=long_text)
     assert len(err.raw_message) == 4096
     assert "[truncated," in err.message
 

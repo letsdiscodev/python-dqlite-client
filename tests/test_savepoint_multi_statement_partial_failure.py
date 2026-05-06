@@ -34,7 +34,7 @@ from dqliteclient.exceptions import OperationalError
 
 
 async def _raise_constraint(_fn: Any) -> Any:
-    raise OperationalError(19, "constraint failed")
+    raise OperationalError("constraint failed", 19)
 
 
 def _fake_connected_conn() -> DqliteConnection:

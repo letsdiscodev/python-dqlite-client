@@ -74,7 +74,7 @@ async def test_release_closed_branch_absorbs_cleanup_exception() -> None:
 @pytest.mark.asyncio
 async def test_release_reset_fail_branch_absorbs_operational_error() -> None:
     pool = _make_pool()
-    conn = _FakeConn(close_raises=OperationalError(0, "synthetic"))
+    conn = _FakeConn(close_raises=OperationalError("synthetic", 0))
     pool._size = 1
 
     async def _reset_fail(c: Any) -> bool:

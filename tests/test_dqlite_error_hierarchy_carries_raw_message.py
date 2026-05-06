@@ -71,7 +71,7 @@ def test_operational_error_keeps_existing_message_truncation_invariant() -> None
     cross-process pickled exception graphs stay small under
     hostile-peer fan-out — both caps coexist."""
     long = "X" * 5000
-    e = OperationalError(1, long, raw_message=long)
+    e = OperationalError(long, 1, raw_message=long)
     assert "[truncated," in e.message
     # raw_message capped at 4 KiB with its own truncation marker.
     assert len(e.raw_message) <= 4200
@@ -81,7 +81,7 @@ def test_operational_error_keeps_existing_message_truncation_invariant() -> None
 def test_operational_error_default_raw_message_is_message() -> None:
     """Backwards-compat: if ``raw_message=`` is omitted, OperationalError
     derives it from ``message`` per the existing contract."""
-    e = OperationalError(1, "boom")
+    e = OperationalError("boom", 1)
     assert e.raw_message == "boom"
 
 

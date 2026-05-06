@@ -32,7 +32,7 @@ from dqliteclient.pool import ConnectionPool
 
 class TestIsNoTxRollbackError:
     def test_classifier_matches_no_tx_active_with_sqlite_error_code(self) -> None:
-        exc = OperationalError(1, "cannot rollback - no transaction is active")
+        exc = OperationalError("cannot rollback - no transaction is active", 1)
         assert _is_no_tx_rollback_error(exc) is True
 
     def test_classifier_matches_cannot_commit_wording(self) -> None:
@@ -40,7 +40,7 @@ class TestIsNoTxRollbackError:
         # so the anchored substring covers commit and rollback
         # equally. The bare "cannot rollback" token was previously
         # also accepted but was too permissive.
-        exc = OperationalError(1, "cannot commit - no transaction is active")
+        exc = OperationalError("cannot commit - no transaction is active", 1)
         assert _is_no_tx_rollback_error(exc) is True
 
     def test_classifier_rejects_bare_cannot_rollback(self) -> None:
@@ -48,18 +48,18 @@ class TestIsNoTxRollbackError:
         # "no transaction is active" clause must NOT match — any
         # unrelated SQLite (or DQLITE_ERROR=1) error happening to
         # contain those words would otherwise trigger silent-swallow.
-        exc = OperationalError(1, "cannot rollback because the disk is full")
+        exc = OperationalError("cannot rollback because the disk is full", 1)
         assert _is_no_tx_rollback_error(exc) is False
 
     def test_classifier_rejects_no_tx_message_with_wrong_code(self) -> None:
         # SQLITE_BUSY (5) primary code with a coincidental no-tx wording
         # must NOT match — the user's tx might have been partially
         # applied by a concurrent writer and we cannot silently swallow.
-        exc = OperationalError(5, "no transaction is active")
+        exc = OperationalError("no transaction is active", 5)
         assert _is_no_tx_rollback_error(exc) is False
 
     def test_classifier_rejects_sqlite_error_with_unrelated_message(self) -> None:
-        exc = OperationalError(1, "disk full")
+        exc = OperationalError("disk full", 1)
         assert _is_no_tx_rollback_error(exc) is False
 
     def test_classifier_rejects_non_operational_error(self) -> None:
@@ -90,7 +90,7 @@ class TestPoolResetNoTxPreservesSlot:
 
             async def fake_execute(sql: str) -> object:
                 # Simulate the server's deterministic reply.
-                raise OperationalError(1, "cannot rollback - no transaction is active")
+                raise OperationalError("cannot rollback - no transaction is active", 1)
 
             with patch.object(conn, "execute", new=fake_execute):
                 result = await pool._reset_connection(conn)
@@ -111,7 +111,7 @@ class TestPoolResetNoTxPreservesSlot:
             conn._in_transaction = True
 
             async def fake_execute(sql: str) -> object:
-                raise OperationalError(5, "database is locked")
+                raise OperationalError("database is locked", 5)
 
             with patch.object(conn, "execute", new=fake_execute):
                 result = await pool._reset_connection(conn)
@@ -132,7 +132,7 @@ class TestPoolResetNoTxPreservesSlot:
             conn._in_transaction = True
 
             async def fake_execute(sql: str) -> object:
-                raise OperationalError(1, "syntax error near 'ROLLBACK'")
+                raise OperationalError("syntax error near 'ROLLBACK'", 1)
 
             with patch.object(conn, "execute", new=fake_execute):
                 result = await pool._reset_connection(conn)
@@ -229,7 +229,7 @@ class TestResetConnectionUmbrellaPredicate:
             conn._savepoint_implicit_begin = True
 
             async def fake_execute(sql: str) -> object:
-                raise OperationalError(1, "no transaction is active")
+                raise OperationalError("no transaction is active", 1)
 
             with patch.object(conn, "execute", new=fake_execute):
                 result = await pool._reset_connection(conn)

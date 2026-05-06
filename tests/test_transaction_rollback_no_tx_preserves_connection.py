@@ -30,8 +30,8 @@ async def test_rollback_no_transaction_active_preserves_connection() -> None:
 
     body_error = RuntimeError("body raised")
     no_tx_error = OperationalError(
-        1,  # SQLITE_ERROR primary code
         "cannot rollback - no transaction is active",
+        1,  # SQLITE_ERROR primary code
     )
 
     async def fake_execute(sql: str, params=None):
@@ -65,8 +65,8 @@ async def test_rollback_other_operational_error_invalidates() -> None:
     conn._protocol = object()  # type: ignore[assignment]
 
     other_error = OperationalError(
-        1,  # SQLITE_ERROR
         "some other failure mode",
+        1,  # SQLITE_ERROR
     )
 
     async def fake_execute(sql: str, params=None):

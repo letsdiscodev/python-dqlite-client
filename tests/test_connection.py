@@ -433,7 +433,7 @@ class TestDqliteConnection:
         """
         conn, _, _ = connected_connection
         conn._in_use = True
-        conn._invalidate(OperationalError(0, "synthetic"))
+        conn._invalidate(OperationalError("synthetic", 0))
         assert conn._in_use is False
         assert conn._protocol is None
 

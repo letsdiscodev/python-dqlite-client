@@ -116,7 +116,7 @@ class TestRollbackFailureInvalidatesConnection:
 
         # Body will raise. ROLLBACK will also raise.
         async def _failing_rollback() -> tuple[int, int]:
-            raise OperationalError(1, "ROLLBACK failed: connection poisoned")
+            raise OperationalError("ROLLBACK failed: connection poisoned", 1)
 
         proto.on_rollback = _failing_rollback
 

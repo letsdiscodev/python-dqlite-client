@@ -39,7 +39,7 @@ def test_first_baseexception_cause_preserved_across_subsequent_exception(
     conn._invalidate(first_cause)
     assert conn._invalidation_cause is first_cause
 
-    follow_up = OperationalError(1, "subsequent transport failure")
+    follow_up = OperationalError("subsequent transport failure", 1)
     conn._invalidate(follow_up)
     assert conn._invalidation_cause is first_cause
 

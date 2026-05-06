@@ -35,7 +35,7 @@ async def test_benign_no_tx_rollback_clears_savepoint_state() -> None:
     conn._db_id = 1
     conn._protocol = object()  # type: ignore[assignment]
 
-    no_tx_error = OperationalError(1, "cannot rollback - no transaction is active")
+    no_tx_error = OperationalError("cannot rollback - no transaction is active", 1)
 
     async def fake_execute(sql: str, params: object = None) -> tuple[int, int]:
         if sql == "BEGIN":
@@ -81,7 +81,7 @@ async def test_finally_clears_savepoint_state_on_body_exception_with_invalidatio
             conn._savepoint_implicit_begin = True
             return (0, 0)
         if sql == "ROLLBACK":
-            raise OperationalError(1, "some other failure mode")
+            raise OperationalError("some other failure mode", 1)
         return (0, 0)
 
     conn.execute = fake_execute

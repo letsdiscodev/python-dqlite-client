@@ -188,7 +188,7 @@ async def test_add_node_propagates_server_rejection() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
-    fake_proto.add = AsyncMock(side_effect=OperationalError(1, "id already in cluster"))
+    fake_proto.add = AsyncMock(side_effect=OperationalError("id already in cluster", 1))
     fake_open, _ = _patch_admin_connection(fake_proto)
 
     with (

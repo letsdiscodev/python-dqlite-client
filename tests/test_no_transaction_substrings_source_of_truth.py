@@ -21,7 +21,7 @@ def test_recogniser_uses_wire_layer_substrings() -> None:
     from dqliteclient.exceptions import OperationalError
 
     for substr in NO_TRANSACTION_MESSAGE_SUBSTRINGS:
-        exc = OperationalError(1, f"prefix {substr} suffix")
+        exc = OperationalError(f"prefix {substr} suffix", 1)
         assert _is_no_tx_rollback_error(exc), (
             f"recogniser must accept the substring {substr!r} "
             "from dqlitewire.NO_TRANSACTION_MESSAGE_SUBSTRINGS"
@@ -31,7 +31,7 @@ def test_recogniser_uses_wire_layer_substrings() -> None:
 def test_recogniser_rejects_unrelated_message() -> None:
     from dqliteclient.exceptions import OperationalError
 
-    exc = OperationalError(1, "some unrelated SQLite error")
+    exc = OperationalError("some unrelated SQLite error", 1)
     assert not _is_no_tx_rollback_error(exc)
 
 

@@ -51,7 +51,7 @@ class TestConnectReraisesNonLeaderOperationalError:
 
         # Patch handshake to raise after the TCP connect succeeds.
         async def _raise_corrupt(self: DqliteProtocol) -> None:
-            raise OperationalError(11, "database disk image is malformed")
+            raise OperationalError("database disk image is malformed", 11)
 
         monkeypatch.setattr(DqliteProtocol, "handshake", _raise_corrupt)
 

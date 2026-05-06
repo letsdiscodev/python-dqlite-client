@@ -72,7 +72,7 @@ async def test_transaction_commit_arm_does_not_invalidate_on_deterministic_rollb
     # Mock execute so BEGIN succeeds, COMMIT raises with the code.
     async def _execute(sql: str) -> None:
         if "COMMIT" in sql.upper() or sql.strip().upper() == "END":
-            raise OperationalError(code, "auto-rollback shape")
+            raise OperationalError("auto-rollback shape", code)
 
     conn.execute = _execute  # type: ignore[assignment]
 
@@ -96,7 +96,7 @@ async def test_transaction_commit_arm_invalidates_on_ambiguous_failure() -> None
         if "COMMIT" in sql.upper() or sql.strip().upper() == "END":
             # Code 1 (SQLITE_ERROR) is NOT in the deterministic-
             # rollback set; server-side state is ambiguous.
-            raise OperationalError(1, "ambiguous error")
+            raise OperationalError("ambiguous error", 1)
 
     conn.execute = _execute  # type: ignore[assignment]
 
@@ -141,7 +141,7 @@ async def test_transaction_commit_arm_invalidates_on_extended_ioerr() -> None:
 
     async def _execute(sql: str) -> None:
         if "COMMIT" in sql.upper() or sql.strip().upper() == "END":
-            raise OperationalError(10250, "leader changed mid-commit")
+            raise OperationalError("leader changed mid-commit", 10250)
 
     conn.execute = _execute  # type: ignore[assignment]
 

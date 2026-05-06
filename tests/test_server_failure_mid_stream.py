@@ -14,7 +14,7 @@ LEADER_ERROR_CODES``. Leadership-loss during a streaming SELECT would
 not trigger SA pool invalidation.
 
 Catching ``ServerFailure`` before the generic ``_WireProtocolError``
-branch and re-raising as ``client.OperationalError(code, message)``
+branch and re-raising as ``client.OperationalError(message, code)``
 preserves the code for downstream classification.
 """
 
@@ -44,7 +44,7 @@ class TestServerFailureMidStreamClassification:
         self, protocol: DqliteProtocol
     ) -> None:
         """FAILURE arriving during ROWS continuation must surface as
-        ``OperationalError(code, message)`` — not ``ProtocolError`` —
+        ``OperationalError(message, code)`` — not ``ProtocolError`` —
         so the SQLite code reaches ``is_disconnect`` classifiers.
         """
         # Initial frame: row with PART marker signaling more to come.

@@ -327,7 +327,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, LeaderResponse):
@@ -358,7 +358,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, ServersResponse):
@@ -387,7 +387,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, EmptyResponse):
@@ -413,7 +413,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, EmptyResponse):
@@ -439,7 +439,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, EmptyResponse):
@@ -468,7 +468,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, MetadataResponse):
@@ -498,7 +498,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, EmptyResponse):
@@ -526,7 +526,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, FilesResponse):
@@ -563,7 +563,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, EmptyResponse):
@@ -584,7 +584,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, DbResponse):
@@ -607,7 +607,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, StmtResponse):
@@ -649,7 +649,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, EmptyResponse):
@@ -735,7 +735,7 @@ class DqliteProtocol:
                 return
             if isinstance(response, FailureResponse):
                 raise OperationalError(
-                    response.code, self._failure_text(response), raw_message=response.message
+                    self._failure_text(response), response.code, raw_message=response.message
                 )
             # RowsResponse mid-drain is expected: the server's in-flight
             # continuation may land before the interrupt takes effect.
@@ -785,7 +785,7 @@ class DqliteProtocol:
 
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
 
         if not isinstance(response, ResultResponse):
@@ -811,7 +811,7 @@ class DqliteProtocol:
         response = await self._read_response(deadline=deadline)
         if isinstance(response, FailureResponse):
             raise OperationalError(
-                response.code, self._failure_text(response), raw_message=response.message
+                self._failure_text(response), response.code, raw_message=response.message
             )
         if not isinstance(response, RowsResponse):
             raise ProtocolError(
@@ -907,7 +907,7 @@ class DqliteProtocol:
         """Execute a query directly.
 
         Returns (column_names, rows). Multi-statement SELECT is rejected
-        by the server with OperationalError(SQLITE_ERROR, "nonempty
+        by the server with OperationalError(message, code=SQLITE_ERROR) where message is "nonempty
         statement tail") — there are no additional result sets to drain.
         Use :meth:`query_sql_typed` to also get per-column ``ValueType``
         tags.
@@ -1111,8 +1111,8 @@ class DqliteProtocol:
 
             truncated_msg = _truncate_error(e.message)
             raise OperationalError(
-                e.code,
                 _failure_message(truncated_msg, self._addr_suffix()),
+                e.code,
                 raw_message=e.message,
             ) from e
         except _WireProtocolError as e:

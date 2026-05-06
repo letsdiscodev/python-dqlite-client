@@ -43,7 +43,7 @@ def connected_conn() -> DqliteConnection:
 
 def _prime_failure(conn: DqliteConnection, code: int, message: str) -> None:
     """Prime the underlying protocol's exec_sql to raise OperationalError."""
-    err = OperationalError(code, message)
+    err = OperationalError(message, code)
 
     async def _raise(*_args, **_kwargs):
         raise err

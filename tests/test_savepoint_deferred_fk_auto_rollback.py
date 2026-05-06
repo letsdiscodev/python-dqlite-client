@@ -28,7 +28,7 @@ from dqliteclient.exceptions import OperationalError
 
 
 async def _raise_constraint(_fn: Any) -> Any:
-    raise OperationalError(19, "FOREIGN KEY constraint failed")
+    raise OperationalError("FOREIGN KEY constraint failed", 19)
 
 
 def _conn_with_outermost_savepoint(name: str = "outer") -> DqliteConnection:
@@ -132,7 +132,7 @@ async def test_multistatement_auto_rollback_does_not_re_set_untracked_flag() -> 
         conn._savepoint_stack.clear()
         conn._savepoint_implicit_begin = False
         conn._has_untracked_savepoint = False
-        raise OperationalError(9, "interrupted")
+        raise OperationalError("interrupted", 9)
 
     with (
         patch.object(conn, "_run_protocol", new=_raise_interrupt),

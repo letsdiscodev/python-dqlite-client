@@ -56,7 +56,7 @@ async def test_body_exc_with_real_rollback_failure_invalidates_connection() -> N
     conn = DqliteConnection("localhost:9001")
     _prime_connected(conn)
 
-    rollback_error = OperationalError(2, "rollback failed for unrelated reason")
+    rollback_error = OperationalError("rollback failed for unrelated reason", 2)
 
     async def fake_execute(sql: str, params=None):
         if sql == "BEGIN":
@@ -96,7 +96,7 @@ async def test_body_exc_with_no_tx_rollback_preserves_connection() -> None:
     conn = DqliteConnection("localhost:9001")
     _prime_connected(conn)
 
-    no_tx_error = OperationalError(1, "cannot rollback - no transaction is active")
+    no_tx_error = OperationalError("cannot rollback - no transaction is active", 1)
 
     async def fake_execute(sql: str, params=None):
         if sql == "BEGIN":

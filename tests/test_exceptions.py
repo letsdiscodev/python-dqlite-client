@@ -30,33 +30,33 @@ class TestOperationalErrorPickling:
     """
 
     def test_pickle_roundtrip_preserves_fields(self) -> None:
-        original = OperationalError(5, "boom")
+        original = OperationalError("boom", 5)
         restored = pickle.loads(pickle.dumps(original))
         assert isinstance(restored, OperationalError)
         assert restored.code == 5
         assert restored.message == "boom"
 
     def test_pickle_roundtrip_preserves_str(self) -> None:
-        original = OperationalError(19, "constraint failed")
+        original = OperationalError("constraint failed", 19)
         restored = pickle.loads(pickle.dumps(original))
         assert str(restored) == "[19] constraint failed"
 
     def test_deepcopy_preserves_fields(self) -> None:
-        original = OperationalError(1555, "not null")
+        original = OperationalError("not null", 1555)
         clone = copy.deepcopy(original)
         assert clone.code == 1555
         assert clone.message == "not null"
         assert str(clone) == "[1555] not null"
 
     def test_copy_preserves_fields(self) -> None:
-        original = OperationalError(1299, "check")
+        original = OperationalError("check", 1299)
         clone = copy.copy(original)
         assert clone.code == 1299
         assert clone.message == "check"
 
     @pytest.mark.parametrize("code,message", [(0, ""), (-1, "neg"), (2**31, "high")])
     def test_pickle_parametrized(self, code: int, message: str) -> None:
-        original = OperationalError(code, message)
+        original = OperationalError(message, code)
         restored = pickle.loads(pickle.dumps(original))
         assert restored.code == code
         assert restored.message == message
@@ -67,11 +67,11 @@ class TestOperationalErrorFormatting:
     """``str()`` keeps the ``[code] message`` format for log back-compat."""
 
     def test_str_format(self) -> None:
-        e = OperationalError(5, "boom")
+        e = OperationalError("boom", 5)
         assert str(e) == "[5] boom"
 
     def test_repr_contains_both_fields(self) -> None:
-        e = OperationalError(5, "boom")
+        e = OperationalError("boom", 5)
         r = repr(e)
         # Exact repr shape is not pinned; just ensure nothing is lost.
         assert "5" in r
@@ -87,7 +87,7 @@ class TestOperationalErrorMessageTruncation:
 
     def test_long_message_is_truncated_for_display(self) -> None:
         payload = "x" * 63000
-        e = OperationalError(5, payload)
+        e = OperationalError(payload, 5)
         assert len(e.message) < 1200, "display message must be truncated to avoid log amplification"
         assert "truncated" in e.message
 
@@ -98,14 +98,14 @@ class TestOperationalErrorMessageTruncation:
         ~64 KiB; combined with BaseExceptionGroup chains, an
         unbounded raw_message produced multi-MB pickled payloads."""
         payload = "x" * 63000
-        e = OperationalError(5, payload)
+        e = OperationalError(payload, 5)
         # raw_message is truncated with a marker that exposes the
         # original size class for triage.
         assert len(e.raw_message) < 5000, "raw_message must be capped"
         assert "raw_message truncated" in e.raw_message
 
     def test_short_message_is_not_touched(self) -> None:
-        e = OperationalError(5, "ordinary error")
+        e = OperationalError("ordinary error", 5)
         assert e.message == "ordinary error"
         assert e.raw_message == "ordinary error"
         assert "truncated" not in e.message
@@ -115,7 +115,7 @@ class TestOperationalErrorMessageTruncation:
         truncation. With raw_message itself capped, large payloads
         round-trip with their bounded form intact."""
         payload = "y" * 5000
-        original = OperationalError(19, payload)
+        original = OperationalError(payload, 19)
         restored = pickle.loads(pickle.dumps(original))
         # raw_message survives the pickle round-trip (the cap was
         # applied at construction; the bounded value is what's

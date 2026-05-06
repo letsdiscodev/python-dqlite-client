@@ -25,7 +25,7 @@ from dqliteclient.retry import retry_with_backoff
 @pytest.mark.parametrize(
     "exc_factory",
     [
-        lambda: OperationalError(1, "UNIQUE constraint failed"),
+        lambda: OperationalError("UNIQUE constraint failed", 1),
         lambda: DataError("int64 out of range"),
         lambda: InterfaceError("concurrent access"),
     ],

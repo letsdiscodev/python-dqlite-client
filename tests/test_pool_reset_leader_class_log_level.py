@@ -71,7 +71,7 @@ async def test_reset_leader_class_rollback_failure_logs_debug(
     operator alerting."""
     pool = _make_pool()
     leader_code = next(iter(LEADER_ERROR_CODES))
-    err = OperationalError(leader_code, "not leader")
+    err = OperationalError("not leader", leader_code)
     conn = _conn_in_tx(err)
 
     with caplog.at_level(logging.DEBUG, logger="dqliteclient.pool"):
@@ -106,7 +106,7 @@ async def test_reset_non_leader_rollback_failure_logs_warning(
     # Pick a code that is NOT in LEADER_ERROR_CODES.
     non_leader_code = 1
     assert non_leader_code not in LEADER_ERROR_CODES
-    err = OperationalError(non_leader_code, "disk I/O error")
+    err = OperationalError("disk I/O error", non_leader_code)
     conn = _conn_in_tx(err)
 
     with caplog.at_level(logging.WARNING, logger="dqliteclient.pool"):

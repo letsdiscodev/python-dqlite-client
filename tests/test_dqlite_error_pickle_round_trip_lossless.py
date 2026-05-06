@@ -90,7 +90,7 @@ def test_operational_error_pickle_lossless_within_caps() -> None:
     bounded value survives the round-trip). Display message is
     re-truncated."""
     payload = "y" * 5000
-    e = OperationalError(19, payload)
+    e = OperationalError(payload, 19)
     restored = pickle.loads(pickle.dumps(e))
     # raw_message round-trips with whatever bounded value was set
     # at construction.
