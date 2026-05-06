@@ -660,9 +660,23 @@ class ClusterClient:
                         # cached responder pointing to an ex-leader
                         # would loop the caller through a wasted
                         # ``connect()``+Open before retry.
+                        #
+                        # Pass ``attempt_timeout`` rather than the
+                        # default ``dial_timeout``: the cached fast-
+                        # path is single-RTT followed by a single
+                        # verify-RTT — sequential, not nested. The
+                        # ``_verify_redirect`` doc-default of
+                        # ``dial_timeout`` only makes sense for the
+                        # parallel-sweep call site at ``_probe_one``
+                        # which is nested inside an outer
+                        # ``attempt_timeout`` envelope. Using
+                        # ``dial_timeout`` here would drop healthy-but-
+                        # loaded redirect targets when operators size
+                        # ``dial_timeout < attempt_timeout``.
                         verified = await self._verify_redirect(
                             cached_leader,
                             trust_server_heartbeat=trust_server_heartbeat,
+                            timeout=self._attempt_timeout,
                         )
                         if verified is None:
                             logger.debug(
@@ -1170,7 +1184,11 @@ class ClusterClient:
                     await asyncio.shield(inner_drain)
 
     async def _verify_redirect(
-        self, hint_address: str, *, trust_server_heartbeat: bool = False
+        self,
+        hint_address: str,
+        *,
+        trust_server_heartbeat: bool = False,
+        timeout: float | None = None,
     ) -> str | None:
         """Re-probe a redirect target to confirm it self-identifies as
         leader before trusting it.
@@ -1199,23 +1217,24 @@ class ClusterClient:
         (``patch.object(cluster, "_query_leader", ...)``) apply
         uniformly. The verification adds one decision: the responder
         must report ITSELF as leader, otherwise we discard the hint.
+
+        ``timeout`` selects the per-call wait_for envelope. Defaults
+        to ``self._dial_timeout`` for the sweep-nested call sites in
+        ``_probe_one`` (the verify is nested inside an outer
+        ``attempt_timeout``-bounded probe; using ``attempt_timeout``
+        again would let the worst case be 2 ×
+        ``attempt_timeout``). The cached-leader fast-path call site
+        is sequential, not nested, so it passes
+        ``self._attempt_timeout`` explicitly — using
+        ``dial_timeout`` there would drop healthy-but-loaded
+        redirect targets when operators size
+        ``dial_timeout < attempt_timeout``.
         """
-        # Wrap the verify call in its own ``dial_timeout`` envelope.
-        # Without this, the outer ``asyncio.wait_for(_query_leader,
-        # timeout=attempt_timeout)`` enclosing the original probe
-        # already covered ONE round-trip; chaining a verify here adds
-        # a SECOND ``_query_leader`` inside the same envelope,
-        # doubling the worst-case attempt-timeout cost. A pathological
-        # attacker could chain redirects A→B (verify of B costs an
-        # extra dial+handshake+leader_rpc) without the inner bound.
-        # Operators sizing ``attempt_timeout`` based on single-RTT
-        # estimates undersized by 2× before this. ``dial_timeout`` is
-        # the right inner budget — the verify is "is this server
-        # alive and still leader?", not a full discovery sweep.
+        effective_timeout = self._dial_timeout if timeout is None else timeout
         try:
             reported = await asyncio.wait_for(
                 self._query_leader(hint_address, trust_server_heartbeat=trust_server_heartbeat),
-                timeout=self._dial_timeout,
+                timeout=effective_timeout,
             )
         except (
             DqliteConnectionError,
