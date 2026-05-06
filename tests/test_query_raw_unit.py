@@ -1,17 +1,25 @@
 """Pin: ``DqliteConnection.query_raw`` and ``query_raw_typed``
-public API contracts — return shapes (2-tuple vs 4-tuple) and
-the validate-before-_run_protocol ordering.
+validate-before-``_run_protocol`` ordering.
 
-The methods route every dbapi cursor SELECT (via
-``cursor.py:_call_client``) but had no direct unit tests; the
-two source lines (one validate + one ``_run_protocol``-await
-per method) were uncovered by the unit suite (only integration
-tests exercised them).
+The earlier shape-pin tests in this file
+(``test_query_raw_returns_two_tuple`` / ``..._typed_returns_four_tuple``)
+monkeypatched ``_run_protocol`` with a fake that ignored its callable
+argument and returned canned values, then asserted the wrapper
+returned the same canned values. That pin was tautological — a
+regression that swapped ``query_sql`` for ``query_sql_typed`` (or
+vice versa) would not change the fake's return and the test would
+still pass. The integration tests at ``tests/integration`` already
+cover the actual return-shape contract end-to-end.
+
+The remaining tests pin the validate-first ordering: a Mapping
+passed as ``params`` raises ``DataError`` without touching the wire.
+The fake ``_run_protocol`` is configured with
+``side_effect=AssertionError`` so any protocol invocation surfaces
+the bug; this is a real ordering pin (not a tautology).
 """
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -28,45 +36,6 @@ def _make_conn() -> DqliteConnection:
     conn._db_id = 1
     conn._protocol = MagicMock()
     return conn
-
-
-@pytest.mark.asyncio
-async def test_query_raw_returns_two_tuple(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``query_raw`` returns ``(column_names, rows)`` —
-    ``(list[str], list[list[Any]])``."""
-    conn = _make_conn()
-    expected: tuple[list[str], list[list[Any]]] = (["c0", "c1"], [[1, "a"], [2, "b"]])
-
-    async def _fake_run_protocol(_op: Any) -> tuple[list[str], list[list[Any]]]:
-        return expected
-
-    monkeypatch.setattr(conn, "_run_protocol", _fake_run_protocol)
-    result = await conn.query_raw("SELECT 1, 'a'")
-    assert result == expected
-    assert len(result) == 2
-
-
-@pytest.mark.asyncio
-async def test_query_raw_typed_returns_four_tuple(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``query_raw_typed`` returns
-    ``(column_names, column_types, row_types, rows)``."""
-    conn = _make_conn()
-    expected: tuple[list[str], list[int], list[list[int]], list[list[Any]]] = (
-        ["c0"],
-        [1],
-        [[1], [1]],
-        [[1], [2]],
-    )
-
-    async def _fake_run_protocol(
-        _op: Any,
-    ) -> tuple[list[str], list[int], list[list[int]], list[list[Any]]]:
-        return expected
-
-    monkeypatch.setattr(conn, "_run_protocol", _fake_run_protocol)
-    result = await conn.query_raw_typed("SELECT 1")
-    assert result == expected
-    assert len(result) == 4
 
 
 @pytest.mark.asyncio
