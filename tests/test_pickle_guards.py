@@ -48,6 +48,19 @@ class TestDqliteConnectionPickleGuard:
         with pytest.raises(TypeError, match="DqliteConnection"):
             copy.deepcopy(conn)
 
+    def test_message_does_not_reference_nonexistent_op_lock(self) -> None:
+        """The class is intentionally lock-free (mutual exclusion is via
+        the ``_in_use: bool`` flag, no ``asyncio.Lock`` instance). The
+        pickle-guard message must not name an ``_op_lock`` field that
+        does not exist on the class — operators following that hint
+        would chase a phantom attribute."""
+        conn = DqliteConnection("localhost:9001")
+        assert not hasattr(conn, "_op_lock")
+        with pytest.raises(TypeError) as ei:
+            pickle.dumps(conn)
+        assert "_op_lock" not in str(ei.value)
+        assert "asyncio.Lock" not in str(ei.value)
+
 
 class TestConnectionPoolPickleGuard:
     def test_pickle_raises(self) -> None:

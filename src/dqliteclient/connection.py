@@ -1195,20 +1195,22 @@ class DqliteConnection:
         )
 
     def __reduce__(self) -> NoReturn:
-        # ``DqliteConnection`` holds a live socket (writer transport),
-        # an event-loop-bound asyncio.Lock (``_op_lock``), and a
-        # ``DqliteProtocol`` that wraps loop-bound StreamReader /
-        # StreamWriter — none of which survive serialization. Surface
+        # ``DqliteConnection`` holds a live socket (writer transport)
+        # and a ``DqliteProtocol`` that wraps loop-bound StreamReader /
+        # StreamWriter — neither survives serialization. The class is
+        # intentionally lock-free: mutual exclusion against concurrent
+        # callers is enforced by the ``_in_use: bool`` flag (see
+        # ``_run_protocol``), not by an asyncio.Lock instance. Surface
         # a clear driver-level TypeError instead of leaking the
-        # underlying ``cannot pickle '_thread.lock'`` from pickle's
-        # default object-graph walk. Symmetric with the dbapi-layer
-        # guards on Connection / Cursor and the wire-layer guards on
-        # MessageEncoder / MessageDecoder / ReadBuffer / WriteBuffer.
+        # underlying error from pickle's default object-graph walk.
+        # Symmetric with the dbapi-layer guards on Connection / Cursor
+        # and the wire-layer guards on MessageEncoder / MessageDecoder /
+        # ReadBuffer / WriteBuffer.
         raise TypeError(
             f"cannot pickle {type(self).__name__!r} object — holds a "
-            f"live socket, loop-bound asyncio.Lock, and a wire "
-            f"protocol; reconstruct from configuration in the target "
-            f"process instead."
+            f"live socket and a wire protocol wrapping loop-bound "
+            f"StreamReader / StreamWriter; reconstruct from "
+            f"configuration in the target process instead."
         )
 
     @property
