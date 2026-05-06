@@ -52,6 +52,38 @@ def test_observe_drain_exception_reaps_timeout_error() -> None:
     asyncio.run(_drive())
 
 
+def test_observe_drain_exception_skips_cancelled_task() -> None:
+    """Functional pin: the helper is no-op-safe on a cancelled task —
+    it does not raise. The sibling ``reaps_timeout_error`` test only
+    exercises the resolved-with-exception arm; a regression that drops
+    BOTH the ``if not t.cancelled():`` guard AND the
+    ``contextlib.suppress(BaseException)`` wrapper would let a cancelled
+    task's ``CancelledError`` escape the helper. (Removing only the
+    guard or only the suppress is observationally equivalent because
+    BaseException-suppress catches the CancelledError that
+    ``t.exception()`` would raise — those mutants survive this pin by
+    design; pinning the implementation shape would break on harmless
+    refactors.)
+    """
+
+    async def _drive() -> None:
+        async def _slow() -> None:
+            await asyncio.sleep(60)
+
+        # Build a task that we cancel before it resolves.
+        cancelled = asyncio.create_task(_slow())
+        cancelled.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cancelled
+        assert cancelled.cancelled(), "test setup: task must be cancelled, not resolved"
+        # The helper must NOT raise on a cancelled task — its
+        # ``if not t.cancelled():`` arm short-circuits before
+        # ``t.exception()`` (which would raise CancelledError).
+        cluster_module._observe_drain_exception(cancelled)
+
+    asyncio.run(_drive())
+
+
 def test_query_leader_finally_uses_observed_drain_pattern() -> None:
     """Source-level pin: the leader-probe finally wraps the inner
     drain in ``asyncio.ensure_future`` plus the
