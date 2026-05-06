@@ -299,8 +299,16 @@ class DqliteProtocol:
             # which would re-truncate over the addr suffix and silently
             # strip the peer attribution exactly when the operator
             # needs it most (a long handshake failure).
+            # Preserve the verbatim server text via ``raw_message`` —
+            # mirrors the 16 sibling FailureResponse-derived raise
+            # sites in this file. Without this, ``ProtocolError.raw_message``
+            # defaults to the synthetic "Handshake failed: ..."
+            # string, throwing away the verbatim 64 KiB-capped peer
+            # text the cycle-21 / XP3 work centralised on for cross-
+            # process forensic recovery.
             raise ProtocolError(
-                f"Handshake failed: [{response.code}] {self._failure_text(response)}"
+                f"Handshake failed: [{response.code}] {self._failure_text(response)}",
+                raw_message=response.message,
             )
 
         if not isinstance(response, WelcomeResponse):

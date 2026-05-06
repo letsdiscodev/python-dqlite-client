@@ -1418,8 +1418,20 @@ class DqliteConnection:
                     # as DqliteConnectionError so the retry classifier
                     # sees the right shape.
                     await self._abort_protocol()
+                    # Thread ``raw_message`` and ``code`` through the
+                    # rewrap so the verbatim server text the wire-side
+                    # ProtocolError now preserves (handshake-FailureResponse
+                    # path) survives this hop. Without it, the chain
+                    # was broken: wire layer set raw_message → connect()
+                    # rewrap discarded it → user-facing
+                    # DqliteConnectionError.raw_message reverted to the
+                    # synthetic "Wire decode failed during handshake to..."
+                    # prefix. Mirrors the sibling LEADER_ERROR_CODES
+                    # rewrap above which threads both fields.
                     raise DqliteConnectionError(
-                        f"Wire decode failed during handshake to {self._safe_address}: {e}"
+                        f"Wire decode failed during handshake to {self._safe_address}: {e}",
+                        code=getattr(e, "code", None),
+                        raw_message=getattr(e, "raw_message", None) or str(e),
                     ) from e
                 except BaseException:
                     await self._abort_protocol()
