@@ -1689,6 +1689,24 @@ class ClusterClient:
         Both calls go to the leader; the leader-discovery happens
         once per call.
 
+        **Partial-failure recovery.** The two-phase shape is not
+        atomicised: if ``ADD`` succeeds but the follow-up ``ASSIGN``
+        raises (transient transport, leader flip, target unreachable),
+        the cluster's Raft log records the new node as ``SPARE`` and
+        the exception propagates. From the caller's perspective, an
+        ``add_node(..., role=NodeRole.VOTER)`` raise is
+        indistinguishable in class from "ADD never landed", so a
+        naive retry loop would trip the upstream "node already exists"
+        on the next ADD attempt.
+
+        Recovery: catch the exception, then call
+        ``assign_role(node_id, role)`` to converge the partially-
+        added node to the requested role. ``assign_role`` is
+        idempotent at the upstream level — re-running it against a
+        node already at the target role is a no-op. The same shape
+        applies to go-dqlite's ``Client.Add`` (the API contract is
+        identical).
+
         Args:
             node_id: Raft id of the new node. Must be >= 1
                 (0 is the upstream "no node" sentinel).
@@ -1702,7 +1720,9 @@ class ClusterClient:
                 (validated client-side before the round-trip).
             ClusterError: when no leader is reachable.
             OperationalError: when the server rejects (e.g. id
-                already in cluster, address unreachable).
+                already in cluster, address unreachable). May surface
+                from either the ADD phase or the follow-up ASSIGN —
+                see Partial-failure recovery above.
             ProtocolError: on a wire-level shape mismatch.
         """
         _validate_node_id(node_id)
