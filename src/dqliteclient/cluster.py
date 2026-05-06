@@ -1507,9 +1507,14 @@ class ClusterClient:
         hostile leader could otherwise smuggle attacker-controlled
         addresses into your membership rotation. Pair with
         :func:`default_safe_redirect_policy` /
-        :func:`allowlist_policy`. ``None`` (default) preserves the
-        existing pass-through behaviour for callers that are not
-        building a control plane.
+        :func:`allowlist_policy`.
+
+        ``None`` (default) falls back to the instance-level
+        ``redirect_policy`` configured at construction so the same
+        gate that guards ``find_leader`` redirect targets also guards
+        ``cluster_info`` returns. Pass ``policy=lambda _: True`` (or
+        another always-True callable) to disable filtering at the
+        per-call level. Mirrors :meth:`leader_info`'s precedence.
 
         Raises:
             ClusterError: when no leader is reachable across the
@@ -1522,11 +1527,15 @@ class ClusterClient:
         leader_addr = await self.find_leader()
         async with self.open_admin_connection(leader_addr) as protocol:
             nodes = await protocol.cluster()
-        if policy is None:
+        # Fall back to the instance-level policy when no per-call
+        # override; matches the precedence used by ``leader_info`` and
+        # by ``find_leader``'s redirect arms.
+        effective_policy = policy if policy is not None else self._redirect_policy
+        if effective_policy is None:
             return nodes
         filtered: list[NodeInfo] = []
         for node in nodes:
-            if policy(node.address):
+            if effective_policy(node.address):
                 filtered.append(node)
             else:
                 logger.warning(
@@ -1616,9 +1625,10 @@ class ClusterClient:
         attacker-controlled address as "leader" and the caller would
         receive that address verbatim — bypassing every check the
         instance-level ``redirect_policy`` was designed to enforce.
-        Falls back to ``self._redirect_policy`` when ``None``;
-        explicit ``None`` here disables the per-call check (matches
-        the precedence used by :meth:`cluster_info`).
+        Falls back to ``self._redirect_policy`` when ``None`` (matches
+        the precedence used by :meth:`cluster_info` and by
+        :meth:`find_leader`'s redirect arms); pass an always-True
+        callable to disable filtering at the per-call level.
 
         Raises:
             ClusterError: when no node in the store responds.
