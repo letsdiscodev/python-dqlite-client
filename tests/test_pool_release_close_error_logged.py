@@ -1,31 +1,35 @@
-"""Pin: pool acquire's release path now narrows
-``contextlib.suppress(Exception)`` to ``_POOL_CLEANUP_EXCEPTIONS``
-and emits a debug log with ``exc_info=True``.
+"""Pin: the pool's ``_release`` path narrows
+``contextlib.suppress(Exception)`` to ``_POOL_CLEANUP_EXCEPTIONS``,
+absorbing legitimate transport-failure shapes from ``conn.close()``
+without crashing release while letting programmer-bug shapes
+(AttributeError, TypeError) propagate.
 
-Three release-path sites (closed-pool branch, QueueFull branch,
-broken-conn branch) used to silently swallow every Exception from
-``conn.close()``. That diverged from the established pattern in
-``_drain_idle`` and ``_initialize`` which both narrow to the
-cleanup-class tuple AND log. The narrow form propagates programmer-
-bug shapes (AttributeError, TypeError) so a refactor regression
-becomes observable instead of silently absorbed.
+The previous version of this test imported ``logger`` and
+``_POOL_CLEANUP_EXCEPTIONS`` from the production module and inlined
+a duplicated `if isinstance(exc, _POOL_CLEANUP_EXCEPTIONS):
+logger.debug(...)` block — it asserted that its OWN inline call
+emitted the DEBUG record, never invoking the production code under
+test. A regression that widened the suppress back to bare
+``Exception``, or one that dropped OSError from the cleanup tuple,
+would not have been observable.
 
-This test exercises the QueueFull branch: it forces the pool's
-internal queue to be full at release time, mocks ``conn.close()`` to
-raise OSError, and asserts:
+This rewrite drives the actual ``pool.acquire()`` /
+``ConnectionPool._release`` release path:
 
-  * The release completes without re-raising,
-  * The conn was closed (close() was awaited),
-  * ``logger.debug`` captured the "ignoring close() error during
-    release" substring with exc_info,
-  * A programmer-bug shape (e.g., AttributeError) WOULD propagate
-    (negative pin).
+  * The closed-pool branch absorbs an OSError from ``conn.close()``
+    via ``contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS)`` — release
+    completes without re-raising, and ``conn._pool_released`` is set.
+  * A programmer-bug shape (AttributeError) is NOT in the tuple — the
+    same release path propagates it, surfacing the refactor mistake.
+
+The two constant-shape pins (``includes_oserror`` and
+``does_not_include_attribute_error``) remain — they pin the tuple
+contents, distinct from the behavioural pin above.
 """
 
 from __future__ import annotations
 
 import contextlib
-import logging
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -36,6 +40,8 @@ from dqliteclient.pool import ConnectionPool
 
 
 class _FakeConn:
+    """Fake connection that tracks close() calls and can raise on close."""
+
     def __init__(self, *, close_side_effect: BaseException | None = None) -> None:
         self._address = "localhost:9001"
         self._in_transaction = False
@@ -59,52 +65,78 @@ class _FakeConn:
         self.close_calls += 1
         if self._close_side_effect is not None:
             raise self._close_side_effect
+        self._pool_released = True
+        self._protocol = None  # type: ignore[assignment]
+
+
+def _make_pool_with_fake_cluster(
+    fake_conn: _FakeConn,
+    *,
+    max_size: int = 1,
+) -> ConnectionPool:
+    async def _connect(**kwargs: Any) -> _FakeConn:
+        return fake_conn
+
+    cluster = MagicMock(spec=ClusterClient)
+    cluster.connect = _connect
+    return ConnectionPool(
+        addresses=["localhost:9001"],
+        min_size=0,
+        max_size=max_size,
+        timeout=1.0,
+        cluster=cluster,
+    )
 
 
 @pytest.mark.asyncio
-async def test_release_close_oserror_is_logged_at_debug(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """An OSError from conn.close() during the closed-pool release
-    path is absorbed AND logged at DEBUG with exc_info."""
-    cluster = MagicMock(spec=ClusterClient)
-    pool = ConnectionPool(addresses=["x:9001"], cluster=cluster, max_size=1)
-    pool._closed = True  # force the closed-pool branch in release
+async def test_release_absorbs_close_oserror_under_pool_cleanup_exceptions() -> None:
+    """An OSError from ``conn.close()`` during the closed-pool release
+    branch is absorbed by ``contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS)``
+    in ``ConnectionPool._release``. The release returns normally and
+    marks the connection released; the OSError does not propagate."""
+    fake = _FakeConn(close_side_effect=OSError("transport already closed"))
+    pool = _make_pool_with_fake_cluster(fake)
 
-    conn = _FakeConn(close_side_effect=OSError("transport already closed"))
+    cm = pool.acquire()
+    conn = await cm.__aenter__()
+    assert conn is fake
+    # Close the pool while we hold the connection so ``_release``
+    # takes the ``if self._closed:`` arm at line 1501 (or its
+    # post-reset re-check at 1520) — both call ``conn.close()``
+    # under the cleanup-class suppress.
+    pool._closed = True
+    # Must NOT raise — the suppress catches OSError from close().
+    await cm.__aexit__(None, None, None)
 
-    caplog.set_level(logging.DEBUG, logger="dqliteclient.pool")
-    # Drive the release manually through the same path acquire uses
-    # on cleanup. We can't easily re-enter the full acquire because
-    # the pool is closed; instead, simulate the closed-branch close
-    # directly by importing the cleanup helper. The logged substring
-    # is what we pin.
+    assert fake.close_calls >= 1, "release path must invoke conn.close()"
+    assert fake._pool_released, "release must mark conn._pool_released"
+
+
+@pytest.mark.asyncio
+async def test_release_propagates_attribute_error_from_close() -> None:
+    """``contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS)`` must NOT
+    absorb programmer-bug shapes. Inject an AttributeError from
+    ``conn.close()`` and confirm it surfaces from ``_release`` (rather
+    than being silently swallowed as a bare ``except Exception:``
+    suppress would have done)."""
+    fake = _FakeConn(close_side_effect=AttributeError("refactor mistake"))
+    pool = _make_pool_with_fake_cluster(fake)
+
+    cm = pool.acquire()
+    await cm.__aenter__()
+    pool._closed = True
+    with pytest.raises(AttributeError, match="refactor mistake"):
+        await cm.__aexit__(None, None, None)
+
+    # Best-effort cleanup so the test fixture doesn't leak the pool.
     with contextlib.suppress(Exception):
-        try:
-            await conn.close()
-        except Exception:
-            # Reproduce the new pattern in pool.py manually:
-            from dqliteclient.pool import _POOL_CLEANUP_EXCEPTIONS, logger
-
-            if isinstance(conn._close_side_effect, _POOL_CLEANUP_EXCEPTIONS):
-                logger.debug(
-                    "pool: ignoring close() error during release",
-                    exc_info=True,
-                )
-
-    # The log line was emitted (this exercises the helper inline; the
-    # production path's pattern is identical, lifted from pool.py).
-    assert any(
-        "ignoring close() error during release" in record.getMessage()
-        and record.exc_info is not None
-        for record in caplog.records
-    ), f"expected DEBUG log; got {[r.getMessage() for r in caplog.records]}"
+        await pool.close()
 
 
 def test_pool_cleanup_exceptions_includes_oserror() -> None:
     """Pin: the narrow tuple covers OSError. A regression that drops
-    OSError from the tuple would convert the new logged-suppress
-    branch into a propagating exception."""
+    OSError from the tuple would convert the suppress branch into a
+    propagating exception."""
     from dqliteclient.pool import _POOL_CLEANUP_EXCEPTIONS
 
     assert OSError in _POOL_CLEANUP_EXCEPTIONS
@@ -112,15 +144,10 @@ def test_pool_cleanup_exceptions_includes_oserror() -> None:
 
 def test_pool_cleanup_exceptions_does_not_include_attribute_error() -> None:
     """Pin: programmer-bug shapes (AttributeError, TypeError) are NOT
-    in the narrow tuple. The release path's new pattern propagates
-    them, surfacing refactor mistakes instead of absorbing them
-    silently like the old `suppress(Exception)` did."""
+    in the narrow tuple. The release path propagates them, surfacing
+    refactor mistakes instead of absorbing them silently like the old
+    `suppress(Exception)` did."""
     from dqliteclient.pool import _POOL_CLEANUP_EXCEPTIONS
 
     assert AttributeError not in _POOL_CLEANUP_EXCEPTIONS
     assert TypeError not in _POOL_CLEANUP_EXCEPTIONS
-
-
-# Suppress unused import flag — `Any` reserved for future signature
-# extensions in this fixture file.
-_ = Any
