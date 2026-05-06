@@ -1591,13 +1591,19 @@ class ClusterClient:
             raise ValueError(f"target_node_id must be >= 1, got {target_node_id}")
 
         leader_addr = await self.find_leader()
-        async with self.open_admin_connection(leader_addr) as protocol:
-            await protocol.transfer(target_node_id)
-        # The connected leader has stepped down. Invalidate the
-        # last-known-leader cache so the next ``find_leader`` runs the
-        # full sweep instead of hitting the now-stale fast path that
-        # would probe the ex-leader, fall through, and waste one RTT.
-        self._set_last_known_leader(None)
+        try:
+            async with self.open_admin_connection(leader_addr) as protocol:
+                await protocol.transfer(target_node_id)
+        finally:
+            # The connected leader has stepped down (success path) OR
+            # the RPC failed (potentially because leadership flipped
+            # mid-RPC). In both cases the cached leader is at least
+            # suspect; invalidate so the next ``find_leader`` runs a
+            # fresh sweep instead of probing the now-stale cache. Was
+            # previously success-path only — leader-flip-induced
+            # failure left the cache pointing at the rejecter for one
+            # wasted RTT on the next call.
+            self._set_last_known_leader(None)
 
     async def leader_info(self, *, policy: RedirectPolicy | None = None) -> LeaderInfo | None:
         """Return the current leader's ``(node_id, address)``, or
@@ -1706,22 +1712,23 @@ class ClusterClient:
             raise TypeError(f"role must be a NodeRole, got {type(role).__name__}")
 
         leader_addr = await self.find_leader()
-        async with self.open_admin_connection(leader_addr) as protocol:
-            await protocol.add(node_id, address)
-            if role != NodeRole.SPARE:
-                # Mirror go-dqlite's `Client.Add` second phase: ADD
-                # is always implicitly Spare server-side; promote with
-                # a follow-up Assign. Reuses the same admin connection
-                # so the second call lands on the same leader (avoids
-                # a re-election window between the two requests).
-                await protocol.assign(node_id, role)
-        # Raft membership changes can interleave with elections.
-        # Adding a new VOTER changes quorum size; the new majority can
-        # elect a different leader during commit. Invalidate the
-        # cached leader so the next find_leader() runs the full sweep
-        # rather than paying a fast-path miss against the (possibly
-        # former) leader.
-        self._set_last_known_leader(None)
+        try:
+            async with self.open_admin_connection(leader_addr) as protocol:
+                await protocol.add(node_id, address)
+                if role != NodeRole.SPARE:
+                    # Mirror go-dqlite's `Client.Add` second phase: ADD
+                    # is always implicitly Spare server-side; promote
+                    # with a follow-up Assign. Reuses the same admin
+                    # connection so the second call lands on the same
+                    # leader (avoids a re-election window between the
+                    # two requests).
+                    await protocol.assign(node_id, role)
+        finally:
+            # Raft membership changes can interleave with elections,
+            # AND a leader-flip-induced failure here leaves the cache
+            # pointing at the rejecter. Invalidate on both success and
+            # failure paths.
+            self._set_last_known_leader(None)
 
     async def assign_role(self, node_id: int, role: NodeRole) -> None:
         """Change a node's role (promote or demote).
@@ -1742,12 +1749,14 @@ class ClusterClient:
             raise TypeError(f"role must be a NodeRole, got {type(role).__name__}")
 
         leader_addr = await self.find_leader()
-        async with self.open_admin_connection(leader_addr) as protocol:
-            await protocol.assign(node_id, role)
-        # Promoting STANDBY → VOTER widens the voting set; the
-        # election window applies. Invalidate the cached leader for
-        # the same reason as add_node above.
-        self._set_last_known_leader(None)
+        try:
+            async with self.open_admin_connection(leader_addr) as protocol:
+                await protocol.assign(node_id, role)
+        finally:
+            # Promoting STANDBY → VOTER widens the voting set (election
+            # window). Failure-path also invalidates so a leader-flip-
+            # induced rejection doesn't leave the cache stale.
+            self._set_last_known_leader(None)
 
     async def remove_node(self, node_id: int) -> None:
         """Remove a node from the cluster (Raft membership change).
@@ -1767,14 +1776,16 @@ class ClusterClient:
         _validate_node_id(node_id)
 
         leader_addr = await self.find_leader()
-        async with self.open_admin_connection(leader_addr) as protocol:
-            await protocol.remove(node_id)
-        # The removed node may have been the cached leader; the server
-        # normally rejects removing the connected leader, but defense
-        # against future protocol changes that allow it. Unconditional
-        # invalidation is the conservative choice — at most we cost
-        # one fast-path probe miss on the next find_leader.
-        self._set_last_known_leader(None)
+        try:
+            async with self.open_admin_connection(leader_addr) as protocol:
+                await protocol.remove(node_id)
+        finally:
+            # The removed node may have been the cached leader; the
+            # server normally rejects removing the connected leader,
+            # but defense against future protocol changes that allow
+            # it. Unconditional invalidation on both success and
+            # failure is the conservative choice.
+            self._set_last_known_leader(None)
 
     async def describe(self, *, address: str | None = None) -> NodeMetadata:
         """Read a node's failure-domain + weight metadata.
@@ -1828,14 +1839,16 @@ class ClusterClient:
             raise ValueError(f"weight must be >= 0, got {weight}")
 
         target = address if address is not None else await self.find_leader()
-        async with self.open_admin_connection(target) as protocol:
-            await protocol.weight(weight)
-        # ``set_weight`` does not directly change quorum, but a
-        # marginal cluster on the edge of an election can be tipped by
-        # the weight shift. Invalidate the cached leader so the next
-        # find_leader() rediscovers without paying a fast-path miss
-        # against an ex-leader.
-        self._set_last_known_leader(None)
+        try:
+            async with self.open_admin_connection(target) as protocol:
+                await protocol.weight(weight)
+        finally:
+            # ``set_weight`` does not directly change quorum, but a
+            # marginal cluster on the edge of an election can be
+            # tipped by the weight shift. Invalidate on both success
+            # and failure so a leader-flip-induced failure doesn't
+            # leave the cache stale.
+            self._set_last_known_leader(None)
 
     async def dump(self, database: str) -> dict[str, bytes]:
         """Dump a database to ``{filename: bytes}``.

@@ -143,3 +143,63 @@ async def test_set_weight_invalidates_last_known_leader() -> None:
             p.stop()
 
     assert cluster._get_last_known_leader() is None
+
+
+@pytest.mark.asyncio
+async def test_transfer_leadership_invalidates_cache_on_failure() -> None:
+    """Pin: a leader-flip-induced failure during admin RPC must also
+    invalidate the cache. Previously the success-path-only invalidation
+    left the cache pointing at the rejecter for one wasted RTT on the
+    next ``find_leader``."""
+    from dqliteclient.exceptions import OperationalError
+
+    cluster = _make_cluster_with_cached_leader()
+    assert cluster._get_last_known_leader() == "node1:9001"
+
+    fake_proto = MagicMock()
+    fake_proto.handshake = AsyncMock()
+    fake_proto.transfer = AsyncMock(
+        side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
+    )
+
+    patches = _patch_admin(cluster, fake_proto)
+    for p in patches:
+        p.start()
+    try:
+        with pytest.raises(OperationalError):
+            await cluster.transfer_leadership(target_node_id=2)
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+    # Cache invalidated even though the RPC failed.
+    assert cluster._get_last_known_leader() is None
+
+
+@pytest.mark.asyncio
+async def test_add_node_invalidates_cache_on_failure() -> None:
+    """add_node failure (e.g. ASSIGN second-phase fails after ADD
+    landed) must also invalidate the cache."""
+    from dqliteclient.exceptions import OperationalError
+
+    cluster = _make_cluster_with_cached_leader()
+    fake_proto = MagicMock()
+    fake_proto.handshake = AsyncMock()
+    fake_proto.add = AsyncMock()  # ADD succeeds
+    fake_proto.assign = AsyncMock(
+        side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
+    )
+
+    from dqlitewire import NodeRole
+
+    patches = _patch_admin(cluster, fake_proto)
+    for p in patches:
+        p.start()
+    try:
+        with pytest.raises(OperationalError):
+            await cluster.add_node(node_id=2, address="node2:9001", role=NodeRole.VOTER)
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+    assert cluster._get_last_known_leader() is None
