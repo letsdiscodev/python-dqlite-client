@@ -117,50 +117,24 @@ class MemoryNodeStore(NodeStore):
             raise TypeError("Pass only one of 'addresses' or 'initial_addresses'")
         seed = addresses if addresses is not None else initial_addresses
         if seed:
-            # Strip leading/trailing whitespace and reject empty
-            # entries up front. Without this, a typoed seed like
-            # ``["localhost:9001\n"]`` (e.g. read from a config
-            # file) leaks ``ValueError`` through the sweep's narrow
-            # exception filter and surfaces deep inside
-            # ``find_leader``. Deduplicate while preserving order
-            # so a config with the same address twice doesn't
-            # double the probe count and double the per-node
-            # error lines in the failure-aggregate message.
-            seen: set[str] = set()
-            unique: list[str] = []
+            # Build raw NodeInfo entries (synthetic id=i+1, role=VOTER,
+            # address-as-string-from-input) and route through the shared
+            # ``_validate_and_normalise_nodes`` helper so the strip /
+            # parse / dedup pipeline lives in exactly one place. Without
+            # this, the per-string validation loop here and the
+            # per-NodeInfo loop in the helper drifted on input shape
+            # (``Sequence[str]`` vs ``Sequence[NodeInfo]``); future
+            # rule additions had to land in two places.
+            raw_nodes: list[NodeInfo] = []
             for raw in seed:
                 if not isinstance(raw, str):
                     raise TypeError(
                         f"NodeStore addresses must be 'host:port' strings, got {type(raw).__name__}"
                     )
-                addr = raw.strip()
-                if not addr:
-                    raise ValueError("NodeStore addresses must be non-empty 'host:port' strings")
-                # Syntactic validation via the same parser
-                # ``_query_leader`` will use later. Without this,
-                # malformed entries (unbracketed IPv6, non-numeric
-                # port, IDN, credentials shape) leak ``ValueError``
-                # through the ``find_leader`` sweep's narrow except
-                # tuple — aborting the entire sweep with the wrong
-                # exception class and no per-node attribution.
-                # Local import to avoid cluster <-> node_store
-                # circular import (cluster imports NodeStore).
-                from dqliteclient.connection import _parse_address as _parse_addr_validator
-
-                try:
-                    _parse_addr_validator(addr)
-                except ValueError as e:
-                    raise ValueError(
-                        f"NodeStore address {addr!r} is not a valid 'host:port': {e}"
-                    ) from e
-                if addr in seen:
-                    continue
-                seen.add(addr)
-                unique.append(addr)
-            self._nodes: tuple[NodeInfo, ...] = tuple(
-                NodeInfo(node_id=i + 1, address=addr, role=NodeRole.VOTER)
-                for i, addr in enumerate(unique)
-            )
+                raw_nodes.append(
+                    NodeInfo(node_id=len(raw_nodes) + 1, address=raw, role=NodeRole.VOTER)
+                )
+            self._nodes: tuple[NodeInfo, ...] = _validate_and_normalise_nodes(raw_nodes)
         else:
             self._nodes = ()
         # Lock the ``set_nodes`` critical section. Constructed eagerly
@@ -204,14 +178,16 @@ class MemoryNodeStore(NodeStore):
 def _validate_and_normalise_nodes(nodes: Sequence[NodeInfo]) -> tuple[NodeInfo, ...]:
     """Strip / validate / dedup ``NodeInfo`` entries.
 
-    Shared between :class:`MemoryNodeStore` and :class:`YamlNodeStore`
-    so both stores enforce identical semantics on ``set_nodes`` —
-    a process that calls ``cluster_info() -> set_nodes(...)`` against
-    either store gets the same exception class at the same boundary
-    rather than discovering a malformed address only on the next
-    ``_load_from_disk``.
+    Shared by every node-store entry point that constructs an
+    in-memory node tuple from raw input — :meth:`MemoryNodeStore.__init__`
+    (after wrapping each seed string in a synthetic ``NodeInfo``),
+    :meth:`MemoryNodeStore._set_nodes_locked`, :meth:`YamlNodeStore.set_nodes`,
+    and :meth:`YamlNodeStore._load_from_disk`. The shared helper
+    eliminates rule-drift across the four call sites: a future
+    address-validation rule (e.g. "reject IPv6 link-local") lands in
+    one place.
 
-    Validation pipeline (matches ``MemoryNodeStore.__init__``):
+    Validation pipeline:
 
     1. Reject non-string ``NodeInfo.address`` with ``TypeError``.
     2. Strip leading/trailing whitespace (operator-friendly canonicalisation).
@@ -364,10 +340,6 @@ class YamlNodeStore(NodeStore):
                 f"YamlNodeStore: {self._path} top-level must be a "
                 f"YAML list, got {type(raw).__name__}"
             )
-        # Local import to avoid cluster <-> node_store circular import
-        # (cluster imports NodeStore).
-        from dqliteclient.connection import _parse_address as _parse_addr_validator
-
         result: list[NodeInfo] = []
         for idx, entry in enumerate(raw):
             if not isinstance(entry, dict):
@@ -432,14 +404,21 @@ class YamlNodeStore(NodeStore):
                     f"YamlNodeStore: {self._path}[{idx}] 'Role' must be "
                     f"int or str, got {type(role_raw).__name__}"
                 )
-            try:
-                _parse_addr_validator(address)
-            except ValueError as e:
-                raise ClusterError(
-                    f"YamlNodeStore: {self._path}[{idx}] address {address!r} invalid: {e}"
-                ) from e
             result.append(NodeInfo(node_id=node_id, address=address, role=role))
-        return tuple(result)
+        # Run the parsed entries through the shared strip / dedup /
+        # _parse_address pipeline so a hand-edited YAML file with
+        # whitespace-laden or duplicated addresses canonicalises at
+        # load time (matching the discipline ``set_nodes`` enforces on
+        # write). Without this, the load path accepted what
+        # ``set_nodes`` would now reject — read/write asymmetry that
+        # left the docstring's "matches set_nodes" claim aspirational.
+        # ``_validate_and_normalise_nodes`` raises ``ValueError`` on a
+        # bad shape (matching the existing fail-fast posture below)
+        # and returns the canonical tuple on success.
+        try:
+            return _validate_and_normalise_nodes(result)
+        except (TypeError, ValueError) as e:
+            raise ClusterError(f"YamlNodeStore: {self._path}: {e}") from e
 
     async def get_nodes(self) -> Sequence[NodeInfo]:
         return self._nodes

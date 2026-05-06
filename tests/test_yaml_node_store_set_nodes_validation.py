@@ -122,6 +122,45 @@ async def test_set_nodes_persists_canonical_form_to_disk() -> None:
 
 
 @pytest.mark.asyncio
+async def test_load_from_disk_strips_and_dedups_via_helper() -> None:
+    """``_load_from_disk`` runs the parsed YAML entries through the same
+    strip / dedup / ``_parse_address`` pipeline as ``set_nodes`` so the
+    load path canonicalises hand-edited files (whitespace, duplicates).
+    Without this, the load path accepted what ``set_nodes`` would now
+    reject — read/write asymmetry."""
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "nodes.yaml"
+        # Hand-write a YAML file with whitespace and a duplicate.
+        path.write_text(
+            "- ID: 1\n"
+            "  Address: '  127.0.0.1:9001  '\n"
+            "  Role: 0\n"
+            "- ID: 2\n"
+            "  Address: '127.0.0.1:9001'\n"
+            "  Role: 0\n"
+        )
+        store = YamlNodeStore(path)
+        nodes = await store.get_nodes()
+        # Whitespace stripped; duplicate dedup'd.
+        assert len(nodes) == 1
+        assert nodes[0].address == "127.0.0.1:9001"
+
+
+@pytest.mark.asyncio
+async def test_load_from_disk_rejects_invalid_address_via_helper() -> None:
+    """A YAML file with a malformed ``host:port`` address fails to load
+    via the shared validator (rather than being silently accepted by
+    the load path while ``set_nodes`` would reject)."""
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "nodes.yaml"
+        path.write_text("- ID: 1\n  Address: 'not_a_valid_address'\n  Role: 0\n")
+        from dqliteclient.exceptions import ClusterError
+
+        with pytest.raises(ClusterError, match="host:port"):
+            YamlNodeStore(path)
+
+
+@pytest.mark.asyncio
 async def test_concurrent_set_nodes_serialised_under_lock() -> None:
     """Two concurrent ``set_nodes`` calls must serialise through the
     instance lock — no validation-pre-pass races, no torn writes."""
