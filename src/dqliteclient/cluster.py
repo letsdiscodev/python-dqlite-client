@@ -1442,11 +1442,20 @@ class ClusterClient:
             # not spam logs at default verbosity), but the
             # all-attempts-exhausted outcome is the one event paged
             # operators need to see at default verbosity.
+            #
+            # ``_sanitize_for_log`` strips LF / CR from the embedded
+            # exception text — a hostile peer's
+            # ``FailureResponse.message`` can ride into ``str(exc)``
+            # via the ``DqliteConnectionError`` rewrap of
+            # ``LEADER_ERROR_CODES``; a bare interpolation would split
+            # the WARNING across multiple log lines in syslog /
+            # journald. Symmetric with the find-leader aggregate
+            # WARNING above.
             logger.warning(
                 "cluster: connect exhausted %d attempts; last_error=%s: %s",
                 attempts_cap,
                 type(exc).__name__,
-                _truncate_error(str(exc)),
+                _sanitize_for_log(_truncate_error(str(exc))),
             )
             raise
 
