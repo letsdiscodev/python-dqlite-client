@@ -986,6 +986,24 @@ class ConnectionPool:
                     with contextlib.suppress(asyncio.CancelledError):
                         await asyncio.shield(self._release_reservation())
                     raise
+                # close() may have run while ``_create_connection``
+                # was suspended on leader discovery / TCP handshake.
+                # Without this re-check, the fresh connection would
+                # be yielded on a pool whose ``_closed`` flag is True
+                # — contract violation and a sneaky leak (user runs
+                # real queries against an invisibly-closed pool until
+                # they exit the ``async with`` block). The dead-conn-
+                # replacement arm at lines 1196-1210 has the
+                # symmetric discipline; this restores parity. Shield
+                # both the close and the reservation release so an
+                # outer cancel cannot leak the freshly-built
+                # connection's transport or the reservation slot.
+                if self._closed:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(conn.close())
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(self._release_reservation())
+                    raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
                 break
 
             # At capacity — wait briefly on the queue, then loop back to
