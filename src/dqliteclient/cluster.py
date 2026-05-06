@@ -1021,12 +1021,21 @@ class ClusterClient:
         # BrokenPipe, etc.) propagate to the caller. ``_probe_one``
         # already wraps this call in a try/except that classifies
         # transport errors per node into the aggregate ClusterError.
-        reader, writer = await asyncio.wait_for(
-            open_connection(address, dial_func=self._dial_func),
-            timeout=self._dial_timeout,
-        )
-
+        #
+        # ``writer = None`` initialised before the try so the finally
+        # below always sees a defined name; the dial happens INSIDE
+        # the try so a cancel landing between dial-success and
+        # protocol-construction lands inside the try-frame and the
+        # finally-block drains the writer rather than orphaning it.
+        # Use ``asyncio.timeout`` (cancel-scope semantics) rather
+        # than ``asyncio.wait_for`` (which discards the inner-task
+        # result on outer-cancel — the canonical leak shape for
+        # this class of bug). Mirrors the discipline already used
+        # by ``_acquire_admin_protocol``.
+        writer = None
         try:
+            async with asyncio.timeout(self._dial_timeout):
+                reader, writer = await open_connection(address, dial_func=self._dial_func)
             protocol = DqliteProtocol(
                 reader,
                 writer,
@@ -1093,55 +1102,64 @@ class ClusterClient:
             # node_id=0 and empty address: no leader known
             return None
         finally:
-            writer.close()
-            # close() is fire-and-forget; without the bounded
-            # wait_closed() the transport sits in FIN-WAIT until the
-            # OS reclaims it, which adds up under heavy leader-probe
-            # churn (pool warm-up after a leader flip). Cap the wait
-            # at 100 ms: a responsive peer drains FIN/ACK in microseconds
-            # and a slow peer must never hold up leader discovery — the
-            # OS will reap the socket later.
-            #
-            # Shield the drain against an outer cancellation: a
-            # ``find_leader`` cancelled by a TaskGroup sibling failure
-            # (or any caller-level ``asyncio.timeout``) would otherwise
-            # propagate CancelledError out of the ``await`` between
-            # ``writer.close()`` (sync) and the awaited
-            # ``wait_closed``, leaving the reader task spawned by
-            # ``asyncio.open_connection`` orphaned. Under leader
-            # stampede scenarios that leaks per-probe. Shielding runs
-            # the drain to completion within its 100 ms budget even
-            # during shutdown; the outer cancel still propagates past
-            # this ``finally`` as expected.
-            #
-            # Wrap the inner ``wait_for`` in an explicit Task with a
-            # done-callback that observes ``.exception()`` so the
-            # ``TimeoutError`` (or ``CancelledError`` on shutdown) is
-            # never an "unobserved task exception" at GC. Mirrors the
-            # ``_clear_slot`` done-callback discipline used by the
-            # single-flight find-leader slot map elsewhere in this
-            # file. Without the explicit observer, an outer cancel
-            # mid-shield orphans the inner Task with a
-            # ``TimeoutError`` that asyncio's task-finalisation
-            # logger emits as "Task exception was never retrieved".
-            #
-            # Bounded-tail invariant: when the outer await asyncio.shield
-            # is itself cancelled, ``inner_drain`` continues running for
-            # up to ``_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS`` (100 ms)
-            # before self-terminating via the inner ``wait_for``. Under
-            # leader-probe stampede this leaves a 100 ms tail of
-            # background work surviving outer-cancel shutdown — bounded
-            # by the slot count and the per-drain deadline; intentional
-            # to avoid socket leaks under cancel.
-            inner_drain: asyncio.Task[None] = asyncio.ensure_future(
-                asyncio.wait_for(
-                    writer.wait_closed(),
-                    timeout=_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS,
+            # ``writer is None`` when the dial failed before
+            # assignment (ConnectionRefused inside the
+            # ``async with asyncio.timeout(...)`` block) or when
+            # cancel landed before the unpack completed — in either
+            # case there is nothing to drain. ``return`` inside a
+            # ``finally`` would silently discard a propagating
+            # exception from the try-body; gate the drain block on
+            # the writer presence instead.
+            if writer is not None:
+                writer.close()
+                # close() is fire-and-forget; without the bounded
+                # wait_closed() the transport sits in FIN-WAIT until the
+                # OS reclaims it, which adds up under heavy leader-probe
+                # churn (pool warm-up after a leader flip). Cap the wait
+                # at 100 ms: a responsive peer drains FIN/ACK in microseconds
+                # and a slow peer must never hold up leader discovery — the
+                # OS will reap the socket later.
+                #
+                # Shield the drain against an outer cancellation: a
+                # ``find_leader`` cancelled by a TaskGroup sibling failure
+                # (or any caller-level ``asyncio.timeout``) would otherwise
+                # propagate CancelledError out of the ``await`` between
+                # ``writer.close()`` (sync) and the awaited
+                # ``wait_closed``, leaving the reader task spawned by
+                # ``asyncio.open_connection`` orphaned. Under leader
+                # stampede scenarios that leaks per-probe. Shielding runs
+                # the drain to completion within its 100 ms budget even
+                # during shutdown; the outer cancel still propagates past
+                # this ``finally`` as expected.
+                #
+                # Wrap the inner ``wait_for`` in an explicit Task with a
+                # done-callback that observes ``.exception()`` so the
+                # ``TimeoutError`` (or ``CancelledError`` on shutdown) is
+                # never an "unobserved task exception" at GC. Mirrors the
+                # ``_clear_slot`` done-callback discipline used by the
+                # single-flight find-leader slot map elsewhere in this
+                # file. Without the explicit observer, an outer cancel
+                # mid-shield orphans the inner Task with a
+                # ``TimeoutError`` that asyncio's task-finalisation
+                # logger emits as "Task exception was never retrieved".
+                #
+                # Bounded-tail invariant: when the outer await asyncio.shield
+                # is itself cancelled, ``inner_drain`` continues running for
+                # up to ``_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS`` (100 ms)
+                # before self-terminating via the inner ``wait_for``. Under
+                # leader-probe stampede this leaves a 100 ms tail of
+                # background work surviving outer-cancel shutdown — bounded
+                # by the slot count and the per-drain deadline; intentional
+                # to avoid socket leaks under cancel.
+                inner_drain: asyncio.Task[None] = asyncio.ensure_future(
+                    asyncio.wait_for(
+                        writer.wait_closed(),
+                        timeout=_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS,
+                    )
                 )
-            )
-            inner_drain.add_done_callback(_observe_drain_exception)
-            with contextlib.suppress(OSError, TimeoutError):
-                await asyncio.shield(inner_drain)
+                inner_drain.add_done_callback(_observe_drain_exception)
+                with contextlib.suppress(OSError, TimeoutError):
+                    await asyncio.shield(inner_drain)
 
     async def _verify_redirect(
         self, hint_address: str, *, trust_server_heartbeat: bool = False
@@ -1827,7 +1845,7 @@ class ClusterClient:
         # welcome, mid-restart node) hangs admin RPCs for up to the
         # per-RPC ``timeout`` (default 10 s) even when the operator
         # sized ``attempt_timeout`` at e.g. 0.5 s for fast control-
-        # plane fail-over. The inner ``wait_for(timeout=dial_timeout)``
+        # plane fail-over. The inner ``asyncio.timeout(self._dial_timeout)``
         # still bounds the TCP-establish phase; the protocol's
         # ``self._timeout`` still bounds per-RPC reads on the yielded
         # protocol.
@@ -1836,10 +1854,14 @@ class ClusterClient:
         try:
             try:
                 async with asyncio.timeout(self._attempt_timeout):
-                    reader, writer = await asyncio.wait_for(
-                        open_connection(address, dial_func=self._dial_func),
-                        timeout=self._dial_timeout,
-                    )
+                    # Use ``asyncio.timeout`` (cancel-scope semantics)
+                    # rather than ``asyncio.wait_for`` (which discards
+                    # the inner-task result on outer-cancel — orphans
+                    # ``(reader, writer)`` if the outer cancel lands
+                    # between dial-resolve and unpack). Mirrors the
+                    # ``_query_leader`` discipline.
+                    async with asyncio.timeout(self._dial_timeout):
+                        reader, writer = await open_connection(address, dial_func=self._dial_func)
                     protocol = DqliteProtocol(
                         reader,
                         writer,
