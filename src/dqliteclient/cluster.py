@@ -498,11 +498,19 @@ class ClusterClient:
         """
         self._last_known_leader = address
 
-    def _check_redirect(self, address: str) -> None:
-        """Reject leader-redirect targets that fail the configured policy."""
-        if self._redirect_policy is None:
+    def _check_redirect(self, address: str, *, policy: RedirectPolicy | None = None) -> None:
+        """Reject leader-redirect targets that fail the configured policy.
+
+        ``policy`` overrides the instance-level ``redirect_policy`` when
+        provided — used by :meth:`leader_info` to apply a per-call
+        policy without mutating the instance default. ``None`` falls
+        back to ``self._redirect_policy`` (the standard probe-time
+        check).
+        """
+        effective = policy if policy is not None else self._redirect_policy
+        if effective is None:
             return
-        if not self._redirect_policy(address):
+        if not effective(address):
             # Security-adjacent event: an operator-supplied policy
             # just rejected a server-advised leader target. Surface
             # at DEBUG so SSRF-style attempts or policy
@@ -1563,7 +1571,7 @@ class ClusterClient:
         # would probe the ex-leader, fall through, and waste one RTT.
         self._set_last_known_leader(None)
 
-    async def leader_info(self) -> LeaderInfo | None:
+    async def leader_info(self, *, policy: RedirectPolicy | None = None) -> LeaderInfo | None:
         """Return the current leader's ``(node_id, address)``, or
         ``None`` if no leader is known.
 
@@ -1581,8 +1589,23 @@ class ClusterClient:
         ``(node_id=0, address="")`` "no leader yet" reply that the
         server emits during a re-election.
 
+        ``policy`` is an optional :data:`RedirectPolicy` callable
+        applied to the responder's self-reported leader address when
+        leadership flipped between :meth:`find_leader` and the
+        follow-up ``get_leader`` round-trip. Without this gate, a
+        hostile follower reached on the second hop could return an
+        attacker-controlled address as "leader" and the caller would
+        receive that address verbatim — bypassing every check the
+        instance-level ``redirect_policy`` was designed to enforce.
+        Falls back to ``self._redirect_policy`` when ``None``;
+        explicit ``None`` here disables the per-call check (matches
+        the precedence used by :meth:`cluster_info`).
+
         Raises:
             ClusterError: when no node in the store responds.
+            ClusterPolicyError: when the responder's reported address
+                differs from the address we connected to AND fails
+                ``policy`` / ``self._redirect_policy``.
         """
         # Reuse find_leader's sweep semantics — it already handles
         # node-store iteration, redirect validation, and the
@@ -1599,6 +1622,16 @@ class ClusterClient:
                 # longer self-identifies as leader. Surface ``None``
                 # rather than confabulating an answer.
                 return None
+            # Re-validate the responder's reported address against
+            # the redirect policy when leadership flipped between
+            # find_leader and this follow-up get_leader (a hostile
+            # follower could otherwise tunnel an attacker-controlled
+            # address through this admin path). Skip the check when
+            # the responder confirmed itself — the same address that
+            # find_leader already approved through its own
+            # ``_check_redirect`` arm.
+            if not _addr_equiv(address, leader_addr):
+                self._check_redirect(address, policy=policy)
             return LeaderInfo(node_id=node_id, address=address)
 
     async def add_node(
