@@ -2006,8 +2006,20 @@ class DqliteConnection:
         """
         self._check_in_use()
         protocol, db_id = self._ensure_connected()
-        self._in_use = True
         try:
+            # Set ``_in_use = True`` INSIDE the try block (not before)
+            # so a ``KeyboardInterrupt`` / ``SystemExit`` delivered at
+            # the bytecode boundary BETWEEN the assignment and the
+            # ``try:`` (signals can fire between any two bytecodes per
+            # the Python interpreter's signal-eval-frequency machinery)
+            # cannot escape WITHOUT entering the try-frame and thus
+            # without running the ``finally`` that clears the flag.
+            # If the flag stuck at ``True``, every subsequent
+            # operation on this connection would raise
+            # ``InterfaceError("another operation is in progress")``
+            # permanently. The dbapi sync facade has the symmetric
+            # discipline; this mirrors it.
+            self._in_use = True
             return await fn(protocol, db_id)
         except _WireEncodeError as e:
             # Client-side parameter-encoding error. The wire bytes were
