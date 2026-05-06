@@ -198,38 +198,58 @@ class MemoryNodeStore(NodeStore):
             await self._set_nodes_locked(nodes)
 
     async def _set_nodes_locked(self, nodes: Sequence[NodeInfo]) -> None:
-        seen: set[str] = set()
-        unique: list[NodeInfo] = []
-        for node in nodes:
-            if not isinstance(node.address, str):
-                raise TypeError(
-                    f"NodeInfo.address must be 'host:port' string, got "
-                    f"{type(node.address).__name__}"
-                )
-            addr = node.address.strip()
-            if not addr:
-                raise ValueError("NodeInfo.address must be a non-empty 'host:port' string")
-            # Same syntactic validation as ``__init__``; see rationale
-            # there. Local import to avoid the cluster import cycle.
-            from dqliteclient.connection import _parse_address as _parse_addr_validator
+        self._nodes = _validate_and_normalise_nodes(nodes)
 
-            try:
-                _parse_addr_validator(addr)
-            except ValueError as e:
-                raise ValueError(
-                    f"NodeInfo.address {addr!r} is not a valid 'host:port': {e}"
-                ) from e
-            if addr in seen:
-                continue
-            seen.add(addr)
-            if addr is node.address:
-                unique.append(node)
-            else:
-                # NodeInfo is a frozen dataclass; rebuild with the
-                # canonical (stripped) address so a downstream lookup
-                # by-address matches the canonical form.
-                unique.append(NodeInfo(node_id=node.node_id, address=addr, role=node.role))
-        self._nodes = tuple(unique)
+
+def _validate_and_normalise_nodes(nodes: Sequence[NodeInfo]) -> tuple[NodeInfo, ...]:
+    """Strip / validate / dedup ``NodeInfo`` entries.
+
+    Shared between :class:`MemoryNodeStore` and :class:`YamlNodeStore`
+    so both stores enforce identical semantics on ``set_nodes`` —
+    a process that calls ``cluster_info() -> set_nodes(...)`` against
+    either store gets the same exception class at the same boundary
+    rather than discovering a malformed address only on the next
+    ``_load_from_disk``.
+
+    Validation pipeline (matches ``MemoryNodeStore.__init__``):
+
+    1. Reject non-string ``NodeInfo.address`` with ``TypeError``.
+    2. Strip leading/trailing whitespace (operator-friendly canonicalisation).
+    3. Reject empty stripped addresses with ``ValueError``.
+    4. Validate ``host:port`` shape via ``_parse_address``.
+    5. Deduplicate by canonical (stripped) address.
+    6. Return frozen ``NodeInfo`` tuples with the canonical address so
+       downstream lookups by address match.
+    """
+    seen: set[str] = set()
+    unique: list[NodeInfo] = []
+    # Local import to avoid the cluster import cycle (cluster imports
+    # node_store; node_store would otherwise need cluster's
+    # ``connection`` module at module-import time).
+    from dqliteclient.connection import _parse_address as _parse_addr_validator
+
+    for node in nodes:
+        if not isinstance(node.address, str):
+            raise TypeError(
+                f"NodeInfo.address must be 'host:port' string, got {type(node.address).__name__}"
+            )
+        addr = node.address.strip()
+        if not addr:
+            raise ValueError("NodeInfo.address must be a non-empty 'host:port' string")
+        try:
+            _parse_addr_validator(addr)
+        except ValueError as e:
+            raise ValueError(f"NodeInfo.address {addr!r} is not a valid 'host:port': {e}") from e
+        if addr in seen:
+            continue
+        seen.add(addr)
+        if addr is node.address:
+            unique.append(node)
+        else:
+            # NodeInfo is a frozen dataclass; rebuild with the canonical
+            # (stripped) address so a downstream lookup by-address matches.
+            unique.append(NodeInfo(node_id=node.node_id, address=addr, role=node.role))
+    return tuple(unique)
 
 
 # Role-string aliases accepted on read for ergonomics with hand-edited
@@ -432,13 +452,23 @@ class YamlNodeStore(NodeStore):
         import yaml
 
         async with self._lock:
+            # Run the same strip / dedup / _parse_address validation
+            # pipeline as MemoryNodeStore. Without this, set_nodes
+            # could persist whitespace-laden / duplicated / malformed
+            # entries that the same _load_from_disk loader would later
+            # refuse — postcondition violation (set_nodes succeeded but
+            # the next process startup raises ValueError on the very
+            # bytes set_nodes wrote). Validation is INSIDE the lock so
+            # two concurrent set_nodes cannot race the validation
+            # pre-pass and clobber each other's writes.
+            normalised = _validate_and_normalise_nodes(nodes)
             payload = [
                 {
                     "ID": int(n.node_id),
                     "Address": str(n.address),
                     "Role": int(n.role),  # integer enum value (go-dqlite shape)
                 }
-                for n in nodes
+                for n in normalised
             ]
             text = yaml.safe_dump(payload, default_flow_style=False, sort_keys=False)
             parent = self._path.parent if str(self._path.parent) else Path(".")
@@ -491,7 +521,10 @@ class YamlNodeStore(NodeStore):
                         os.fsync(dir_fd)
                     finally:
                         os.close(dir_fd)
-                self._nodes = tuple(nodes)
+                # Store the canonical (validated, deduped) tuple in
+                # memory so get_nodes returns the same shape that
+                # _load_from_disk would surface after restart.
+                self._nodes = normalised
             finally:
                 if fd_path is not None:
                     with contextlib.suppress(OSError):
