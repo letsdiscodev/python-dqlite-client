@@ -13,6 +13,7 @@ drop healthy-but-loaded redirect targets when operators size
 ``dial_timeout < attempt_timeout``.
 """
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -54,24 +55,41 @@ async def test_cached_fast_path_verify_uses_attempt_timeout() -> None:
 
 @pytest.mark.asyncio
 async def test_verify_redirect_default_is_dial_timeout() -> None:
-    """Sanity: ``_verify_redirect``'s default (``timeout=None``)
-    falls back to ``self._dial_timeout`` so existing parallel-sweep
-    call sites keep their nesting-cost halving."""
+    """Pin: ``_verify_redirect``'s default (``timeout=None``) falls
+    back to ``self._dial_timeout`` so existing parallel-sweep call
+    sites keep their nesting-cost halving.
+
+    Observe the timeout via a monkeypatched ``asyncio.wait_for`` that
+    captures the ``timeout`` kwarg. The earlier shape of this test
+    asserted only that ``_query_leader`` was called once — a
+    regression that swapped the default to ``attempt_timeout`` would
+    keep the call-count unchanged and silently pass.
+    """
     cluster = ClusterClient(
         MemoryNodeStore(["leader:9001"]),
         timeout=2.0,
         dial_timeout=1.5,
         attempt_timeout=8.0,
     )
-    captured: list[float] = []
+    cluster._query_leader = AsyncMock(return_value="leader:9001")  # self-confirm
 
-    async def _query_leader_with_capture(*_args, **kwargs):
-        captured.append(kwargs.get("trust_server_heartbeat"))  # type: ignore[arg-type]
-        return "leader:9001"  # self-confirm
+    captured_timeouts: list[float | None] = []
 
-    cluster._query_leader = AsyncMock(side_effect=_query_leader_with_capture)
-    # Default timeout=None → effective_timeout = self._dial_timeout
-    result = await cluster._verify_redirect("leader:9001")
+    from dqliteclient import cluster as cluster_module
+
+    real_wait_for = cluster_module.asyncio.wait_for  # type: ignore[attr-defined]
+
+    async def _wait_for_capture(coro: Any, *, timeout: float | None) -> Any:
+        captured_timeouts.append(timeout)
+        return await real_wait_for(coro, timeout=timeout)
+
+    with patch.object(cluster_module.asyncio, "wait_for", new=_wait_for_capture):  # type: ignore[attr-defined]
+        result = await cluster._verify_redirect("leader:9001")
     assert result == "leader:9001"
-    # The probe was called once.
-    assert len(captured) == 1
+    # Default timeout=None → effective_timeout = self._dial_timeout (1.5).
+    # The capture pins the actual envelope passed to wait_for, not just
+    # the call-count.
+    assert captured_timeouts == [1.5], (
+        f"_verify_redirect default must resolve to self._dial_timeout (1.5); "
+        f"captured={captured_timeouts}"
+    )

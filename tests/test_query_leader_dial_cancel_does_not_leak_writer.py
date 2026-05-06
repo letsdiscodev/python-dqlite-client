@@ -43,8 +43,15 @@ def test_query_leader_no_longer_uses_wait_for_around_open_connection() -> None:
     src = _source_of("_query_leader")
     # The test guard: the wait_for-around-open_connection composite
     # should NOT appear in the source. ``asyncio.timeout`` is fine
-    # (it has cancel-scope semantics).
-    assert "wait_for(\n            open_connection(" not in src.replace(" ", ""), (
+    # (it has cancel-scope semantics). Strip whitespace from BOTH the
+    # source AND the search literal so the pattern compares apples-
+    # to-apples regardless of the indentation depth in the production
+    # code. Earlier shape stripped only the source; the literal still
+    # carried 12 spaces, so the ``not in`` was vacuously satisfied —
+    # the guard would have passed against the regression it claimed
+    # to fence.
+    src_stripped = src.replace(" ", "").replace("\n", "")
+    assert "wait_for(open_connection(" not in src_stripped, (
         "_query_leader still uses wait_for(open_connection(...)); switch to "
         "asyncio.timeout for cancel-scope semantics that don't discard "
         "the inner-task result on outer-cancel"
@@ -79,7 +86,11 @@ def test_open_admin_connection_no_longer_uses_wait_for_around_open_connection() 
     """Symmetric pin for ``open_admin_connection`` (the public admin-
     protocol context manager)."""
     src = _source_of("open_admin_connection")
-    assert "wait_for(\n                        open_connection(" not in src.replace(" ", ""), (
+    # Same whitespace-normalisation fix as in the sibling test —
+    # earlier shape stripped only the source while the search literal
+    # carried indentation, making the assertion vacuous.
+    src_stripped = src.replace(" ", "").replace("\n", "")
+    assert "wait_for(open_connection(" not in src_stripped, (
         "open_admin_connection still uses wait_for(open_connection(...)); switch to asyncio.timeout"
     )
     assert "asyncio.timeout(self._dial_timeout)" in src, (
