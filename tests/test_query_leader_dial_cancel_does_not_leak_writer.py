@@ -1,6 +1,6 @@
-"""Pin: ``ClusterClient._query_leader`` and ``_acquire_admin_protocol``
-do not orphan ``(reader, writer)`` when an outer cancel lands during
-the dial.
+"""Pin: ``ClusterClient._query_leader``, ``_acquire_admin_protocol``,
+and ``DqliteConnection._connect_impl`` do not orphan
+``(reader, writer)`` when an outer cancel lands during the dial.
 
 The pre-fix shape used ``asyncio.wait_for(open_connection(...))`` —
 documented CPython hazard: when the inner ``open_connection`` task
@@ -26,10 +26,16 @@ from __future__ import annotations
 import inspect
 
 from dqliteclient import cluster as cluster_module
+from dqliteclient import connection as connection_module
 
 
 def _source_of(name: str) -> str:
     obj = getattr(cluster_module.ClusterClient, name)
+    return inspect.getsource(obj)
+
+
+def _connection_source_of(name: str) -> str:
+    obj = getattr(connection_module.DqliteConnection, name)
     return inspect.getsource(obj)
 
 
@@ -95,4 +101,45 @@ def test_open_admin_connection_no_longer_uses_wait_for_around_open_connection() 
     )
     assert "asyncio.timeout(self._dial_timeout)" in src, (
         "open_admin_connection must use asyncio.timeout(self._dial_timeout)"
+    )
+
+
+def test_connect_impl_no_longer_uses_wait_for_around_open_connection() -> None:
+    """Third call site: ``DqliteConnection._connect_impl`` (the path
+    every user-level connect goes through). The cluster-side
+    ``_query_leader`` / ``open_admin_connection`` got the
+    ``asyncio.timeout``-based fix, but the connection-side
+    ``_connect_impl`` was left on the leaky composite; an outer
+    cancel landing while the dial is in flight under
+    ``DqliteConnection.connect()`` would discard the result.
+    """
+    src = _connection_source_of("_connect_impl")
+    src_stripped = src.replace(" ", "").replace("\n", "")
+    assert "wait_for(open_connection(" not in src_stripped, (
+        "_connect_impl still uses wait_for(open_connection(...)); switch to "
+        "asyncio.timeout for cancel-scope semantics that don't discard "
+        "the inner-task result on outer-cancel"
+    )
+    assert "asyncio.timeout(self._dial_timeout)" in src, (
+        "_connect_impl must use asyncio.timeout(self._dial_timeout) for the dial"
+    )
+
+
+def test_connect_impl_writer_initialised_before_try() -> None:
+    """``writer = None`` must be initialised before the outer try-
+    block so the finally always sees a defined name (avoids
+    NameError on the cancel-before-dial-completes path).
+
+    Mirrors the pin already enforced for ``_query_leader``.
+    """
+    src = _connection_source_of("_connect_impl")
+    assert "writer = None" in src, (
+        "_connect_impl must initialise writer = None before the outer try-block"
+    )
+    pos_init = src.index("writer = None")
+    pos_timeout = src.index("asyncio.timeout(self._dial_timeout)")
+    assert pos_init < pos_timeout, (
+        "writer = None must appear BEFORE the asyncio.timeout block in "
+        "_connect_impl (initialised pre-try so the finally always sees a "
+        "defined name)"
     )

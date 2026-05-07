@@ -1315,13 +1315,24 @@ class DqliteConnection:
         # ``connector.go:357-360`` shape — AttemptTimeout outside,
         # DialTimeout inside. Defaults to ``timeout`` so existing
         # callers see no change.
+        #
+        # ``writer = None`` initialised before the try-block so the
+        # finally always sees a defined name; the dial sits inside an
+        # ``async with asyncio.timeout(self._dial_timeout)`` (cancel-
+        # scope semantics) rather than ``asyncio.wait_for(...)`` so an
+        # outer cancel landing while the dial is in flight does not
+        # discard the ``(reader, writer)`` result and orphan the
+        # writer. Mirrors the discipline already applied to
+        # ``ClusterClient._query_leader`` and
+        # ``ClusterClient.open_admin_connection``.
+        writer = None
         try:
             async with asyncio.timeout(self._attempt_timeout):
                 try:
-                    reader, writer = await asyncio.wait_for(
-                        open_connection(self._address, dial_func=self._dial_func),
-                        timeout=self._dial_timeout,
-                    )
+                    async with asyncio.timeout(self._dial_timeout):
+                        reader, writer = await open_connection(
+                            self._address, dial_func=self._dial_func
+                        )
                 except TimeoutError as e:
                     raise DqliteConnectionError(
                         f"Connection to {self._safe_address} timed out"
@@ -1331,28 +1342,26 @@ class DqliteConnection:
                         f"Failed to connect to {self._safe_address}: {e}"
                     ) from e
 
-                try:
-                    self._protocol = DqliteProtocol(
-                        reader,
-                        writer,
-                        timeout=self._timeout,
-                        max_total_rows=self._max_total_rows,
-                        max_continuation_frames=self._max_continuation_frames,
-                        trust_server_heartbeat=self._trust_server_heartbeat,
-                        address=self._address,
-                    )
-                except BaseException:
-                    # Protocol construction is currently limited to
-                    # argument validation, which
-                    # ``DqliteConnection.__init__`` already enforces —
-                    # but if it ever raises (now or through future
-                    # refactors), ``_abort_protocol`` is a no-op until
-                    # ``self._protocol`` is assigned, so reader/writer
-                    # would be leaked. Close the transport defensively.
-                    writer.close()
-                    with contextlib.suppress(Exception):
-                        await asyncio.wait_for(writer.wait_closed(), timeout=self._close_timeout)
-                    raise
+                self._protocol = DqliteProtocol(
+                    reader,
+                    writer,
+                    timeout=self._timeout,
+                    max_total_rows=self._max_total_rows,
+                    max_continuation_frames=self._max_continuation_frames,
+                    trust_server_heartbeat=self._trust_server_heartbeat,
+                    address=self._address,
+                )
+                # Hand-off complete: the protocol now owns the writer.
+                # Null the local so the outer finally drain is a no-op
+                # for the success path. Protocol failures below go
+                # through ``_abort_protocol`` which closes the writer
+                # via the protocol-owned reference. If
+                # ``DqliteProtocol(...)`` itself raises (today limited
+                # to argument validation that ``__init__`` already
+                # enforces), ``writer`` is still set and the outer
+                # finally drains it — covering future refactors that
+                # could introduce a new failure mode in the constructor.
+                writer = None
 
                 try:
                     await self._protocol.handshake()
@@ -1451,6 +1460,21 @@ class DqliteConnection:
             raise DqliteConnectionError(
                 f"Connection attempt to {self._safe_address} timed out"
             ) from e
+        finally:
+            # ``writer is None`` covers both the success path (we
+            # nulled it after handoff to ``_protocol``, which now owns
+            # the transport and is drained by ``_abort_protocol`` on
+            # failure or ``close()`` on shutdown) and the dial-failure
+            # path (``open_connection`` raised before the unpack
+            # landed). When ``writer`` is set, the dial succeeded but
+            # protocol construction or handshake was interrupted before
+            # the handoff, so drain the transport here to avoid a
+            # leaked socket + reader Task on the cancel-mid-bytecode
+            # path.
+            if writer is not None:
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(writer.wait_closed(), timeout=self._close_timeout)
 
     async def close(self) -> None:
         """Close the connection.
