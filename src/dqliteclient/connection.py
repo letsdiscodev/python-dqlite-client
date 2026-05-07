@@ -1234,16 +1234,19 @@ class DqliteConnection:
         if self._protocol is not None:
             return
 
-        # Claim _in_use synchronously so a concurrent connect() / close()
-        # on the same instance hits _check_in_use() and raises
-        # InterfaceError("another operation in progress") instead of
-        # racing through the pending-drain await below. Pool callers
-        # are already serialized via _lock; direct DqliteConnection
-        # users (calling await conn.connect() directly) need this guard
-        # to avoid concurrent-connect races that orphan one of two
-        # half-built protocols. See companion close() symmetry.
-        self._in_use = True
+        # Claim _in_use INSIDE the try so a concurrent connect() /
+        # close() on the same instance hits _check_in_use() and raises
+        # InterfaceError("another operation in progress"), AND so a
+        # KeyboardInterrupt / SystemExit delivered at the bytecode
+        # boundary between the assignment and the try-frame cannot
+        # escape with the flag stuck at True. _run_protocol documents
+        # the same discipline. Pool callers are already serialized
+        # via _lock; direct DqliteConnection users (calling
+        # await conn.connect() directly) need this guard to avoid
+        # concurrent-connect races that orphan one of two half-built
+        # protocols. See companion close() symmetry.
         try:
+            self._in_use = True
             await self._connect_impl()
         except BaseException:
             # On failure, clear _in_use AND _bound_loop_ref if no protocol
@@ -1548,11 +1551,14 @@ class DqliteConnection:
         # success, so at the race moment _protocol is None and
         # close() would silently return.
         self._check_in_use()
-        # Claim ``_in_use`` synchronously (before any await) so a
-        # concurrent ``connect()`` / ``close()`` on the same instance
-        # is rejected by ``_check_in_use``. Symmetric with ``connect()``.
-        self._in_use = True
+        # Claim ``_in_use`` INSIDE the try-frame so the ``finally``
+        # always runs even if a ``KeyboardInterrupt`` / ``SystemExit``
+        # lands at the bytecode boundary between the assignment and
+        # the try-opener. ``_run_protocol`` documents the same
+        # discipline; ``connect()`` mirrors it. Without this, a stuck
+        # ``_in_use=True`` would permanently wedge the connection.
         try:
+            self._in_use = True
             await self._close_impl()
         finally:
             self._in_use = False
