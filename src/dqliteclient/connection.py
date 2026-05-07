@@ -746,7 +746,7 @@ def _canonicalize_host(host: str, address: str) -> str:
     return host.rstrip(".").lower()
 
 
-def _validate_timeout(value: float, *, name: str = "timeout") -> float:
+def validate_timeout(value: float, *, name: str = "timeout") -> float:
     """Validate a user-supplied timeout: positive, finite, not ``bool``.
 
     ``isinstance(True, int)`` is True and ``math.isfinite(True)`` is
@@ -755,8 +755,9 @@ def _validate_timeout(value: float, *, name: str = "timeout") -> float:
     so a misconfigured value fails at the caller's entry point rather
     than much later when it reaches ``asyncio.wait_for``.
 
-    Shared across ``DqliteConnection``, ``ClusterClient``, and
-    ``ConnectionPool`` so every entry point enforces the same contract.
+    Shared across ``DqliteConnection``, ``ClusterClient``,
+    ``ConnectionPool``, and ``dqlitedbapi.connect`` so every entry
+    point enforces the same contract.
     """
     if isinstance(value, bool):
         raise ValueError(f"{name} must be a positive finite number, got {value!r} (bool)")
@@ -765,6 +766,13 @@ def _validate_timeout(value: float, *, name: str = "timeout") -> float:
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be a positive finite number, got {value}")
     return float(value)
+
+
+# Underscore alias kept for back-compat with in-package call sites
+# (``DqliteConnection``, ``ClusterClient``, ``ConnectionPool``). The
+# public name is ``validate_timeout``; the underscore alias should be
+# considered deprecated for new code.
+_validate_timeout = validate_timeout
 
 
 _MAX_ADDRESS_LEN: Final[int] = 1024

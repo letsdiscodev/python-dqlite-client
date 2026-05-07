@@ -21,7 +21,12 @@ from dqliteclient.cluster import (
     allowlist_policy,
     default_safe_redirect_policy,
 )
-from dqliteclient.connection import DqliteConnection, get_current_pid, parse_address
+from dqliteclient.connection import (
+    DqliteConnection,
+    get_current_pid,
+    parse_address,
+    validate_timeout,
+)
 from dqliteclient.exceptions import (
     ClusterError,
     ClusterPolicyError,
@@ -74,6 +79,7 @@ __all__ = [
     "parse_address",
     "retry_with_backoff",
     "validate_positive_int_or_none",
+    "validate_timeout",
 ]
 
 
