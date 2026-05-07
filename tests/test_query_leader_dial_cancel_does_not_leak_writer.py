@@ -125,6 +125,56 @@ def test_connect_impl_no_longer_uses_wait_for_around_open_connection() -> None:
     )
 
 
+def test_connect_impl_writer_nulled_after_protocol_handoff() -> None:
+    """Hand-off discipline: after ``DqliteProtocol(reader, writer, ...)``
+    constructs (the protocol now owns the transport), null
+    ``writer`` so the outer finally drain becomes a no-op for the
+    success path. Without this null, a future refactor that adds a
+    protocol-side close in the same scope would double-close the
+    underlying writer."""
+    src = _connection_source_of("_connect_impl")
+    proto_pos = src.find("DqliteProtocol(")
+    null_pos = src.find("writer = None", proto_pos)
+    assert proto_pos != -1
+    assert null_pos != -1, (
+        "_connect_impl must null writer AFTER the DqliteProtocol(...) "
+        "constructor returns — the protocol now owns the transport, and "
+        "a stray writer reference in the local frame turns the outer "
+        "finally drain into a double-close on any future protocol-side "
+        "close path."
+    )
+
+
+def test_open_admin_connection_writer_owned_by_outer_finally() -> None:
+    """``open_admin_connection`` deliberately does NOT null ``writer``
+    after the ``DqliteProtocol(...)`` hand-off. Unlike
+    ``_connect_impl`` (where the protocol is stored on ``self`` and a
+    later ``close()`` drains the writer via the protocol-owned
+    reference), this method ``yield``-s the protocol; the outer
+    ``finally`` is the only place the writer can be closed. Nulling
+    after the hand-off would orphan the writer on the success path.
+
+    This pin documents the deliberate divergence from the
+    ``_connect_impl`` discipline and fences against a future
+    "consistency" refactor introducing the leak.
+    """
+    src = _source_of("open_admin_connection")
+    proto_pos = src.find("DqliteProtocol(")
+    handshake_pos = src.find("await protocol.handshake")
+    assert proto_pos != -1
+    assert handshake_pos != -1
+    # No `writer = None` between DqliteProtocol(...) and
+    # `await protocol.handshake` — that's the load-bearing
+    # divergence.
+    between = src[proto_pos:handshake_pos]
+    assert "writer = None" not in between, (
+        "open_admin_connection must NOT null writer between the "
+        "DqliteProtocol(...) hand-off and the handshake — the protocol "
+        "is yielded (not stored), so the outer finally is the only "
+        "drain path. Nulling here would orphan the writer on success."
+    )
+
+
 def test_connect_impl_writer_initialised_before_try() -> None:
     """``writer = None`` must be initialised before the outer try-
     block so the finally always sees a defined name (avoids

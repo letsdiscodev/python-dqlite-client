@@ -1975,6 +1975,16 @@ class ClusterClient:
                         max_continuation_frames=self._max_continuation_frames,
                         address=address,
                     )
+                    # NOTE: unlike ``DqliteConnection._connect_impl``,
+                    # this method does NOT null ``writer`` after the
+                    # ``DqliteProtocol(...)`` hand-off. The protocol is
+                    # ``yield``-ed (not stored on ``self``) so there is
+                    # no later ``conn.close()`` / ``_abort_protocol``
+                    # path that would walk the protocol's writer
+                    # reference and drain the transport. The outer
+                    # ``finally`` is the only place the writer can be
+                    # closed; nulling here would orphan the writer on
+                    # the success path.
                     await protocol.handshake()
             except TimeoutError as e:
                 raise DqliteConnectionError(
