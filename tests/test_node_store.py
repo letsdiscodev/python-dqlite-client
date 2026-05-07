@@ -80,9 +80,17 @@ class TestMemoryNodeStore:
         assert {info1, info2} == {info1}
 
     async def test_memory_store_seeds_with_noderole_voter(self) -> None:
+        # ``initial_addresses=`` is deprecated; this test exercises the
+        # role-coercion behaviour, not the deprecation pathway, so
+        # silence the warning. ``test_memory_node_store_initial_addresses_
+        # deprecation.py`` separately pins the warning emission.
+        import warnings
+
         from dqlitewire import NodeRole
 
-        store = MemoryNodeStore(initial_addresses=["a:9001", "b:9001"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            store = MemoryNodeStore(initial_addresses=["a:9001", "b:9001"])
         nodes = await store.get_nodes()
         assert all(isinstance(n.role, NodeRole) for n in nodes)
         assert all(n.role == NodeRole.VOTER for n in nodes)
@@ -110,10 +118,20 @@ def test_memory_store_addresses_kwarg_name() -> None:
 
 
 def test_memory_store_initial_addresses_still_works() -> None:
-    """Legacy ``initial_addresses=`` kwarg still seeds the store."""
+    """Legacy ``initial_addresses=`` kwarg still seeds the store.
+
+    The kwarg is deprecated but kept functional for back-compat;
+    the deprecation warning itself is pinned in
+    ``test_memory_node_store_initial_addresses_deprecation.py``.
+    Suppress here so this test focuses on the seeding behaviour.
+    """
+    import warnings
+
     from dqliteclient import MemoryNodeStore
 
-    store = MemoryNodeStore(initial_addresses=["host:9001"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        store = MemoryNodeStore(initial_addresses=["host:9001"])
     import asyncio
 
     nodes = asyncio.run(store.get_nodes())

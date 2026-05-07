@@ -5,6 +5,7 @@ import contextlib
 import os
 import stat
 import tempfile
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,6 +116,22 @@ class MemoryNodeStore(NodeStore):
         """
         if addresses is not None and initial_addresses is not None:
             raise TypeError("Pass only one of 'addresses' or 'initial_addresses'")
+        if initial_addresses is not None and addresses is None:
+            # Surface the deprecation tag in the docstring as a runtime
+            # signal so operators can grep their test suites under
+            # ``-W error::DeprecationWarning`` and find every call site
+            # to migrate. ``stacklevel=2`` directs the warning at the
+            # caller's invocation, not at this line in __init__ — the
+            # standard ``warnings.warn`` discipline for deprecated
+            # constructor kwargs.
+            warnings.warn(
+                "MemoryNodeStore(initial_addresses=...) is deprecated; "
+                "use MemoryNodeStore(addresses=...) instead. "
+                "The 'initial_addresses' alias will be removed in a "
+                "future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         seed = addresses if addresses is not None else initial_addresses
         if seed:
             # Build raw NodeInfo entries (synthetic id=i+1, role=VOTER,
