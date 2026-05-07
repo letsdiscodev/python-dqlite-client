@@ -38,8 +38,8 @@ class NodeInfo:
     address: str
     """``host:port`` string. IPv6 addresses must be bracketed
     (``[::1]:9000``). Parsed by
-    ``dqliteclient.connection._parse_address`` — hostnames are
-    ASCII-only and lowercased, IP literals are canonicalised."""
+    ``dqliteclient.parse_address`` — hostnames are ASCII-only and
+    lowercased, IP literals are canonicalised."""
 
     role: NodeRole
     """Raft role: ``VOTER``, ``STANDBY``, or ``SPARE``. Standby and
@@ -229,7 +229,7 @@ def _validate_and_normalise_nodes(nodes: Sequence[NodeInfo]) -> tuple[NodeInfo, 
     1. Reject non-string ``NodeInfo.address`` with ``TypeError``.
     2. Strip leading/trailing whitespace (operator-friendly canonicalisation).
     3. Reject empty stripped addresses with ``ValueError``.
-    4. Validate ``host:port`` shape via ``_parse_address``.
+    4. Validate ``host:port`` shape via ``parse_address``.
     5. Deduplicate by canonical (stripped) address.
     6. Return frozen ``NodeInfo`` tuples with the canonical address so
        downstream lookups by address match.
@@ -239,7 +239,7 @@ def _validate_and_normalise_nodes(nodes: Sequence[NodeInfo]) -> tuple[NodeInfo, 
     # Local import to avoid the cluster import cycle (cluster imports
     # node_store; node_store would otherwise need cluster's
     # ``connection`` module at module-import time).
-    from dqliteclient.connection import _parse_address as _parse_addr_validator
+    from dqliteclient.connection import parse_address as _parse_addr_validator
 
     for node in nodes:
         if not isinstance(node.address, str):
@@ -443,7 +443,7 @@ class YamlNodeStore(NodeStore):
                 )
             result.append(NodeInfo(node_id=node_id, address=address, role=role))
         # Run the parsed entries through the shared strip / dedup /
-        # _parse_address pipeline so a hand-edited YAML file with
+        # parse_address pipeline so a hand-edited YAML file with
         # whitespace-laden or duplicated addresses canonicalises at
         # load time (matching the discipline ``set_nodes`` enforces on
         # write). Without this, the load path accepted what
@@ -468,7 +468,7 @@ class YamlNodeStore(NodeStore):
         import yaml
 
         async with self._lock:
-            # Run the same strip / dedup / _parse_address validation
+            # Run the same strip / dedup / parse_address validation
             # pipeline as MemoryNodeStore. Without this, set_nodes
             # could persist whitespace-laden / duplicated / malformed
             # entries that the same _load_from_disk loader would later

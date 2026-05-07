@@ -19,7 +19,7 @@ from dqliteclient.connection import (
     _TRANSACTION_ROLLBACK_SQL,
     DqliteConnection,
     _is_no_tx_rollback_error,
-    _validate_timeout,
+    validate_timeout,
 )
 from dqliteclient.exceptions import (
     DqliteConnectionError,
@@ -329,12 +329,12 @@ class ConnectionPool:
                     f"max_elapsed_seconds must be a positive finite number, "
                     f"got {max_elapsed_seconds}"
                 )
-        _validate_timeout(timeout)
-        _validate_timeout(close_timeout, name="close_timeout")
+        validate_timeout(timeout)
+        validate_timeout(close_timeout, name="close_timeout")
         if dial_timeout is not None:
-            _validate_timeout(dial_timeout, name="dial_timeout")
+            validate_timeout(dial_timeout, name="dial_timeout")
         if attempt_timeout is not None:
-            _validate_timeout(attempt_timeout, name="attempt_timeout")
+            validate_timeout(attempt_timeout, name="attempt_timeout")
         if cluster is not None and node_store is not None:
             raise ValueError("pass only one of cluster= or node_store=")
         if cluster is None and node_store is None and not addresses:
@@ -796,13 +796,9 @@ class ConnectionPool:
           future caller forgetting the lock surfaces immediately
           rather than corrupting ``_size`` under contention.
         """
-        assert self._lock.locked(), (
-            "_release_reservations_locked called without _lock held"
-        )
+        assert self._lock.locked(), "_release_reservations_locked called without _lock held"
         if not isinstance(n, int) or isinstance(n, bool) or n < 1:
-            raise ValueError(
-                f"_release_reservations_locked requires n >= 1 (int), got {n!r}"
-            )
+            raise ValueError(f"_release_reservations_locked requires n >= 1 (int), got {n!r}")
         if self._size < n:
             logger.error(
                 "pool: _release_reservations_locked called with _size=%d, n=%d; "

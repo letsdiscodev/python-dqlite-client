@@ -12,7 +12,11 @@ from typing import Final, NoReturn
 
 from dqliteclient import connection as _conn_mod
 from dqliteclient._dial import DialFunc, open_connection
-from dqliteclient.connection import DqliteConnection, _parse_address, _validate_timeout
+from dqliteclient.connection import (
+    DqliteConnection,
+    parse_address,
+    validate_timeout,
+)
 from dqliteclient.exceptions import (
     ClusterError,
     ClusterPolicyError,
@@ -163,19 +167,19 @@ _LEADER_PROBE_DRAIN_TIMEOUT_SECONDS: Final[float] = 0.1
 
 def _addr_equiv(a: str, b: str) -> bool:
     """Compare host:port strings via the canonical ``(host, port)``
-    tuple shape produced by :func:`_parse_address`.
+    tuple shape produced by :func:`parse_address`.
 
     Falls back to literal equality for unparseable inputs so a
     malformed string never crashes the comparison. Hostname-vs-IP
     mismatch (``localhost:9001`` vs ``127.0.0.1:9001``) is not
     canonicalised — DNS resolution belongs elsewhere. Note that
-    ``_parse_address`` rejects unbracketed IPv6 (per the strict-
+    ``parse_address`` rejects unbracketed IPv6 (per the strict-
     validation hardening), so ``[::1]:9001`` and ``::1:9001`` do
     NOT compare equal — the unbracketed form raises ``ValueError``
     and the fallback compares literal strings.
     """
     try:
-        return _parse_address(a) == _parse_address(b)
+        return parse_address(a) == parse_address(b)
     except ValueError:
         return a == b
 
@@ -349,11 +353,11 @@ class ClusterClient:
                 ``WithDialFunc``. Forwarded to every
                 :class:`DqliteConnection` this cluster builds.
         """
-        _validate_timeout(timeout)
+        validate_timeout(timeout)
         if dial_timeout is not None:
-            _validate_timeout(dial_timeout, name="dial_timeout")
+            validate_timeout(dial_timeout, name="dial_timeout")
         if attempt_timeout is not None:
-            _validate_timeout(attempt_timeout, name="attempt_timeout")
+            validate_timeout(attempt_timeout, name="attempt_timeout")
         if isinstance(concurrent_leader_conns, bool) or not isinstance(
             concurrent_leader_conns, int
         ):
@@ -2014,7 +2018,7 @@ def allowlist_policy(addresses: Iterable[str]) -> RedirectPolicy:
 
     Useful for the common case: "only allow redirects to hosts I've
     explicitly seed-listed." Addresses are normalized via
-    :func:`_parse_address` and compared as ``(host, port)`` tuples, so
+    :func:`parse_address` and compared as ``(host, port)`` tuples, so
     bracketed and unbracketed IPv6 forms (``[::1]:9001`` vs
     ``::1:9001``) match each other and hostname casing is irrelevant
     (the parser lower-cases hosts). Callers that need CIDR / DNS /
@@ -2035,14 +2039,14 @@ def allowlist_policy(addresses: Iterable[str]) -> RedirectPolicy:
     parsed: list[tuple[str, int]] = []
     for raw in addresses:
         try:
-            parsed.append(_parse_address(raw))
+            parsed.append(parse_address(raw))
         except ValueError as e:
             raise ValueError(f"allowlist_policy: invalid address {raw!r} ({e})") from e
     allowed = frozenset(parsed)
 
     def policy(addr: str) -> bool:
         try:
-            return _parse_address(addr) in allowed
+            return parse_address(addr) in allowed
         except ValueError:
             return False
 
@@ -2081,7 +2085,7 @@ def default_safe_redirect_policy(
 
     def policy(addr: str) -> bool:
         try:
-            host, _port = _parse_address(addr)
+            host, _port = parse_address(addr)
         except ValueError:
             return False
         # Try to interpret host as a literal IP. DNS hostnames pass

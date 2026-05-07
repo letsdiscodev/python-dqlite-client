@@ -1046,18 +1046,18 @@ class DqliteConnection:
                 options. ``None`` (the default) preserves existing
                 behaviour. Mirrors go-dqlite's ``WithDialFunc``.
         """
-        _validate_timeout(timeout)
-        _validate_timeout(close_timeout, name="close_timeout")
+        validate_timeout(timeout)
+        validate_timeout(close_timeout, name="close_timeout")
         if dial_timeout is not None:
-            _validate_timeout(dial_timeout, name="dial_timeout")
+            validate_timeout(dial_timeout, name="dial_timeout")
         if attempt_timeout is not None:
-            _validate_timeout(attempt_timeout, name="attempt_timeout")
+            validate_timeout(attempt_timeout, name="attempt_timeout")
         # Parse at construction so a misconfigured address (typoed DSN,
         # invalid port, unbracketed IPv6) raises ValueError at the
         # operator's config-load site rather than inside connect(),
         # where SA's is_disconnect substring scan would mis-classify
         # it as a retryable transport failure and loop.
-        self._host, self._port = _parse_address(address)
+        self._host, self._port = parse_address(address)
         self._address = address
         self._database = database
         self._timeout = timeout
