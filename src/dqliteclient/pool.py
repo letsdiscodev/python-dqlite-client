@@ -963,29 +963,85 @@ class ConnectionPool:
             # Try to reserve a new-connection slot under the lock, then
             # drop the lock before the TCP handshake so concurrent
             # pool users aren't serialized on network latency.
+            #
+            # ``try:`` opens BEFORE ``async with self._lock:`` so the
+            # ``self._size += 1`` increment lives inside the same
+            # try-frame whose except arm releases the reservation.
+            # Without that envelope, a ``BaseException`` (KeyboardInterrupt,
+            # synthetic post-lock-exit failure) landing between the
+            # ``async with self._lock:`` exit and the ``try:`` start
+            # would escape with the slot reserved but no compensating
+            # decrement. Mirrors the ``DqliteConnection._run_protocol``
+            # discipline (set-flag-INSIDE-try, not after).
             reserved = False
-            async with self._lock:
-                if self._closed:
-                    raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
-                if self._size < self._max_size:
-                    self._size += 1
-                    self._reserved_flag[0] = True
-                    reserved = True
-            if reserved:
-                try:
-                    conn = await self._create_connection()
-                except BaseException:
-                    # Shield the release so an outer cancel re-arming
-                    # on the await checkpoint does not bypass the
-                    # decrement; without the shield, each
-                    # cancel-mid-create leaks one ``_size`` slot and
-                    # the pool eventually wedges at max_size with no
-                    # checked-out connections. Mirrors the existing
-                    # ``await asyncio.shield(self._release_reservation())``
-                    # in ``_drain_idle`` failure paths.
+            try:
+                async with self._lock:
+                    if self._closed:
+                        raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
+                    if self._size < self._max_size:
+                        self._size += 1
+                        self._reserved_flag[0] = True
+                        reserved = True
+                if reserved:
+                    # Clamp the create-connection await to the
+                    # remaining acquire deadline. ``_create_connection``
+                    # delegates to ``ClusterClient.connect`` whose
+                    # internal retry budget can run for tens of
+                    # seconds — far beyond the user-supplied
+                    # ``pool.timeout``. Without this clamp,
+                    # ``acquire(timeout=0.1)`` could block for the
+                    # cluster.connect retry budget and only the
+                    # message-rendered timeout in the queue-wait phase
+                    # honoured the user contract. The dead-conn
+                    # replacement arm below applies the same clamp.
+                    create_remaining = deadline - loop.time()
+                    if create_remaining <= 0:
+                        raise TimeoutError
+                    async with asyncio.timeout(create_remaining):
+                        conn = await self._create_connection()
+            except BaseException as exc:
+                # Shield the release so an outer cancel re-arming
+                # on the await checkpoint does not bypass the
+                # decrement; without the shield, each
+                # cancel-mid-create leaks one ``_size`` slot and
+                # the pool eventually wedges at max_size with no
+                # checked-out connections. ``if reserved:`` guards
+                # against double-release on the pre-grant
+                # ``_closed`` raise (which never reaches the
+                # increment).
+                if reserved:
                     with contextlib.suppress(asyncio.CancelledError):
                         await asyncio.shield(self._release_reservation())
-                    raise
+                if isinstance(exc, TimeoutError):
+                    # The clamp fired before ``_create_connection``
+                    # produced a usable conn (``TimeoutError`` is only
+                    # raised inside the ``async with asyncio.timeout(
+                    # create_remaining):`` scope, which is itself gated
+                    # by ``if reserved:`` above; the pre-grant
+                    # ``_closed`` raise is ``DqliteConnectionError``).
+                    # Surface as the project's user-facing class with an
+                    # actionable message naming the fresh-dial phase,
+                    # mirroring the queue-wait timeout shape below so
+                    # operators see a consistent diagnostic regardless
+                    # of which phase exhausted the budget.
+                    idle = self._pool.qsize()
+                    checked_out = self._size - idle
+                    raise DqliteConnectionError(
+                        f"Timed out creating a fresh connection from the pool "
+                        f"(pool_id={id(self)}, max_size={self._max_size}, "
+                        f"checked_out={checked_out}, idle={idle}, "
+                        f"timeout={self._timeout}s)."
+                    ) from exc
+                raise
+            if reserved:
+                # mypy: ``conn`` is assigned inside the ``if reserved:``
+                # arm of the try-block above on the success path; the
+                # except arm re-raises so any path arriving here with
+                # ``reserved=True`` has a non-None ``conn``. The
+                # explicit narrowing keeps the strict-mode union-attr
+                # checks happy below without runtime cost on the happy
+                # path.
+                assert conn is not None
                 # close() may have run while ``_create_connection``
                 # was suspended on leader discovery / TCP handshake.
                 # Without this re-check, the fresh connection would
@@ -1201,15 +1257,38 @@ class ConnectionPool:
             # The dead conn's reservation is re-used for the fresh
             # connection; no counter adjustment needed. (The earlier
             # ``-= 1; += 1`` under the lock was a no-op — kept only
-            # because the intent was unclear.)
+            # because the intent was unclear.) The ``if reserved:``
+            # guard the fresh-slot arm uses for double-release safety
+            # is not needed here: this arm only runs after a
+            # successful ``_pool.get_nowait()`` whose reservation is
+            # already held; there is no pre-grant raise to skip past.
+            #
+            # Clamp the create-connection await to the remaining
+            # acquire deadline. Symmetric with the fresh-slot arm
+            # above; without the clamp, the cluster.connect retry
+            # budget can run for tens of seconds past the user-
+            # supplied ``pool.timeout``.
             try:
-                conn = await self._create_connection()
-            except BaseException:
+                create_remaining = deadline - loop.time()
+                if create_remaining <= 0:
+                    raise TimeoutError
+                async with asyncio.timeout(create_remaining):
+                    conn = await self._create_connection()
+            except BaseException as exc:
                 # Same shielded-release rationale as the new-slot
                 # arm above: outer cancel re-arming on the create-
                 # connection await must not bypass the decrement.
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.shield(self._release_reservation())
+                if isinstance(exc, TimeoutError):
+                    idle = self._pool.qsize()
+                    checked_out = self._size - idle
+                    raise DqliteConnectionError(
+                        f"Timed out creating a fresh connection from the pool "
+                        f"(pool_id={id(self)}, max_size={self._max_size}, "
+                        f"checked_out={checked_out}, idle={idle}, "
+                        f"timeout={self._timeout}s)."
+                    ) from exc
                 raise
             # close() may have run while _create_connection was
             # suspended on leader discovery / TCP handshake. Without
@@ -1496,6 +1575,24 @@ class ConnectionPool:
         complete first. Symmetric with the exception-path
         ``returned_to_queue`` flag in ``acquire()``.
         """
+        # Fork-after-acquire: the ``async with pool.acquire():`` block
+        # straddled a ``fork()``; the implicit ``__aexit__`` is now
+        # running in the child. Touching the parent-loop-bound
+        # ``self._lock`` (an ``asyncio.Lock``) from the child raises
+        # ``RuntimeError("got Future <Future pending> attached to a
+        # different loop")`` from asyncio internals, masking the
+        # canonical ``InterfaceError("Pool used after fork...")``
+        # diagnostic that ``acquire`` and ``close`` produce. Mark the
+        # conn released so its finalizer doesn't surface a spurious
+        # ``ResourceWarning`` at GC; the pool's accounting stays as it
+        # was in the parent, which is the correct snapshot for the
+        # child (it never holds the slot — it only inherited the
+        # reference). Symmetric with ``acquire``'s and ``close``'s
+        # fork short-circuits.
+        if _conn_mod._current_pid != self._creator_pid:
+            with contextlib.suppress(AttributeError):
+                conn._pool_released = True
+            return
         returned_to_queue = False
         try:
             if self._closed:
