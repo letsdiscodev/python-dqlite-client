@@ -43,7 +43,7 @@ from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
 
-__version__: Final[str] = "0.1.3"
+__version__: Final[str] = "0.1.4"
 
 __all__ = [
     "ClusterClient",
