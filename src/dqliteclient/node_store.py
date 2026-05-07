@@ -46,6 +46,26 @@ class NodeInfo:
     spare nodes cannot become leader —
     ``ClusterClient.find_leader`` sorts voters first before probing."""
 
+    def __post_init__(self) -> None:
+        # Validate role at construction time so a caller-built
+        # ``NodeInfo`` carrying a bogus role can't reach the wire-
+        # encoder and silently emit an unrecognised value onto the
+        # wire. Mirrors the wire-side
+        # ``dqlitewire.messages.responses.NodeInfo.__post_init__``.
+        # ``IntEnum`` accepts ``NodeRole(0)`` etc. but not
+        # ``NodeRole(999)``, so coerce bare ints into the enum and let
+        # ``ValueError`` from the constructor surface as a constructor-
+        # time error rather than at peer-decode time.
+        if not isinstance(self.role, NodeRole):
+            try:
+                coerced = NodeRole(self.role)
+            except ValueError as e:
+                raise ValueError(
+                    f"NodeInfo: unknown role {self.role!r}; valid roles are "
+                    f"0 (VOTER), 1 (STANDBY), 2 (SPARE)"
+                ) from e
+            object.__setattr__(self, "role", coerced)
+
 
 @runtime_checkable
 class NodeStore(Protocol):
