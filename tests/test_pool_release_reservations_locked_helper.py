@@ -59,6 +59,53 @@ async def test_release_reservations_locked_underflow_refused(
 
 
 @pytest.mark.asyncio
+async def test_release_reservations_locked_rejects_zero_and_negative_n() -> None:
+    """The helper requires ``n >= 1``. ``n=0`` is a no-op decrement
+    that would spuriously wake every parked acquirer; ``n<0`` would
+    silently INCREMENT ``_size`` (since ``_size < n`` is False for
+    non-negative ``_size`` against a negative ``n``, the under-flow
+    guard fails open and ``_size -= -k`` increments).
+
+    Reject explicitly with ``ValueError`` so future caller mistakes
+    surface at the call site instead of corrupting capacity
+    accounting silently.
+    """
+    pool = ConnectionPool(["localhost:9001"])
+    async with pool._lock:
+        pool._size = 5
+        for bad_n in (0, -1, -100):
+            with pytest.raises(ValueError, match="n >= 1"):
+                pool._release_reservations_locked(bad_n)
+        # _size is unchanged across every rejection.
+        assert pool._size == 5
+
+
+@pytest.mark.asyncio
+async def test_release_reservations_locked_rejects_bool_and_non_int() -> None:
+    """``isinstance(True, int)`` is True; ``True`` would decrement by
+    1 silently. Reject ``bool`` and other non-int types explicitly."""
+    pool = ConnectionPool(["localhost:9001"])
+    async with pool._lock:
+        pool._size = 5
+        for bad_n in (True, False, 1.5, "1", None):
+            with pytest.raises(ValueError, match="n >= 1"):
+                pool._release_reservations_locked(bad_n)  # type: ignore[arg-type]
+        assert pool._size == 5
+
+
+@pytest.mark.asyncio
+async def test_release_reservations_locked_requires_lock_held() -> None:
+    """The docstring promises the caller already holds ``self._lock``.
+    A future caller forgetting the lock corrupts ``_size`` under
+    contention. Pin the runtime assertion."""
+    pool = ConnectionPool(["localhost:9001"])
+    pool._size = 5
+    # NOT inside `async with pool._lock`.
+    with pytest.raises(AssertionError):
+        pool._release_reservations_locked(1)
+
+
+@pytest.mark.asyncio
 async def test_release_reservation_at_zero_still_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

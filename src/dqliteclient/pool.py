@@ -766,8 +766,9 @@ class ConnectionPool:
                 await asyncio.shield(self._release_reservation())
 
     def _release_reservations_locked(self, n: int) -> bool:
-        """Helper: decrement ``_size`` by ``n`` with the under-flow
-        guard, assuming the caller already holds ``self._lock``.
+        """Helper: decrement ``_size`` by ``n`` (>= 1) with the
+        under-flow guard, assuming the caller already holds
+        ``self._lock``.
 
         Returns ``True`` if the decrement actually happened (caller
         should signal state-change), ``False`` if the under-flow
@@ -780,7 +781,28 @@ class ConnectionPool:
         the decrement to keep accounting non-negative. Skipping the
         state-change signal on the refusal path is intentional — the
         refusal isn't a transition waiters need to react to.
+
+        Validation:
+
+        * ``n`` must be a positive ``int`` (``bool`` rejected
+          explicitly: ``isinstance(True, int)`` is True). ``n <= 0``
+          is rejected because ``n=0`` is a no-op decrement that the
+          caller's ``_signal_state_change()`` would broadcast
+          spuriously, and ``n<0`` would silently INCREMENT ``_size``
+          (the underflow guard ``_size < n`` fails open against a
+          negative ``n``) — exactly the symmetric corruption the
+          guard was meant to prevent.
+        * The lock-held precondition is asserted at runtime so a
+          future caller forgetting the lock surfaces immediately
+          rather than corrupting ``_size`` under contention.
         """
+        assert self._lock.locked(), (
+            "_release_reservations_locked called without _lock held"
+        )
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            raise ValueError(
+                f"_release_reservations_locked requires n >= 1 (int), got {n!r}"
+            )
         if self._size < n:
             logger.error(
                 "pool: _release_reservations_locked called with _size=%d, n=%d; "
