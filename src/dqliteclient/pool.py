@@ -645,14 +645,19 @@ class ConnectionPool:
                         unqueued_survivors.pop(0)
                     logger.debug("pool.initialize: %d connections ready", self._min_size)
                 finally:
-                    if unqueued > 0:
-                        # Any exit path with uncommitted reservations —
-                        # failed gather, raise from _pool.put, outer
-                        # CancelledError mid put-loop — must return the
-                        # unqueued slots to _size so a subsequent
-                        # initialize()/acquire() is not blocked against
-                        # a stale counter climbing toward _max_size.
-                        self._size -= unqueued
+                    # Any exit path with uncommitted reservations —
+                    # failed gather, raise from _pool.put, outer
+                    # CancelledError mid put-loop — must return the
+                    # unqueued slots to _size so a subsequent
+                    # initialize()/acquire() is not blocked against
+                    # a stale counter climbing toward _max_size.
+                    # Route through the same under-flow-guarded helper
+                    # as the per-conn ``_release_reservation`` path so
+                    # a future double-decrement at this site lands the
+                    # canonical ERROR log instead of silently producing
+                    # a negative ``_size``. The lock is already held
+                    # by this method's outer ``async with self._lock``.
+                    if unqueued > 0 and self._release_reservations_locked(unqueued):
                         self._signal_state_change()
                     # Close any connection that made it past the gather
                     # but never into the queue. Under a clean success
@@ -760,40 +765,48 @@ class ConnectionPool:
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.shield(self._release_reservation())
 
+    def _release_reservations_locked(self, n: int) -> bool:
+        """Helper: decrement ``_size`` by ``n`` with the under-flow
+        guard, assuming the caller already holds ``self._lock``.
+
+        Returns ``True`` if the decrement actually happened (caller
+        should signal state-change), ``False`` if the under-flow
+        guard refused. Centralises the underflow-guard log so every
+        ``_size -= n`` site goes through the same diagnostic path —
+        callers don't need to re-implement the guard, and a future
+        double-release at any site lands the canonical ERROR log.
+
+        Logs at ERROR if ``self._size < n`` (would underflow); refuses
+        the decrement to keep accounting non-negative. Skipping the
+        state-change signal on the refusal path is intentional — the
+        refusal isn't a transition waiters need to react to.
+        """
+        if self._size < n:
+            logger.error(
+                "pool: _release_reservations_locked called with _size=%d, n=%d; "
+                "ignoring to keep accounting non-negative. This indicates a "
+                "double-release bug — check recent changes to the cancel/cleanup paths.",
+                self._size,
+                n,
+            )
+            return False
+        self._size -= n
+        return True
+
     async def _release_reservation(self) -> None:
-        """Decrement ``_size`` under the lock, waking waiters.
+        """Decrement ``_size`` by 1 under the lock, waking waiters.
 
-        Every ``_size -= 1`` call in the pool must go through this
-        helper so the counter stays consistent against concurrent
-        capacity checks in ``acquire``.
-
-        Defensive underflow guard: every reservation slot corresponds
-        to a prior ``self._size += 1`` and the only decrement path
-        is this helper, so ``_size <= 0`` here is unreachable under
-        correct accounting. The guard is intentionally cheap — a
-        future refactor that double-decrements (e.g., a missed
-        condition lands two ``_release_reservation()`` calls per
-        slot under the cancel-shielding paths) would otherwise
-        silently produce a negative ``_size`` that passes every
-        ``self._size < self._max_size`` capacity check and expands
-        the pool well beyond its bound. Log at ERROR (operators
-        should see this immediately) and refuse the decrement to
-        keep accounting non-negative; skip the state-change signal
-        because the refusal isn't a transition waiters need to
-        react to.
+        Every per-conn ``_size -= 1`` call in the pool must go
+        through this helper so the counter stays consistent against
+        concurrent capacity checks in ``acquire``. Bulk decrements
+        (currently only in ``initialize`` recovery) call
+        ``_release_reservations_locked(n)`` while holding the lock
+        themselves — both paths share the same under-flow guard.
         """
         async with self._lock:
-            if self._size <= 0:
-                logger.error(
-                    "pool: _release_reservation called with _size=%d; "
-                    "ignoring to keep accounting non-negative. This "
-                    "indicates a double-release bug — check recent "
-                    "changes to the cancel/cleanup paths.",
-                    self._size,
-                )
-                return
-            self._size -= 1
-        self._signal_state_change()
+            decremented = self._release_reservations_locked(1)
+        if decremented:
+            self._signal_state_change()
 
     def _get_closed_event(self) -> asyncio.Event:
         """Lazily create the closed Event bound to the running loop.
