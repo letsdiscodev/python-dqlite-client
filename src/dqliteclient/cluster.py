@@ -906,14 +906,22 @@ class ClusterClient:
                 )
                 return _ProbeMiss(message=f"{_safe_addr}: no leader known", exc=None)
 
-        pending: set[asyncio.Task[_LeaderHit | _ProbeMiss]] = {
-            asyncio.create_task(_probe_one(idx, n)) for idx, n in enumerate(nodes)
-        }
-
+        # Build ``pending`` INSIDE the try frame so a BaseException
+        # (synthetic KeyboardInterrupt, outer cancel landing in the
+        # bytecode window) raised mid-construction keeps every
+        # already-created task tracked and the ``finally:`` cancels +
+        # gathers them. Pre-fix the set was built via a comprehension
+        # before ``try:`` — a BaseException there orphaned the live
+        # tasks (no done-callback observer, unlike ``find_leader``'s
+        # ``_observe_drain_exception`` discipline). Mirrors the pool-
+        # side hardening in ``done/ISSUE-243_pool-acquire-orphans-tasks-on-pre-try-cancel.md``.
+        pending: set[asyncio.Task[_LeaderHit | _ProbeMiss]] = set()
         winning_address: str | None = None
         policy_error: ClusterPolicyError | None = None
         unexpected_exc: BaseException | None = None
         try:
+            for idx, n in enumerate(nodes):
+                pending.add(asyncio.create_task(_probe_one(idx, n)))
             while pending:
                 done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
