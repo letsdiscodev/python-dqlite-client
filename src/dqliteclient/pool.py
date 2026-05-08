@@ -707,29 +707,90 @@ class ConnectionPool:
                             if not t.done():
                                 t.cancel()
                                 cancelled_pending.append(t)
+                        # Pass-1 gather can ITSELF be cancelled by an
+                        # outer ``BaseException`` (e.g. an
+                        # ``asyncio.timeout`` wrapping initialize()
+                        # firing inside this gather). Without the
+                        # try/except, the gather re-raises and pass-2
+                        # is skipped — connections produced by tasks
+                        # that completed JUST BEFORE being cancelled
+                        # are orphaned (transports leaked → GC
+                        # ResourceWarning). Wrap the gather and route
+                        # to the same close-completed helper from
+                        # both arms so the recovery walk runs even
+                        # under outer cancel; re-raise after closing
+                        # so structured concurrency still propagates.
+                        outer_cancel: BaseException | None = None
                         if cancelled_pending:
-                            await asyncio.gather(*cancelled_pending, return_exceptions=True)
-                        for t in create_tasks:
-                            if not t.done() or t.cancelled():
-                                continue
                             try:
-                                r = t.result()
-                            except BaseException:
-                                continue
-                            unqueued_survivors.append(r)
-                    for conn in unqueued_survivors:
-                        try:
-                            await conn.close()
-                        except _POOL_CLEANUP_EXCEPTIONS:
-                            logger.debug(
-                                "pool.initialize: unqueued-survivor close error",
-                                exc_info=True,
-                            )
+                                await asyncio.gather(*cancelled_pending, return_exceptions=True)
+                            except BaseException as exc:
+                                outer_cancel = exc
+                        self._initialize_collect_completed_conns(create_tasks, unqueued_survivors)
+                        if outer_cancel is not None:
+                            # Close before re-raising so the caller's
+                            # outer cancel doesn't orphan the survivors.
+                            await self._initialize_close_unqueued(unqueued_survivors)
+                            raise outer_cancel
+                    await self._initialize_close_unqueued(unqueued_survivors)
             # Do not mark initialized if close() landed during the
             # put-loop and we broke out early — otherwise a subsequent
             # initialize() call on a (re-opened) pool short-circuits.
             if not self._closed:
                 self._initialized = True
+
+    @staticmethod
+    def _initialize_collect_completed_conns(
+        create_tasks: list[asyncio.Task[DqliteConnection]],
+        unqueued_survivors: list[DqliteConnection],
+    ) -> None:
+        """Append connections from completed-and-not-cancelled tasks
+        in ``create_tasks`` to ``unqueued_survivors``.
+
+        Factored out of ``initialize``'s finally so the
+        cancel-during-pass-1 recovery arm and the normal post-gather
+        recovery arm walk the same code — both paths must stay in
+        lockstep so a future divergence in the close-discipline
+        cannot orphan completed-task connections.
+        """
+        for t in create_tasks:
+            if not t.done() or t.cancelled():
+                continue
+            try:
+                r = t.result()
+            except BaseException:
+                continue
+            unqueued_survivors.append(r)
+
+    async def _initialize_close_unqueued(
+        self,
+        unqueued_survivors: list[DqliteConnection],
+    ) -> None:
+        """Close every connection in ``unqueued_survivors``.
+
+        Each close is shielded individually so an outer cancel during
+        the walk doesn't orphan the remaining conns. ``conn.close``
+        legitimately raises any exception in
+        ``_POOL_CLEANUP_EXCEPTIONS`` on a partially-torn-down
+        transport — those land in DEBUG; anything else propagates.
+        """
+        for conn in unqueued_survivors:
+            try:
+                await asyncio.shield(conn.close())
+            except _POOL_CLEANUP_EXCEPTIONS:
+                logger.debug(
+                    "pool.initialize: unqueued-survivor close error",
+                    exc_info=True,
+                )
+            except asyncio.CancelledError:
+                # Outer cancel propagated through the shielded close
+                # boundary (the close still completes via the shield).
+                # Continue closing the remaining survivors before
+                # letting the cancel resume.
+                logger.debug(
+                    "pool.initialize: cancel during unqueued-survivor close",
+                    exc_info=True,
+                )
 
     async def _create_connection(self) -> DqliteConnection:
         """Create a new connection to the leader.
