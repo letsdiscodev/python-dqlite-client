@@ -53,7 +53,7 @@ from dqlitewire.messages import (
 from dqlitewire.messages.base import Message
 from dqlitewire.messages.responses import NodeInfo
 
-__all__ = ["DqliteProtocol"]
+__all__ = ["DqliteProtocol", "validate_positive_int_or_none"]
 
 logger = logging.getLogger(__name__)
 
