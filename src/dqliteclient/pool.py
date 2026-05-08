@@ -1838,10 +1838,17 @@ class ConnectionPool:
         self._close_done = asyncio.Event()
         self._closed = True
         self._closed_flag[0] = True
-        if self._finalizer is not None:
-            self._finalizer.detach()
-            self._finalizer = None
         try:
+            # Move the finalizer-detach + drain inside the try so the
+            # finally's ``_close_done.set()`` is reachable even if a
+            # ``BaseException`` (KeyboardInterrupt / SystemExit / a
+            # synthetic bytecode-tight signal) lands between flag
+            # publication and the first awaited line. Without this,
+            # a second caller in the early-return arm at lines
+            # 1815-1817 awaits ``_close_done`` forever.
+            if self._finalizer is not None:
+                self._finalizer.detach()
+                self._finalizer = None
             logger.debug(
                 "pool.close: draining idle=%d in_flight=%d",
                 self._pool.qsize(),
