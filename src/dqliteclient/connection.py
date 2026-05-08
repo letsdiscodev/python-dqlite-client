@@ -1780,6 +1780,26 @@ class DqliteConnection:
             # shield; suppress per the structured-concurrency contract
             # (the body's CancelledError flows through __aexit__'s
             # exc_val argument to the caller).
+        except Exception as close_err:
+            # Symmetric with the CancelledError arm above (ISSUE-1475):
+            # a non-cancel close-time exception (e.g. InterfaceError
+            # from ``_check_in_use`` against a misused connection,
+            # OSError surfacing from a wrapped drain failure) must not
+            # supplant the body exception that the caller is already
+            # tracking. Without this arm, ``except FooError`` on the
+            # caller's frame matches the close-time exception class
+            # instead of the body's — Python's chaining preserves the
+            # body via ``__context__``, but the *primary* class flips,
+            # which is the user-visible defect. When the body exited
+            # cleanly (``exc_val is None``), the close-time exception
+            # is the primary signal and must propagate as today.
+            if exc_val is not None:
+                logger.debug(
+                    "DqliteConnection.__aexit__: close raised after body exception",
+                    exc_info=close_err,
+                )
+                return
+            raise
 
     def _ensure_connected(self) -> tuple[DqliteProtocol, int]:
         """Ensure we're connected and return protocol and db_id."""
