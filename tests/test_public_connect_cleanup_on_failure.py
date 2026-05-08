@@ -32,9 +32,7 @@ async def test_public_connect_failure_calls_close_on_partial_conn() -> None:
         await real_close(self)
 
     with (
-        patch.object(
-            DqliteConnection, "connect", new=AsyncMock(side_effect=OSError("boom"))
-        ),
+        patch.object(DqliteConnection, "connect", new=AsyncMock(side_effect=OSError("boom"))),
         patch.object(DqliteConnection, "close", new=_tracking_close),
         pytest.raises(OSError, match="boom"),
     ):
@@ -55,9 +53,7 @@ async def test_public_connect_close_failure_during_cleanup_logged_at_debug(
     import logging
 
     with (
-        patch.object(
-            DqliteConnection, "connect", new=AsyncMock(side_effect=OSError("boom"))
-        ),
+        patch.object(DqliteConnection, "connect", new=AsyncMock(side_effect=OSError("boom"))),
         patch.object(
             DqliteConnection,
             "close",

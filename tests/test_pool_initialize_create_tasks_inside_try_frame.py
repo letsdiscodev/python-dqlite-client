@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -42,7 +43,7 @@ async def test_pool_initialize_keyboardinterrupt_during_task_creation_no_orphan(
     # _create_connection would silently return a connection that
     # never gets closed — also a leak, but harder to pin via the
     # loop exception handler.
-    pool._create_connection = AsyncMock(  # type: ignore[assignment]
+    pool._create_connection = AsyncMock(
         side_effect=TypeError("synthetic-create-bug"),
     )
 
@@ -53,7 +54,7 @@ async def test_pool_initialize_keyboardinterrupt_during_task_creation_no_orphan(
     call_count = {"n": 0}
     created: list[asyncio.Task[object]] = []
 
-    def patched_create_task(coro):  # type: ignore[no-untyped-def]
+    def patched_create_task(coro: Any) -> Any:
         call_count["n"] += 1
         if call_count["n"] == 1:
             t = real_create_task(coro)
@@ -62,7 +63,8 @@ async def test_pool_initialize_keyboardinterrupt_during_task_creation_no_orphan(
         coro.close()
         raise KeyboardInterrupt("synthetic")
 
-    monkeypatch.setattr(pool_mod.asyncio, "create_task", patched_create_task)
+    monkeypatch.setattr("asyncio.create_task", patched_create_task)
+    _ = pool_mod  # keep import for module-load side effects
 
     with pytest.raises(KeyboardInterrupt, match="synthetic"):
         await pool.initialize()
@@ -101,6 +103,4 @@ async def test_pool_initialize_keyboardinterrupt_during_task_creation_no_orphan(
             for marker in ("Task exception was never retrieved", "Task was destroyed")
         )
     ]
-    assert not orphan_msgs, (
-        f"orphaned create_connection tasks observed: {orphan_msgs}"
-    )
+    assert not orphan_msgs, f"orphaned create_connection tasks observed: {orphan_msgs}"

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -62,7 +63,7 @@ async def test_find_leader_impl_keyboardinterrupt_during_task_creation_no_orphan
     call_count = {"n": 0}
     created: list[asyncio.Task[object]] = []
 
-    def patched_create_task(coro):  # type: ignore[no-untyped-def]
+    def patched_create_task(coro: Any) -> Any:
         call_count["n"] += 1
         if call_count["n"] == 1:
             t = real_create_task(coro)
@@ -74,7 +75,8 @@ async def test_find_leader_impl_keyboardinterrupt_during_task_creation_no_orphan
         coro.close()
         raise KeyboardInterrupt("synthetic")
 
-    monkeypatch.setattr(cluster_mod.asyncio, "create_task", patched_create_task)
+    monkeypatch.setattr("asyncio.create_task", patched_create_task)
+    _ = cluster_mod  # keep import for module-load side effects
 
     with pytest.raises(KeyboardInterrupt, match="synthetic"):
         await cluster._find_leader_impl(trust_server_heartbeat=False)
