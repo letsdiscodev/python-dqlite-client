@@ -183,8 +183,8 @@ class MemoryNodeStore(NodeStore):
         # same scheduling slice, each constructed a fresh ``Lock``,
         # and the second STORE_ATTR won — both proceeded to
         # ``_set_nodes_locked`` in parallel and one update was lost.
-        # Mirrors ``YamlFileNodeStore.__init__`` at line 296 which has
-        # always done eager init.
+        # Mirrors ``YamlNodeStore.__init__`` which has always done
+        # eager init.
         self._set_nodes_lock: asyncio.Lock = asyncio.Lock()
 
     async def get_nodes(self) -> Sequence[NodeInfo]:
