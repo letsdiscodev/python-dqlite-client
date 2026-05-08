@@ -9,6 +9,7 @@ Python (no-GIL) is not supported — the guard lives in
 raises ``ImportError`` at import time.
 """
 
+import logging
 from collections.abc import Sequence
 from typing import Final
 
@@ -49,6 +50,8 @@ from dqlitewire import (
 )
 
 __version__: Final[str] = "0.1.4"
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "ClusterClient",
@@ -142,7 +145,27 @@ async def connect(
         close_timeout=close_timeout,
         dial_func=dial_func,
     )
-    await conn.connect()
+    try:
+        await conn.connect()
+    except BaseException:
+        # Eager-connect failure: clean up the partially-constructed
+        # connection so loop-bound primitives (locks, transport
+        # handles, reader Task) are not left referenced only by the
+        # orphan ``conn`` until GC. Mirrors
+        # ``dqlitedbapi.aio.aconnect`` and
+        # ``sqlalchemydqlite.aio.DqliteDialect_aio.connect``.
+        # Suppress only ``Exception`` from the cleanup-close so a
+        # ``CancelledError`` lands AFTER cleanup has run; chaining
+        # via ``__context__`` preserves the original failure for
+        # diagnostics either way.
+        try:
+            await conn.close()
+        except Exception:
+            logger.debug(
+                "connect: cleanup-close after failed connect",
+                exc_info=True,
+            )
+        raise
     return conn
 
 
