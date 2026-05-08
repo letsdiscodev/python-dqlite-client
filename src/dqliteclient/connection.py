@@ -473,7 +473,7 @@ def _scan_for_trigger_begin(sql: str, after_create: int, n: int) -> int:
 # order-dependent classification. Longest-first ordering keeps any
 # future prefix-sharing safe — ``startswith`` matches the longest
 # candidate first.
-_TX_CONTROL_VERBS: tuple[str, ...] = (
+_TX_CONTROL_VERBS: Final[tuple[str, ...]] = (
     "SAVEPOINT",
     "ROLLBACK",
     "RELEASE",
