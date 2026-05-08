@@ -142,7 +142,11 @@ def _socket_looks_dead(conn: DqliteConnection) -> bool:
     return (isinstance(closing, bool) and closing) or (isinstance(eof, bool) and eof)
 
 
-def _pool_unclosed_warning(closed_flag: list[bool], reserved_flag: list[bool]) -> None:
+def _pool_unclosed_warning(
+    closed_flag: list[bool],
+    reserved_flag: list[bool],
+    queue: "asyncio.Queue[DqliteConnection] | None" = None,
+) -> None:
     """Emit a ``ResourceWarning`` when a ``ConnectionPool`` is GC'd
     without ``await close()``.
 
@@ -160,14 +164,39 @@ def _pool_unclosed_warning(closed_flag: list[bool], reserved_flag: list[bool]) -
       ``acquire()``'s lazy-reservation arm). A pool that was
       constructed and dropped without ever acquiring has nothing
       to clean up — the warning would be a false positive.
+
+    The ``queue`` parameter (when supplied) lets the warning report
+    the queued-connection count so an operator who sees N+1 warnings
+    (one from the pool, one per queued ``DqliteConnection``) can
+    correlate them to a single root cause: the pool was dropped
+    without ``await close()``. Per-conn warnings remain (every leaked
+    resource gets its own warning per Python convention) but the
+    pool's message now states the count up front. This is the
+    minimum-change fix preferred by reviewer over a private-deque
+    hop or a parallel-set bookkeeping rewrite.
     """
     if closed_flag[0] or not reserved_flag[0]:
         return
-    with contextlib.suppress(RuntimeError):
-        warnings.warn(
+    queued_count: int | None = None
+    if queue is not None:
+        with contextlib.suppress(Exception):
+            queued_count = queue.qsize()
+    if queued_count is not None and queued_count > 0:
+        message = (
+            "ConnectionPool was garbage-collected without await close(); "
+            f"{queued_count} queued connection(s) will each emit their "
+            "own ResourceWarning at GC for the same root cause. Call "
+            "``await pool.close()`` explicitly to release them promptly."
+        )
+    else:
+        message = (
             "ConnectionPool was garbage-collected without await close(); "
             "queued connections may have leaked their transports. Call "
-            "``await pool.close()`` explicitly to release them promptly.",
+            "``await pool.close()`` explicitly to release them promptly."
+        )
+    with contextlib.suppress(RuntimeError):
+        warnings.warn(
+            message,
             ResourceWarning,
             stacklevel=2,
         )
@@ -424,11 +453,18 @@ class ConnectionPool:
         # GC.
         self._closed_flag: list[bool] = [False]
         self._reserved_flag: list[bool] = [False]
+        # Pass the queue through so the warning message reports the
+        # queued-conn count. The queue stays alive until the
+        # finalizer runs (it's stored in the finalize callback's
+        # arg tuple), so qsize() is readable at warn time. The
+        # queue does NOT hold a reference back to the pool — no
+        # cycle is introduced.
         self._finalizer: weakref.finalize | None = weakref.finalize(  # type: ignore[type-arg]
             self,
             _pool_unclosed_warning,
             self._closed_flag,
             self._reserved_flag,
+            self._pool,
         )
 
     @property
