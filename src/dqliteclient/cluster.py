@@ -823,10 +823,19 @@ class ClusterClient:
                     ProtocolError,
                     OperationalError,
                     OSError,
+                    ValueError,
                 ) as e:
                     # Narrow the catch so programming bugs (TypeError,
                     # KeyError, etc.) propagate directly instead of
                     # being stringified into a retryable ClusterError.
+                    # ``ValueError`` is included to translate the
+                    # ``parse_address`` rejection that fires when a
+                    # peer returns a malformed redirect target — without
+                    # it, a single hostile node sabotages the parallel
+                    # sweep cluster-wide. The existing
+                    # ``ClusterPolicyError``-on-``ValueError`` wrap at
+                    # ``try_connect`` covers only the constructor path;
+                    # this is the inner-sweep counterpart.
                     _safe_addr = _sanitize_display_text(node.address)
                     logger.debug(
                         "find_leader: %s failed with %s: %s (%d/%d)",
@@ -1246,7 +1255,16 @@ class ClusterClient:
             OperationalError,
             OSError,
             TimeoutError,
+            ValueError,
         ):
+            # ``ValueError`` covers the ``parse_address`` rejection of
+            # a malformed redirect hint: the inner ``_query_leader``
+            # call dials the hint, ``open_connection`` calls
+            # ``parse_address``, and a hostile peer's address that
+            # fails the syntactic gate raises ``ValueError`` here. Map
+            # to ``None`` so the sweep falls through to the next
+            # candidate, matching the rest of the verify-failure
+            # outcomes.
             return None
         if reported and _addr_equiv(reported, hint_address):
             return hint_address
@@ -1425,7 +1443,7 @@ class ClusterClient:
                         )
                     raise
                 return conn
-            except (OSError, DqliteConnectionError, ClusterError) as exc:
+            except (OSError, DqliteConnectionError, ClusterError, ValueError) as exc:
                 # Narrow catch: these are the transport- and cluster-level
                 # failures the retry loop re-attempts. Anything wider would
                 # silently log-and-re-raise programming bugs (TypeError,
@@ -1434,6 +1452,12 @@ class ClusterClient:
                 # as the _socket_looks_dead / _drain_idle narrowings.
                 # OSError subsumes TimeoutError / BrokenPipeError /
                 # ConnectionError / ConnectionResetError.
+                # ``ValueError`` is a defense-in-depth backstop for any
+                # malformed-address rejection that escapes the
+                # inner ``_probe_one`` / ``_verify_redirect`` translation
+                # — keeping the find-leader sweep's narrow
+                # ``except`` from leaking ``ValueError`` past PEP 249
+                # wrapping at higher layers.
                 logger.debug(
                     "ClusterClient.connect attempt %d/%d failed (leader=%r): %s",
                     attempt,
