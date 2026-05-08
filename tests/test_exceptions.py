@@ -39,14 +39,14 @@ class TestOperationalErrorPickling:
     def test_pickle_roundtrip_preserves_str(self) -> None:
         original = OperationalError("constraint failed", 19)
         restored = pickle.loads(pickle.dumps(original))
-        assert str(restored) == "[19] constraint failed"
+        assert str(restored) == "constraint failed"
 
     def test_deepcopy_preserves_fields(self) -> None:
         original = OperationalError("not null", 1555)
         clone = copy.deepcopy(original)
         assert clone.code == 1555
         assert clone.message == "not null"
-        assert str(clone) == "[1555] not null"
+        assert str(clone) == "not null"
 
     def test_copy_preserves_fields(self) -> None:
         original = OperationalError("check", 1299)
@@ -60,15 +60,17 @@ class TestOperationalErrorPickling:
         restored = pickle.loads(pickle.dumps(original))
         assert restored.code == code
         assert restored.message == message
-        assert str(restored) == f"[{code}] {message}"
+        assert str(restored) == message
 
 
 class TestOperationalErrorFormatting:
-    """``str()`` keeps the ``[code] message`` format for log back-compat."""
+    """``str()`` returns the bare message — matches stdlib
+    ``sqlite3.OperationalError`` and the dbapi-layer wrapper classes.
+    Code remains available via the ``code`` attribute and ``__repr__``."""
 
     def test_str_format(self) -> None:
         e = OperationalError("boom", 5)
-        assert str(e) == "[5] boom"
+        assert str(e) == "boom"
 
     def test_repr_contains_both_fields(self) -> None:
         e = OperationalError("boom", 5)

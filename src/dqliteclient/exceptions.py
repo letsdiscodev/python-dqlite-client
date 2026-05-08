@@ -242,4 +242,11 @@ class OperationalError(DqliteError):
         super().__init__(self.message, code, raw_message=resolved_raw_message)
 
     def __str__(self) -> str:
-        return f"[{self.code}] {self.message}"
+        # Plain message — matches stdlib ``sqlite3.OperationalError("foo")``
+        # whose ``str(e) == "foo"`` even when ``sqlite_errorcode`` is set,
+        # and matches the dbapi-layer wrapper classes which also do not
+        # prefix the error code. ``code`` and ``raw_message`` remain
+        # available via attribute access and ``__repr__`` for callers
+        # that want structured access; logging code that wants both can
+        # format ``f"{e!r}"`` or read the attributes directly.
+        return self.message
