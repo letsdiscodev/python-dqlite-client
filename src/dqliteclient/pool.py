@@ -541,9 +541,20 @@ class ConnectionPool:
                 # bookkeeping into the finally; the connection-close
                 # sweep now does the same by walking the explicit
                 # task list.
-                create_tasks: list[asyncio.Task[DqliteConnection]] = [
-                    asyncio.create_task(self._create_connection()) for _ in range(self._min_size)
-                ]
+                # Build ``create_tasks`` INSIDE the try frame so a
+                # BaseException landing mid-construction (synthetic
+                # KeyboardInterrupt, outer cancel in the bytecode
+                # window before the ``try:``) keeps every
+                # already-created task tracked: the ``finally:`` walks
+                # the partial list via the ``gather_returned`` flag
+                # below, cancels survivors, and closes their
+                # connections. Pre-fix the comprehension ran outside
+                # the try frame; a BaseException there orphaned the
+                # live tasks (loop-bound primitives and transports
+                # leaked until GC). Mirrors the cluster-side hardening
+                # at ``_find_leader_impl`` and the pool-acquire
+                # discipline in ``done/ISSUE-243_pool-acquire-orphans-tasks-on-pre-try-cancel.md``.
+                create_tasks: list[asyncio.Task[DqliteConnection]] = []
                 # Track whether ``gather`` returned normally; if it
                 # raised CancelledError, the post-gather assignment
                 # to ``unqueued_survivors`` (and the put-loop's pop)
@@ -555,6 +566,8 @@ class ConnectionPool:
                 # would re-add already-queued conns and double-close.
                 gather_returned = False
                 try:
+                    for _ in range(self._min_size):
+                        create_tasks.append(asyncio.create_task(self._create_connection()))
                     # Create min_size connections concurrently so startup
                     # latency doesn't scale with min_size × per-connect RTT.
                     results = await asyncio.gather(
@@ -681,6 +694,21 @@ class ConnectionPool:
                     # precisely (walking again would double-close
                     # conns already in the queue).
                     if not gather_returned:
+                        # Cancel any task that's still pending (e.g.
+                        # BaseException landed mid-task-creation before
+                        # gather ran, or gather itself was cancelled
+                        # mid-flight) and await them so their slots
+                        # don't surface as orphan-task warnings at GC.
+                        # Without this pass, a pending task created
+                        # inside this frame outlives the function
+                        # frame with no observer.
+                        cancelled_pending: list[asyncio.Task[DqliteConnection]] = []
+                        for t in create_tasks:
+                            if not t.done():
+                                t.cancel()
+                                cancelled_pending.append(t)
+                        if cancelled_pending:
+                            await asyncio.gather(*cancelled_pending, return_exceptions=True)
                         for t in create_tasks:
                             if not t.done() or t.cancelled():
                                 continue
