@@ -589,7 +589,10 @@ class ConnectionPool:
                 # live tasks (loop-bound primitives and transports
                 # leaked until GC). Mirrors the cluster-side hardening
                 # at ``_find_leader_impl`` and the pool-acquire
-                # discipline in ``done/ISSUE-243_pool-acquire-orphans-tasks-on-pre-try-cancel.md``.
+                # discipline applied earlier on the acquire path that
+                # established the project pattern of building the task
+                # set inside the try frame whose finally cancels and
+                # gathers them.
                 create_tasks: list[asyncio.Task[DqliteConnection]] = []
                 # Track whether ``gather`` returned normally; if it
                 # raised CancelledError, the post-gather assignment

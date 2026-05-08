@@ -914,7 +914,8 @@ class ClusterClient:
         # before ``try:`` — a BaseException there orphaned the live
         # tasks (no done-callback observer, unlike ``find_leader``'s
         # ``_observe_drain_exception`` discipline). Mirrors the pool-
-        # side hardening in ``done/ISSUE-243_pool-acquire-orphans-tasks-on-pre-try-cancel.md``.
+        # side hardening that built ``ConnectionPool.initialize``'s
+        # ``create_tasks`` inside its own try frame for the same reason.
         pending: set[asyncio.Task[_LeaderHit | _ProbeMiss]] = set()
         winning_address: str | None = None
         policy_error: ClusterPolicyError | None = None

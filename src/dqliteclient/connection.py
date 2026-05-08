@@ -1781,7 +1781,7 @@ class DqliteConnection:
             # (the body's CancelledError flows through __aexit__'s
             # exc_val argument to the caller).
         except Exception as close_err:
-            # Symmetric with the CancelledError arm above (ISSUE-1475):
+            # Symmetric with the CancelledError arm above:
             # a non-cancel close-time exception (e.g. InterfaceError
             # from ``_check_in_use`` against a misused connection,
             # OSError surfacing from a wrapped drain failure) must not
