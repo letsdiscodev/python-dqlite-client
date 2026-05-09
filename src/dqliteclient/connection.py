@@ -795,8 +795,13 @@ def validate_timeout(
 # Rationale string passed by every ``close_timeout`` validator caller.
 # Keeps the FIN-flush narrative in one place so future readers find a
 # single source of truth and the generic ``validate_timeout`` does not
-# couple to a single use-case's explanation.
-_CLOSE_TIMEOUT_FLOOR_RATIONALE: Final[str] = (
+# couple to a single use-case's explanation. Public because both
+# dbapi (in ``_validate_close_timeout``) and a future SA URL validator
+# need to thread the same operator-facing text through the same floor
+# diagnostic — promoted from the underscore-prefixed name once a
+# downstream consumer surfaced (the dbapi import in round 33), per
+# the sibling promotion pattern established for ``sanitize_for_log``.
+CLOSE_TIMEOUT_FLOOR_RATIONALE: Final[str] = (
     "Below this floor, the dispose-time writer-close may complete before "
     "FIN flushes, leaving connections lingering in TIME_WAIT."
 )
@@ -1078,7 +1083,7 @@ class DqliteConnection:
             close_timeout,
             name="close_timeout",
             min_value=0.01,
-            min_value_rationale=_CLOSE_TIMEOUT_FLOOR_RATIONALE,
+            min_value_rationale=CLOSE_TIMEOUT_FLOOR_RATIONALE,
         )
         if dial_timeout is not None:
             validate_timeout(dial_timeout, name="dial_timeout")

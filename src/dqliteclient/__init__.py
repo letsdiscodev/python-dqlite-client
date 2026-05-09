@@ -23,6 +23,7 @@ from dqliteclient.cluster import (
     default_safe_redirect_policy,
 )
 from dqliteclient.connection import (
+    CLOSE_TIMEOUT_FLOOR_RATIONALE,
     DqliteConnection,
     get_current_pid,
     parse_address,
@@ -54,6 +55,7 @@ __version__: Final[str] = "0.1.4"
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CLOSE_TIMEOUT_FLOOR_RATIONALE",
     "ClusterClient",
     "ClusterError",
     "ClusterPolicyError",
