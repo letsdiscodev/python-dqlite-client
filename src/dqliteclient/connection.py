@@ -1371,7 +1371,7 @@ class DqliteConnection:
                     await self._protocol.handshake()
                     logger.debug(
                         "connect: handshake ok address=%s client_id=%d",
-                        self._address,
+                        self._safe_address,
                         self._protocol._client_id,
                     )
                     self._db_id = await self._protocol.open_database(self._database)
@@ -1380,7 +1380,7 @@ class DqliteConnection:
                     self._connected_flag[0] = True
                     logger.debug(
                         "connect: db opened address=%s db_id=%d database=%r",
-                        self._address,
+                        self._safe_address,
                         self._db_id,
                         self._database,
                     )
@@ -1692,7 +1692,7 @@ class DqliteConnection:
         except Exception:
             logger.debug(
                 "close: unexpected drain error for %s",
-                self._address,
+                self._safe_address,
                 exc_info=True,
             )
 
@@ -1727,7 +1727,7 @@ class DqliteConnection:
         except Exception:
             logger.debug(
                 "_abort_protocol: unexpected drain error for %s",
-                self._address,
+                self._safe_address,
                 exc_info=True,
             )
 
@@ -2815,7 +2815,7 @@ class DqliteConnection:
                         "transaction(address=%s, id=%s): rollback was "
                         "cancelled mid-flight; connection invalidated; "
                         "propagating cancellation",
-                        self._address,
+                        self._safe_address,
                         id(self),
                         exc_info=True,
                     )
@@ -2835,7 +2835,7 @@ class DqliteConnection:
                             "transaction(address=%s, id=%s): rollback "
                             "found no active transaction (server-side "
                             "tx already gone); preserving connection",
-                            self._address,
+                            self._safe_address,
                             id(self),
                         )
                         # Server reports no transaction is active — the
@@ -2853,7 +2853,7 @@ class DqliteConnection:
                             "transaction(address=%s, id=%s): rollback failed "
                             "with OperationalError; connection invalidated; "
                             "propagating original body exception",
-                            self._address,
+                            self._safe_address,
                             id(self),
                             exc_info=True,
                         )
@@ -2875,7 +2875,7 @@ class DqliteConnection:
                         "transaction(address=%s, id=%s): rollback failed; "
                         "connection invalidated; propagating original body "
                         "exception",
-                        self._address,
+                        self._safe_address,
                         id(self),
                         exc_info=True,
                     )
