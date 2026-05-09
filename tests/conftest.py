@@ -1,6 +1,8 @@
 """Pytest configuration for dqlite-client tests."""
 
+import contextlib
 import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -92,14 +94,20 @@ async def connected_connection(
     mock_writer: MagicMock,
     welcome_response: bytes,
     db_response: bytes,
-) -> tuple[DqliteConnection, AsyncMock, MagicMock]:
+) -> AsyncIterator[tuple[DqliteConnection, AsyncMock, MagicMock]]:
     """A DqliteConnection that is already connected with mocked transport.
 
-    Returns (conn, mock_reader, mock_writer) so tests can configure
-    additional response data on mock_reader.
+    Yields (conn, mock_reader, mock_writer) so tests can configure
+    additional response data on mock_reader. Closes the connection on
+    teardown so the suite-wide leak-hygiene contract holds (no
+    ResourceWarning under stricter pytest configs).
     """
     mock_reader.read.side_effect = [welcome_response, db_response]
     conn = DqliteConnection("localhost:9001")
     with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
         await conn.connect()
-    return conn, mock_reader, mock_writer
+    try:
+        yield conn, mock_reader, mock_writer
+    finally:
+        with contextlib.suppress(Exception):
+            await conn.close()
