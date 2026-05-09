@@ -36,6 +36,7 @@ from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
 from dqlitewire import LEADER_ERROR_CODES
+from dqlitewire.messages.responses import sanitize_for_log
 
 __all__ = ["ConnectionPool"]
 
@@ -1646,7 +1647,7 @@ class ConnectionPool:
         if _socket_looks_dead(conn):
             logger.debug(
                 "pool: dropping connection %s (socket looks dead on return)",
-                conn._address,
+                sanitize_for_log(str(conn._address)),
             )
             return False
         in_tx = getattr(conn, "_in_transaction", False)
@@ -1678,7 +1679,7 @@ class ConnectionPool:
                     logger.debug(
                         "pool: ROLLBACK on %s found no active transaction "
                         "(server-side tx already gone); preserving connection",
-                        conn._address,
+                        sanitize_for_log(str(conn._address)),
                     )
                     conn._in_transaction = False
                     conn._tx_owner = None
@@ -1697,14 +1698,14 @@ class ConnectionPool:
                     logger.debug(
                         "pool: dropping connection %s after leader-class "
                         "ROLLBACK failure (code=%s)",
-                        conn._address,
+                        sanitize_for_log(str(conn._address)),
                         code,
                     )
                 else:
                     logger.warning(
                         "pool: dropping connection %s after ROLLBACK failure: %r",
-                        conn._address,
-                        exc,
+                        sanitize_for_log(str(conn._address)),
+                        sanitize_for_log(str(exc)),
                         exc_info=True,
                     )
                 return False
