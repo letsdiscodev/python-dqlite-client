@@ -1,12 +1,10 @@
 """Pin: ``validate_timeout`` is the public name for the timeout
-validator and is re-exported from the package root. The
-underscore-prefixed ``_validate_timeout`` is kept as a back-compat
-alias to the same function so existing in-package call sites
-continue to compile.
+validator and is re-exported from the package root. Downstream
+consumers (``dqlitedbapi.connection``) import the public name.
 
-Downstream consumers (``dqlitedbapi.connection``) should import the
-public name; cross-package imports of the underscore alias are a
-PEP 8 non-public crossing.
+The previously-kept underscore-prefixed ``_validate_timeout`` alias
+has been removed: zero in-tree call sites used it after the round-32
+public-name migration, so the alias was dead surface.
 """
 
 from __future__ import annotations
@@ -14,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 import dqliteclient
-from dqliteclient.connection import _validate_timeout, validate_timeout
+from dqliteclient.connection import validate_timeout
 
 
 def test_validate_timeout_in_public_all() -> None:
@@ -22,11 +20,14 @@ def test_validate_timeout_in_public_all() -> None:
     assert dqliteclient.validate_timeout is validate_timeout
 
 
-def test_underscore_alias_identical_to_public() -> None:
-    """``_validate_timeout`` is a direct alias to ``validate_timeout``;
-    in-package call sites that still use the underscore name keep
-    working without behaviour drift."""
-    assert _validate_timeout is validate_timeout
+def test_underscore_alias_removed_from_module() -> None:
+    """Pin: the ``_validate_timeout`` alias has been deleted; the
+    module no longer exposes it. The dbapi has a separately-named
+    ``_validate_timeout`` on its own module — that one is unrelated
+    and must not be confused with the (now-removed) client alias."""
+    import dqliteclient.connection as _conn_mod
+
+    assert not hasattr(_conn_mod, "_validate_timeout")
 
 
 def test_validate_timeout_accepts_positive_finite() -> None:

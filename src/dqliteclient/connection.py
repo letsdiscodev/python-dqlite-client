@@ -768,13 +768,6 @@ def validate_timeout(value: float, *, name: str = "timeout") -> float:
     return float(value)
 
 
-# Underscore alias kept for back-compat with in-package call sites
-# (``DqliteConnection``, ``ClusterClient``, ``ConnectionPool``). The
-# public name is ``validate_timeout``; the underscore alias should be
-# considered deprecated for new code.
-_validate_timeout = validate_timeout
-
-
 _MAX_ADDRESS_LEN: Final[int] = 1024
 
 

@@ -68,7 +68,7 @@ def test_dqlite_connection_explicit_split_stored() -> None:
 @pytest.mark.parametrize("name", ["dial_timeout", "attempt_timeout"])
 @pytest.mark.parametrize("bad_value", [0, -1.0, True])
 def test_cluster_split_rejects_zero_negative_or_bool(name: str, bad_value: object) -> None:
-    """``_validate_timeout`` rejects 0 / negative / bool values; the
+    """``validate_timeout`` rejects 0 / negative / bool values; the
     new kwargs must apply the same rule."""
     store = MemoryNodeStore(["localhost:9001"])
     kwargs = {name: bad_value}
