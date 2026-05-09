@@ -929,11 +929,15 @@ class ConnectionPool:
           (the underflow guard ``_size < n`` fails open against a
           negative ``n``) — exactly the symmetric corruption the
           guard was meant to prevent.
-        * The lock-held precondition is asserted at runtime so a
-          future caller forgetting the lock surfaces immediately
+        * The lock-held precondition is checked at runtime (NOT via
+          ``assert`` — bare ``assert`` is stripped under
+          ``python -O``, and this is a real precondition contract on
+          shared-state mutation, not a mypy narrow). A future caller
+          forgetting the lock raises ``AssertionError`` immediately
           rather than corrupting ``_size`` under contention.
         """
-        assert self._lock.locked(), "_release_reservations_locked called without _lock held"
+        if not self._lock.locked():
+            raise AssertionError("_release_reservations_locked called without _lock held")
         if not isinstance(n, int) or isinstance(n, bool) or n < 1:
             raise ValueError(f"_release_reservations_locked requires n >= 1 (int), got {n!r}")
         if self._size < n:
