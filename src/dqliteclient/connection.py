@@ -746,7 +746,12 @@ def _canonicalize_host(host: str, address: str) -> str:
     return host.rstrip(".").lower()
 
 
-def validate_timeout(value: float, *, name: str = "timeout") -> float:
+def validate_timeout(
+    value: float,
+    *,
+    name: str = "timeout",
+    min_value: float = 0.0,
+) -> float:
     """Validate a user-supplied timeout: positive, finite, not ``bool``.
 
     ``isinstance(True, int)`` is True and ``math.isfinite(True)`` is
@@ -754,6 +759,13 @@ def validate_timeout(value: float, *, name: str = "timeout") -> float:
     ``1.0``. Reject ``bool`` explicitly. Also reject ``inf`` / ``nan``
     so a misconfigured value fails at the caller's entry point rather
     than much later when it reaches ``asyncio.wait_for``.
+
+    ``min_value`` (default ``0.0``, exclusive) is the floor below which
+    the value is rejected. Callers that need a stricter floor — e.g.
+    ``close_timeout`` requires ``>= 0.01`` so the dispose-time
+    writer-close has enough loop ticks to flush FIN — pass
+    ``min_value=0.01``. The default keeps every existing caller's
+    contract (positive finite number, exclusive of zero).
 
     Shared across ``DqliteConnection``, ``ClusterClient``,
     ``ConnectionPool``, and ``dqlitedbapi.connect`` so every entry
@@ -765,6 +777,12 @@ def validate_timeout(value: float, *, name: str = "timeout") -> float:
         raise TypeError(f"{name} must be a number, got {type(value).__name__}")
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be a positive finite number, got {value}")
+    if value < min_value:
+        raise ValueError(
+            f"{name} must be >= {min_value}; got {value}. Below this floor, "
+            f"the dispose-time writer-close may complete before FIN flushes, "
+            f"leaving connections lingering in TIME_WAIT."
+        )
     return float(value)
 
 
@@ -1040,7 +1058,7 @@ class DqliteConnection:
                 behaviour. Mirrors go-dqlite's ``WithDialFunc``.
         """
         validate_timeout(timeout)
-        validate_timeout(close_timeout, name="close_timeout")
+        validate_timeout(close_timeout, name="close_timeout", min_value=0.01)
         if dial_timeout is not None:
             validate_timeout(dial_timeout, name="dial_timeout")
         if attempt_timeout is not None:

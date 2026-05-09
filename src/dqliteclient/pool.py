@@ -360,7 +360,7 @@ class ConnectionPool:
                     f"got {max_elapsed_seconds}"
                 )
         validate_timeout(timeout)
-        validate_timeout(close_timeout, name="close_timeout")
+        validate_timeout(close_timeout, name="close_timeout", min_value=0.01)
         if dial_timeout is not None:
             validate_timeout(dial_timeout, name="dial_timeout")
         if attempt_timeout is not None:
