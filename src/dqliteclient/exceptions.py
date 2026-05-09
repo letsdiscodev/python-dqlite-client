@@ -53,13 +53,13 @@ class DqliteError(Exception):
 
     @classmethod
     def _cap_raw_message(cls, raw_message: str | None) -> str | None:
-        if raw_message is None or len(raw_message) <= cls._MAX_RAW_MESSAGE:
-            return raw_message
-        overflow = len(raw_message) - cls._MAX_RAW_MESSAGE
-        return (
-            raw_message[: cls._MAX_RAW_MESSAGE]
-            + f"... [raw_message truncated, {overflow} codepoints]"
-        )
+        # Thin wrapper over the wire-layer helper so the truncation
+        # logic + suffix wording lives in one place. The classmethod
+        # shape is preserved so subclasses can override
+        # ``_MAX_RAW_MESSAGE`` at the class level.
+        from dqlitewire._truncate import _cap_raw_message as _wire_cap
+
+        return _wire_cap(raw_message, cls._MAX_RAW_MESSAGE)
 
     def __getstate__(self) -> dict[str, object]:
         """State capture for pickle.
