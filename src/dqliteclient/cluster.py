@@ -35,11 +35,10 @@ from dqlitewire import (
 from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
-from dqlitewire import NodeRole
+from dqlitewire import NodeRole, sanitize_for_log
 from dqlitewire import sanitize_server_text as _sanitize_display_text
 from dqlitewire.messages.responses import (
     NodeInfo,
-    _sanitize_for_log,
 )
 
 __all__ = [
@@ -996,12 +995,12 @@ class ClusterClient:
         # Sanitise server-supplied text against log-injection: a
         # hostile FailureResponse.message containing ``\n`` would
         # otherwise split the log line in syslog / journald.
-        # _sanitize_for_log escapes LF / CR; the exception messages
+        # sanitize_for_log escapes LF / CR; the exception messages
         # below keep the original wording for interactive debugging.
         logger.warning(
             "cluster: leader discovery failed across %d nodes; errors=%s",
             total_nodes,
-            _sanitize_for_log(joined),
+            sanitize_for_log(joined),
         )
         # Chain via ``BaseExceptionGroup`` when more than one node
         # contributed a real exception (the no-leader-known arm
@@ -1507,7 +1506,7 @@ class ClusterClient:
             # all-attempts-exhausted outcome is the one event paged
             # operators need to see at default verbosity.
             #
-            # ``_sanitize_for_log`` strips LF / CR from the embedded
+            # ``sanitize_for_log`` strips LF / CR from the embedded
             # exception text — a hostile peer's
             # ``FailureResponse.message`` can ride into ``str(exc)``
             # via the ``DqliteConnectionError`` rewrap of
@@ -1519,7 +1518,7 @@ class ClusterClient:
                 "cluster: connect exhausted %d attempts; last_error=%s: %s",
                 attempts_cap,
                 type(exc).__name__,
-                _sanitize_for_log(_truncate_error(str(exc))),
+                sanitize_for_log(_truncate_error(str(exc))),
             )
             raise
 
