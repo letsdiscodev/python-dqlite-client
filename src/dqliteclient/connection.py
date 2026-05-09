@@ -751,6 +751,7 @@ def validate_timeout(
     *,
     name: str = "timeout",
     min_value: float = 0.0,
+    min_value_rationale: str | None = None,
 ) -> float:
     """Validate a user-supplied timeout: positive, finite, not ``bool``.
 
@@ -761,11 +762,17 @@ def validate_timeout(
     than much later when it reaches ``asyncio.wait_for``.
 
     ``min_value`` (default ``0.0``, exclusive) is the floor below which
-    the value is rejected. Callers that need a stricter floor — e.g.
-    ``close_timeout`` requires ``>= 0.01`` so the dispose-time
-    writer-close has enough loop ticks to flush FIN — pass
-    ``min_value=0.01``. The default keeps every existing caller's
-    contract (positive finite number, exclusive of zero).
+    the value is rejected. ``min_value_rationale`` (optional) carries a
+    caller-supplied explanation appended to the diagnostic so a future
+    caller passing ``min_value=`` for a non-close-timeout reason (e.g.
+    a heartbeat-period floor, an attempt-budget minimum) does not
+    inherit the close-timeout-specific FIN-flush wording.
+
+    Callers that need a stricter floor — e.g. ``close_timeout`` requires
+    ``>= 0.01`` so the dispose-time writer-close has enough loop ticks
+    to flush FIN — pass ``min_value=0.01`` plus the rationale text. The
+    default keeps every existing caller's contract (positive finite
+    number, exclusive of zero).
 
     Shared across ``DqliteConnection``, ``ClusterClient``,
     ``ConnectionPool``, and ``dqlitedbapi.connect`` so every entry
@@ -778,12 +785,21 @@ def validate_timeout(
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be a positive finite number, got {value}")
     if value < min_value:
-        raise ValueError(
-            f"{name} must be >= {min_value}; got {value}. Below this floor, "
-            f"the dispose-time writer-close may complete before FIN flushes, "
-            f"leaving connections lingering in TIME_WAIT."
-        )
+        msg = f"{name} must be >= {min_value}; got {value}"
+        if min_value_rationale:
+            msg += f". {min_value_rationale}"
+        raise ValueError(msg)
     return float(value)
+
+
+# Rationale string passed by every ``close_timeout`` validator caller.
+# Keeps the FIN-flush narrative in one place so future readers find a
+# single source of truth and the generic ``validate_timeout`` does not
+# couple to a single use-case's explanation.
+_CLOSE_TIMEOUT_FLOOR_RATIONALE: Final[str] = (
+    "Below this floor, the dispose-time writer-close may complete before "
+    "FIN flushes, leaving connections lingering in TIME_WAIT."
+)
 
 
 _MAX_ADDRESS_LEN: Final[int] = 1024
@@ -1058,7 +1074,12 @@ class DqliteConnection:
                 behaviour. Mirrors go-dqlite's ``WithDialFunc``.
         """
         validate_timeout(timeout)
-        validate_timeout(close_timeout, name="close_timeout", min_value=0.01)
+        validate_timeout(
+            close_timeout,
+            name="close_timeout",
+            min_value=0.01,
+            min_value_rationale=_CLOSE_TIMEOUT_FLOOR_RATIONALE,
+        )
         if dial_timeout is not None:
             validate_timeout(dial_timeout, name="dial_timeout")
         if attempt_timeout is not None:

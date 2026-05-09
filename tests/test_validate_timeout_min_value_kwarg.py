@@ -43,24 +43,53 @@ def test_validate_timeout_zero_rejected_before_min_value_check() -> None:
         validate_timeout(0.0, name="close_timeout", min_value=0.01)
 
 
-def test_validate_timeout_message_mentions_fin_flush_rationale() -> None:
-    """Floor-rejection diagnostic explains the TIME_WAIT rationale so
-    operators understand why the floor exists."""
-    with pytest.raises(ValueError, match="FIN flushes"):
+def test_validate_timeout_floor_diagnostic_omits_fin_text_without_rationale() -> None:
+    """The generic validator no longer hard-codes the FIN-flush
+    rationale: callers that pass ``min_value=`` for non-close-timeout
+    reasons would otherwise inherit a misleading explanation. Without
+    a ``min_value_rationale=`` kwarg, the diagnostic stays neutral."""
+    with pytest.raises(ValueError, match=r"close_timeout must be >= 0\.01") as exc:
         validate_timeout(0.001, name="close_timeout", min_value=0.01)
+    assert "FIN flushes" not in str(exc.value)
+    assert "TIME_WAIT" not in str(exc.value)
+
+
+def test_validate_timeout_message_mentions_fin_flush_rationale_when_passed() -> None:
+    """When the caller supplies ``min_value_rationale=``, the
+    explanation is appended to the diagnostic. The close_timeout
+    callers pass the FIN-flush rationale."""
+    with pytest.raises(ValueError, match="FIN flushes"):
+        validate_timeout(
+            0.001,
+            name="close_timeout",
+            min_value=0.01,
+            min_value_rationale=(
+                "Below this floor, the dispose-time writer-close may "
+                "complete before FIN flushes, leaving connections "
+                "lingering in TIME_WAIT."
+            ),
+        )
 
 
 def test_dqlite_connection_close_timeout_below_floor_rejected() -> None:
     """Direct DqliteConnection caller bypasses the dbapi-layer floor;
-    the client-layer enforcement now catches them."""
-    with pytest.raises(ValueError, match="close_timeout must be >= 0.01"):
+    the client-layer enforcement now catches them — and the constructor
+    passes the FIN-flush rationale so the diagnostic includes the
+    operator-facing explanation."""
+    with pytest.raises(ValueError, match="close_timeout must be >= 0.01") as exc:
         DqliteConnection("localhost:9001", close_timeout=0.001)
+    assert "FIN flushes" in str(exc.value), (
+        "DqliteConnection must wrap validate_timeout with the "
+        "close-timeout-specific FIN-flush rationale so operators "
+        "understand the reason for the floor."
+    )
 
 
 def test_connection_pool_close_timeout_below_floor_rejected() -> None:
-    """Same for ConnectionPool."""
-    with pytest.raises(ValueError, match="close_timeout must be >= 0.01"):
+    """Same for ConnectionPool — also wraps with the FIN-flush rationale."""
+    with pytest.raises(ValueError, match="close_timeout must be >= 0.01") as exc:
         ConnectionPool(addresses=["localhost:9001"], close_timeout=0.001)
+    assert "FIN flushes" in str(exc.value)
 
 
 def test_dqlite_connection_close_timeout_at_default_accepted() -> None:
