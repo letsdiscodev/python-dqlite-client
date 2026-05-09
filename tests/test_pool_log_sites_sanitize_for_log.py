@@ -117,6 +117,91 @@ def test_pool_imports_sanitize_for_log_from_wire() -> None:
     )
 
 
+def test_pool_initialize_warning_sanitizes_failure_repr() -> None:
+    """``pool.initialize`` re-emits each per-create failure via a
+    WARNING that interpolates the exception. Because exception
+    ``__repr__`` echoes server-supplied ``OperationalError`` text
+    (and ``DqliteConnectionError.args[0]``), that interpolation must
+    pass through ``sanitize_for_log`` to strip control characters from
+    hostile peer diagnostics."""
+    source = _POOL_PY.read_text()
+    needle = '"pool.initialize: create_connection %d/%d failed: %s"'
+    idx = source.find(needle)
+    assert idx >= 0, (
+        "Could not locate the pool.initialize per-create-failure WARNING — production code drifted."
+    )
+    open_idx = source.rfind("logger.warning(", 0, idx)
+    assert open_idx >= 0
+    i = open_idx + len("logger.warning(")
+    depth = 1
+    while i < len(source) and depth > 0:
+        ch = source[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        i += 1
+    block = source[open_idx:i]
+    assert "sanitize_for_log(repr(exc))" in block, (
+        f"pool.initialize WARNING must wrap the failure exception via "
+        f"sanitize_for_log(repr(exc)); block was:\n{block}"
+    )
+
+
+def test_pool_initialize_debug_sanitizes_first_failure_repr() -> None:
+    """The companion DEBUG line at the abort-after-N-creates branch
+    interpolates ``failures[0]`` and must apply the same discipline."""
+    source = _POOL_PY.read_text()
+    needle = '"closing %d survivors (first failure: %s)"'
+    idx = source.find(needle)
+    assert idx >= 0, (
+        "Could not locate the pool.initialize abort DEBUG line — production code drifted."
+    )
+    open_idx = source.rfind("logger.debug(", 0, idx)
+    assert open_idx >= 0
+    i = open_idx + len("logger.debug(")
+    depth = 1
+    while i < len(source) and depth > 0:
+        ch = source[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        i += 1
+    block = source[open_idx:i]
+    assert "sanitize_for_log(repr(failures[0]))" in block, (
+        f"pool.initialize abort DEBUG must wrap failures[0] via "
+        f"sanitize_for_log(repr(failures[0])); block was:\n{block}"
+    )
+
+
+def test_pool_log_sites_no_raw_exception_via_percent_r() -> None:
+    """Targeted lint: every ``logger.*`` block in ``pool.py`` whose
+    format string contains ``%r`` AND interpolates an identifier
+    matching the server-controlled-exception pattern (``exc``,
+    ``exception``, ``failure(s)``, ``err``) must wrap that
+    interpolation through ``sanitize_for_log``. A future maintainer
+    adding a new ``%r``-on-server-exception line would otherwise
+    reintroduce the log-injection vector. Local-enum / row-counter
+    ``%r`` sites (legitimate; not server-controlled) are out of scope.
+    """
+    source = _POOL_PY.read_text()
+    server_exc_names = re.compile(r"\b(?:exc|exception|failure|failures|err|error)\b(?!\w)")
+    offenders: list[str] = []
+    for block in _logger_call_blocks(source):
+        if "%r" not in block:
+            continue
+        if not server_exc_names.search(block):
+            continue
+        if "sanitize_for_log" not in block:
+            offenders.append(block.splitlines()[0])
+    assert not offenders, (
+        "logger.* call(s) in pool.py use %r on a server-controlled "
+        "exception without sanitize_for_log; route through "
+        "sanitize_for_log(repr(...)) for log-injection hygiene:\n" + "\n".join(offenders)
+    )
+
+
 def test_synthetic_evil_address_does_not_inject_newline() -> None:
     """Functional pin: ``sanitize_for_log("evil\\nhost:9001")`` produces
     a single-line string with the LF escaped to the literal two-byte

@@ -625,13 +625,21 @@ class ConnectionPool:
                     if failures:
                         # Close the connections that did succeed — they
                         # are unowned now that initialize is aborting.
+                        # ``%r`` on a server-supplied exception would
+                        # echo ``OperationalError.message`` / wrapped
+                        # peer text into the log without sanitisation.
+                        # Pre-stringify with ``repr()`` then route
+                        # through the wire-layer sanitiser so control
+                        # characters / bidi tricks in hostile peer
+                        # diagnostics are stripped before they reach
+                        # operator dashboards.
                         logger.debug(
                             "pool.initialize: aborting after %d/%d creates succeeded; "
-                            "closing %d survivors (first failure: %r)",
+                            "closing %d survivors (first failure: %s)",
                             len(successes),
                             self._min_size,
                             len(successes),
-                            failures[0],
+                            sanitize_for_log(repr(failures[0])),
                         )
                         # Log every failure individually so operators
                         # see the full picture before unpacking the
@@ -642,10 +650,10 @@ class ConnectionPool:
                         # signal.
                         for i, exc in enumerate(failures):
                             logger.warning(
-                                "pool.initialize: create_connection %d/%d failed: %r",
+                                "pool.initialize: create_connection %d/%d failed: %s",
                                 i + 1,
                                 len(failures),
-                                exc,
+                                sanitize_for_log(repr(exc)),
                             )
                         for conn in successes:
                             try:
@@ -1856,9 +1864,15 @@ class ConnectionPool:
                     except asyncio.CancelledError:
                         pass
                     except Exception:
+                        # Sanitise the address through the wire helper
+                        # for symmetry with the other pool log sites —
+                        # connection addresses originate from caller
+                        # config but a hostile resolver / forged host
+                        # entry can still smuggle control characters
+                        # via DNS canonicalisation.
                         logger.debug(
-                            "pool _release: suppressed pending-drain exception on conn %r",
-                            getattr(conn, "_address", "?"),
+                            "pool _release: suppressed pending-drain exception on conn %s",
+                            sanitize_for_log(str(getattr(conn, "_address", "?"))),
                             exc_info=True,
                         )
                 conn._pool_released = True
