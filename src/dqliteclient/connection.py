@@ -1853,7 +1853,7 @@ class DqliteConnection:
             raise InterfaceError(
                 f"Connection used after fork; reconstruct from configuration "
                 f"in the target process. (created in pid {self._creator_pid}, "
-                f"current pid {_current_pid})"
+                f"current pid {get_current_pid()})"
             )
         if self._pool_released:
             raise InterfaceError(

@@ -557,7 +557,7 @@ class ClusterClient:
             raise InterfaceError(
                 f"ClusterClient used after fork; reconstruct from "
                 f"configuration in the target process. (created in "
-                f"pid {self._creator_pid}, current pid {_conn_mod._current_pid})"
+                f"pid {self._creator_pid}, current pid {_conn_mod.get_current_pid()})"
             )
         key: tuple[bool] = (trust_server_heartbeat,)
         task = self._find_leader_tasks.get(key)
