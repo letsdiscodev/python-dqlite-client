@@ -555,8 +555,9 @@ class ClusterClient:
             # InterfaceError instead of letting a sibling task land
             # at ``await asyncio.shield(<parent-task>)``.
             raise InterfaceError(
-                "ClusterClient used after fork; reconstruct from configuration "
-                "in the target process."
+                f"ClusterClient used after fork; reconstruct from "
+                f"configuration in the target process. (created in "
+                f"pid {self._creator_pid}, current pid {_conn_mod._current_pid})"
             )
         key: tuple[bool] = (trust_server_heartbeat,)
         task = self._find_leader_tasks.get(key)

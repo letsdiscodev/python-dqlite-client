@@ -1851,7 +1851,9 @@ class DqliteConnection:
         task."""
         if _current_pid != self._creator_pid:
             raise InterfaceError(
-                "Connection used after fork; reconstruct from configuration in the target process."
+                f"Connection used after fork; reconstruct from configuration "
+                f"in the target process. (created in pid {self._creator_pid}, "
+                f"current pid {_current_pid})"
             )
         if self._pool_released:
             raise InterfaceError(
