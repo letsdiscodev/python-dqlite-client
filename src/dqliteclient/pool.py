@@ -1046,8 +1046,8 @@ class ConnectionPool:
                     # them used to break structured concurrency (``asyncio.
                     # timeout`` around ``pool.close()`` would silently hang).
                     logger.debug(
-                        "pool: close() on idle connection %r failed",
-                        getattr(conn, "_address", "?"),
+                        "pool: close() on idle connection %s failed",
+                        sanitize_for_log(str(getattr(conn, "_address", "?"))),
                         exc_info=True,
                     )
                 finally:
@@ -1107,8 +1107,8 @@ class ConnectionPool:
                 await asyncio.shield(conn.close())
             except Exception:
                 logger.debug(
-                    "pool: cleanup-after-cancel close() on %r failed",
-                    getattr(conn, "_address", "?"),
+                    "pool: cleanup-after-cancel close() on %s failed",
+                    sanitize_for_log(str(getattr(conn, "_address", "?"))),
                     exc_info=True,
                 )
             finally:
@@ -1586,8 +1586,8 @@ class ConnectionPool:
                                 await asyncio.shield(conn.close())
                         except (OSError, DqliteConnectionError):
                             logger.debug(
-                                "pool.acquire cleanup: conn.close(%r) failed",
-                                getattr(conn, "_address", "?"),
+                                "pool.acquire cleanup: conn.close(%s) failed",
+                                sanitize_for_log(str(getattr(conn, "_address", "?"))),
                                 exc_info=True,
                             )
                         except RuntimeError:
@@ -1603,8 +1603,8 @@ class ConnectionPool:
                             # (``AttributeError``, ``TypeError``, etc.)
                             # still surface.
                             logger.debug(
-                                "pool.acquire cleanup: conn.close(%r) raised RuntimeError",
-                                getattr(conn, "_address", "?"),
+                                "pool.acquire cleanup: conn.close(%s) raised RuntimeError",
+                                sanitize_for_log(str(getattr(conn, "_address", "?"))),
                                 exc_info=True,
                             )
                     finally:
@@ -1724,10 +1724,17 @@ class ConnectionPool:
                         code,
                     )
                 else:
+                    # Format string uses %s for both substitutions
+                    # because the values are pre-stringified — the
+                    # exception is sanitised via repr() so the
+                    # OperationalError(...) shape reaches operators
+                    # without %r doubly-quoting an already-sanitised
+                    # string. Aligns with the round-33
+                    # ``pool.initialize`` per-failure-warning shape.
                     logger.warning(
-                        "pool: dropping connection %s after ROLLBACK failure: %r",
+                        "pool: dropping connection %s after ROLLBACK failure: %s",
                         sanitize_for_log(str(conn._address)),
-                        sanitize_for_log(str(exc)),
+                        sanitize_for_log(repr(exc)),
                         exc_info=True,
                     )
                 return False

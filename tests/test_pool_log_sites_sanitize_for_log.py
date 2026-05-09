@@ -48,40 +48,46 @@ def _logger_call_blocks(source: str) -> list[str]:
     return blocks
 
 
+_ADDRESS_REFERENCE = re.compile(r"conn\._address|getattr\(\s*conn\s*,\s*['\"]_address['\"]")
+
+
 def test_pool_logger_calls_sanitize_conn_address() -> None:
-    """Every ``logger.*`` site in ``pool.py`` that references
-    ``conn._address`` must wrap it via ``sanitize_for_log(str(...))``,
-    not pass it raw."""
+    """Every ``logger.*`` site in ``pool.py`` that references the
+    connection address — via either ``conn._address`` or
+    ``getattr(conn, "_address", ...)`` — must wrap it via
+    ``sanitize_for_log(str(...))``, not pass it raw. The pattern
+    covers both shapes so a future site using either form is caught.
+    """
     source = _POOL_PY.read_text()
     offenders: list[str] = []
     for block in _logger_call_blocks(source):
-        if "conn._address" not in block:
+        if not _ADDRESS_REFERENCE.search(block):
             continue
-        # If the block mentions ``conn._address`` it must be inside
-        # a ``sanitize_for_log(`` argument scope. A simple sanity
-        # check: every occurrence of the substring ``conn._address``
-        # must be preceded (within ~30 chars) by ``sanitize_for_log``.
-        for occ in re.finditer(r"conn\._address", block):
+        for occ in _ADDRESS_REFERENCE.finditer(block):
             window = block[max(0, occ.start() - 64) : occ.start()]
             if "sanitize_for_log" not in window:
                 offenders.append(block.splitlines()[0] + " ...")
                 break
     assert not offenders, (
-        "logger.* call(s) still pass raw conn._address; route through "
-        "sanitize_for_log(str(conn._address)) for log-injection hygiene:\n" + "\n".join(offenders)
+        "logger.* call(s) still pass raw connection address; route "
+        "every ``conn._address`` AND ``getattr(conn, '_address', ...)`` "
+        "site through sanitize_for_log(str(...)) for log-injection "
+        "hygiene:\n" + "\n".join(offenders)
     )
 
 
 def test_rollback_warning_sanitizes_exception_text() -> None:
     """The WARNING-level ROLLBACK-failure site interpolates the
-    exception via ``%r``. Because exception ``__repr__`` echoes
-    server-supplied text (``OperationalError(message)``), that text
-    must be sanitised too — the warning passes
-    ``sanitize_for_log(str(exc))`` rather than the raw ``exc``.
+    exception via ``%s`` with the value pre-stringified through
+    ``sanitize_for_log(repr(exc))``. The earlier shape used ``%r`` on
+    a sanitised string, doubly-quoting/escaping the operator-facing
+    diagnostic; the canonical form (matching the round-33
+    ``pool.initialize`` per-failure-warning shape) is ``%s`` plus
+    ``sanitize_for_log(repr(exc))``.
     """
     source = _POOL_PY.read_text()
     # Locate the WARNING site by message string, then walk balanced parens.
-    needle = '"pool: dropping connection %s after ROLLBACK failure: %r"'
+    needle = '"pool: dropping connection %s after ROLLBACK failure: %s"'
     idx = source.find(needle)
     assert idx >= 0, (
         "Could not locate the pool-ROLLBACK-failure WARNING — test or production code drifted."
@@ -104,6 +110,14 @@ def test_rollback_warning_sanitizes_exception_text() -> None:
     assert sanitize_calls >= 2, (
         f"WARNING block must sanitize both address and exc text; "
         f"found {sanitize_calls} sanitize_for_log(...) calls in:\n{block}"
+    )
+    # The exception interpolation must use repr() inside sanitize_for_log
+    # so the OperationalError(...) shape reaches operators (vs. just
+    # the bare message string).
+    assert "sanitize_for_log(repr(exc))" in block, (
+        "ROLLBACK failure WARNING must wrap the exception via "
+        "sanitize_for_log(repr(exc)) — same shape as the round-33 "
+        "pool.initialize per-failure-warning."
     )
 
 
