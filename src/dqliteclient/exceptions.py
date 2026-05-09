@@ -2,6 +2,7 @@
 
 from typing import Any, ClassVar
 
+from dqlitewire._truncate import _cap_raw_message as _wire_cap_raw_message
 from dqlitewire.exceptions import ProtocolError as _WireProtocolError
 
 __all__ = [
@@ -57,9 +58,7 @@ class DqliteError(Exception):
         # logic + suffix wording lives in one place. The classmethod
         # shape is preserved so subclasses can override
         # ``_MAX_RAW_MESSAGE`` at the class level.
-        from dqlitewire._truncate import _cap_raw_message as _wire_cap
-
-        return _wire_cap(raw_message, cls._MAX_RAW_MESSAGE)
+        return _wire_cap_raw_message(raw_message, cls._MAX_RAW_MESSAGE)
 
     def __getstate__(self) -> dict[str, object]:
         """State capture for pickle.
