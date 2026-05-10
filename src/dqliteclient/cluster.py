@@ -351,6 +351,29 @@ class ClusterClient:
                 preserves existing behaviour. Mirrors go-dqlite's
                 ``WithDialFunc``. Forwarded to every
                 :class:`DqliteConnection` this cluster builds.
+            max_total_rows: Cumulative row-count cap forwarded to
+                every admin path and leader probe via the underlying
+                :class:`DqliteProtocol`. ``None`` disables the cap
+                (matching go-dqlite's unbounded behaviour). Default
+                is :data:`dqlitewire.DEFAULT_MAX_TOTAL_ROWS`
+                (10_000_000). Bounds the total rows a single query
+                can return across all continuation frames.
+            max_continuation_frames: Cap on the number of ROWS
+                continuation frames a single query can produce.
+                ``None`` disables the cap. Default is
+                :data:`dqlitewire.DEFAULT_MAX_CONTINUATION_FRAMES`
+                (100_000). Bounds the per-query frame count
+                independently of ``max_total_rows`` so a malicious /
+                buggy server cannot stream forever in tiny chunks.
+            trust_server_heartbeat: When ``True``, the WelcomeResponse's
+                advertised heartbeat timeout (in seconds) widens the
+                per-connection ``_read_timeout`` after handshake — up
+                to a 300s cap. Default ``False`` (server's heartbeat
+                value is read but has no effect — same as go-dqlite,
+                whose heartbeat is TODO/disabled). Opt-in only when
+                the cluster is operator-controlled and a longer
+                read-timeout is needed for slow consensus-write
+                round-trips.
         """
         validate_timeout(timeout)
         if dial_timeout is not None:

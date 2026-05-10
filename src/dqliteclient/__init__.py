@@ -131,6 +131,12 @@ async def connect(
             deployments where FIN/ACK round-trip is slower, or
             decrease to tighten SIGTERM-shutdown budgets. See
             ``DqliteConnection.__init__`` for full rationale.
+        dial_func: Optional caller-supplied dialer
+            (:data:`DialFunc`) replacing the default TCP path. When
+            supplied, the default helper's SO_KEEPALIVE / TCP keepalive
+            tunables / happy-eyeballs are bypassed — the caller's
+            dialer owns all socket options. ``None`` preserves
+            existing behaviour. Mirrors go-dqlite's ``WithDialFunc``.
 
     Returns:
         A connected DqliteConnection
@@ -236,6 +242,13 @@ async def create_pool(
             ``None`` (default) means only ``max_attempts`` governs
             termination. Set to a positive finite number for
             go-dqlite-style total-time bounding.
+        dial_func: Optional caller-supplied dialer
+            (:data:`DialFunc`) forwarded to the auto-built
+            :class:`ClusterClient` and to every pooled
+            :class:`DqliteConnection`. Mutually exclusive with
+            ``cluster=``: an externally-owned cluster already carries
+            its own ``dial_func``, so supplying both raises
+            ``ValueError``. Mirrors go-dqlite's ``WithDialFunc``.
 
     Returns:
         An initialized ConnectionPool

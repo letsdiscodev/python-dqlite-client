@@ -249,7 +249,18 @@ class ConnectionPool:
                 budget independently, so a single call can take up to
                 roughly N × ``timeout`` end-to-end. Wrap callers in
                 ``asyncio.timeout(...)`` to enforce a wall-clock
-                deadline.
+                deadline. Acts as the default for ``dial_timeout``
+                and ``attempt_timeout`` when those are ``None``.
+            dial_timeout: Per-dial TCP-establish budget. Forwarded to
+                the auto-built :class:`ClusterClient` and to every
+                pooled :class:`DqliteConnection`. Defaults to
+                ``timeout`` when ``None``. Mirrors go-dqlite's
+                ``Config.DialTimeout``. Must be ``> 0`` when set.
+            attempt_timeout: Per-attempt envelope (dial + handshake +
+                first useful round-trip). Forwarded the same way.
+                Defaults to ``timeout`` when ``None``. Mirrors
+                go-dqlite's ``Config.AttemptTimeout``. Must be
+                ``> 0`` when set.
             cluster: Externally-owned ClusterClient. Lets multiple pools
                 share one ClusterClient (and thus its node store, leader
                 cache, etc.) across databases or tenants.
