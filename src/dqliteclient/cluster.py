@@ -1790,6 +1790,18 @@ class ClusterClient:
             raise TypeError(f"address must be a non-empty str, got {type(address).__name__}")
         if not isinstance(role, NodeRole):
             raise TypeError(f"role must be a NodeRole, got {type(role).__name__}")
+        # Defer to the in-tree strict address parser for shape
+        # validation. Without this, a malformed address (non-numeric
+        # port, unbracketed IPv6, whitespace/CRLF, credentials-smuggle
+        # ``user@host``, etc.) would reach the server, get stored in
+        # the Raft log, and only surface as a connection failure
+        # later when some node tries to dial it. Catching at the call
+        # site moves the diagnostic from "node X cannot reach node Y
+        # three minutes later" to a clean ValueError.
+        try:
+            parse_address(address)
+        except ValueError as exc:
+            raise ValueError(f"add_node: invalid address {address!r}: {exc}") from exc
 
         leader_addr = await self.find_leader()
         try:
