@@ -1498,6 +1498,34 @@ class ConnectionPool:
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.shield(self._release_reservation())
                 raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
+            # Re-check the freshly-dialed conn for definitive death.
+            # ``_create_connection`` is supposed to return a fully-
+            # established conn with ``is_connected`` True. If
+            # ``is_connected`` reports False right after return, the
+            # handshake failed silently or the peer tore the conn
+            # between completion and return (rare but possible under
+            # firewall idle-timeout / peer Raft flip / peer process
+            # crash). Yielding such a conn would surface as an opaque
+            # transport error on the caller's first query. Catch it
+            # at checkout time and raise a clean
+            # DqliteConnectionError so caller-side retry has a clear
+            # signal. The check is intentionally narrower than the
+            # ``_socket_looks_dead`` peek at the top of this arm — the
+            # peek false-positives on the standard mock pattern
+            # (``MagicMock(spec=DqliteConnection)`` without a mocked
+            # ``_protocol``), and the queue-dequeue arm already
+            # tolerates dead-looking mocks by going through this same
+            # re-create path.
+            if not conn.is_connected:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(conn.close())
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(self._release_reservation())
+                raise DqliteConnectionError(
+                    "Pool: freshly dialed connection reports is_connected=False; "
+                    "handshake failed silently or the peer tore the conn between "
+                    f"completion and return (pool_id={id(self)})."
+                )
 
         conn._pool_released = False
         try:
