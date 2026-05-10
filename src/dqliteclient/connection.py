@@ -799,8 +799,8 @@ def validate_timeout(
 # dbapi (in ``_validate_close_timeout``) and a future SA URL validator
 # need to thread the same operator-facing text through the same floor
 # diagnostic — promoted from the underscore-prefixed name once a
-# downstream consumer surfaced (the dbapi import in round 33), per
-# the sibling promotion pattern established for ``sanitize_for_log``.
+# downstream consumer surfaced, per the sibling promotion pattern
+# established for ``sanitize_for_log``.
 CLOSE_TIMEOUT_FLOOR_RATIONALE: Final[str] = (
     "Below this floor, the dispose-time writer-close may complete before "
     "FIN flushes, leaving connections lingering in TIME_WAIT."
@@ -1635,10 +1635,8 @@ class DqliteConnection:
             if pending is None or pending.done():
                 break
             # Narrow suppress to ``(Exception, asyncio.CancelledError)``
-            # so KeyboardInterrupt and SystemExit propagate. Cycle 23
-            # noted that the previous ``BaseException`` suppress was
-            # mis-justified as "symmetric with connect()" — connect's
-            # pending-retire path actually uses NARROW catches
+            # so KeyboardInterrupt and SystemExit propagate. Connect's
+            # pending-retire path uses parallel narrow catches
             # (``except asyncio.CancelledError`` + ``except Exception``).
             # asyncio cancellation gets re-delivered at the next await
             # boundary (Python 3.11+ ``Task.cancelling()`` re-arm
