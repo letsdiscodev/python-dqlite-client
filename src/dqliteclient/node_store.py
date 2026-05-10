@@ -525,12 +525,15 @@ class YamlNodeStore(NodeStore):
                 # is atomic for visibility but the directory entry
                 # change can revert after a power loss / kernel
                 # panic / VM hard-stop without the directory fsync.
-                # Mirrors go-dqlite's ``renameio.WriteFile`` which
-                # does this. Best-effort: non-POSIX (Windows) and
-                # some FUSE filesystems don't support fsync on
-                # directories — suppress OSError so the rename is
-                # still visible even if the durability barrier
-                # isn't available.
+                # More durable than go-dqlite's ``renameio.WriteFile``,
+                # which fsyncs the file but not the parent directory
+                # (per the upstream package: "concerns itself only
+                # with atomicity"). Mirrors the standard atomic-rename
+                # + parent-fsync pattern (git, sqlite WAL, etc.).
+                # Best-effort: non-POSIX (Windows) and some FUSE
+                # filesystems don't support fsync on directories —
+                # suppress OSError so the rename is still visible
+                # even if the durability barrier isn't available.
                 with contextlib.suppress(OSError):
                     dir_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
                     try:
