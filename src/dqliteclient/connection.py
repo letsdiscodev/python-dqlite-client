@@ -1130,7 +1130,7 @@ class DqliteConnection:
         # picked up by the WeakRef-bound closure naturally.
         self._closed_flag: list[bool] = [False]
         self._connected_flag: list[bool] = [False]
-        self._finalizer: weakref.finalize | None = weakref.finalize(  # type: ignore[type-arg]
+        self._finalizer: weakref.finalize[Any, Any] | None = weakref.finalize(
             self,
             _connection_unclosed_warning,
             self._closed_flag,

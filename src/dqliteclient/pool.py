@@ -477,7 +477,7 @@ class ConnectionPool:
         # arg tuple), so qsize() is readable at warn time. The
         # queue does NOT hold a reference back to the pool — no
         # cycle is introduced.
-        self._finalizer: weakref.finalize | None = weakref.finalize(  # type: ignore[type-arg]
+        self._finalizer: weakref.finalize[Any, Any] | None = weakref.finalize(
             self,
             _pool_unclosed_warning,
             self._closed_flag,
