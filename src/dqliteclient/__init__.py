@@ -53,6 +53,12 @@ from dqlitewire import (
 __version__: Final[str] = "0.1.5"
 
 logger = logging.getLogger(__name__)
+# Convention from the Python logging HOWTO: attach a ``NullHandler``
+# to the library's top-level logger so applications that have not
+# configured logging don't see the ``lastResort`` stderr emission,
+# and downstream code can silence the library cleanly via
+# ``getLogger("dqliteclient").propagate = False``.
+logger.addHandler(logging.NullHandler())
 
 __all__ = [
     "CLOSE_TIMEOUT_FLOOR_RATIONALE",
