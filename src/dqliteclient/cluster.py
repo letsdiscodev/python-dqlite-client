@@ -554,7 +554,21 @@ class ClusterClient:
             # misconfigurations are traceable from logs alone,
             # not only through an exception stack.
             logger.debug("cluster: redirect rejected by policy to=%s", sanitize_for_log(address))
-            raise ClusterPolicyError(f"Leader redirect to {address!r} rejected by redirect_policy")
+            # Wrap the address through ``_sanitize_display_text`` for the
+            # exception message — symmetric with the sibling
+            # ``_query_leader`` malformed-redirect arms which use the same
+            # helper. ``{x!r}`` is preserved on top for visual clarity
+            # (quote-delimited so an operator can tell where the
+            # address ends). ``raw_message=`` carries the verbatim
+            # peer-supplied string so cross-process forensic recovery
+            # (Celery worker / result backend / SIEM correlation)
+            # captures the un-substituted original, capped at
+            # ``_MAX_RAW_MESSAGE`` by ``DqliteError.__init__``.
+            raise ClusterPolicyError(
+                f"Leader redirect to {_sanitize_display_text(address)!r} "
+                f"rejected by redirect_policy",
+                raw_message=address,
+            )
 
     async def find_leader(
         self,
