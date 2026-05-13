@@ -899,6 +899,21 @@ class ConnectionPool:
         context manager — so the pool permanently loses one slot of
         capacity per occurrence.
         """
+        # If pool.close() ran between the snapshot and this re-route,
+        # putting the conn back into the queue would leak it: the
+        # drain runs once per close() (gated by _drain_complete), and
+        # a put_nowait after the drain finishes parks the conn in a
+        # queue no one will revisit. Close the conn directly and
+        # release the reservation so _size stays consistent. Mirrors
+        # the sibling closed-pool short-circuit in ``_release`` —
+        # ``done/client-pool-close-no-recheck-before-put-nowait-leaks-conn.md``
+        # established the same discipline for the _release path.
+        if self._closed:
+            with contextlib.suppress(OSError):
+                await conn.close()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(self._release_reservation())
+            return
         try:
             self._pool.put_nowait(conn)
         except asyncio.QueueFull:
