@@ -318,6 +318,20 @@ class DqliteProtocol:
 
         self._client_id = client_id
         self._heartbeat_timeout = response.heartbeat_timeout
+        # Surface the three diagnostic edge cases the wire layer accepts
+        # but cannot remediate from the client side. Each is non-fatal
+        # (the protocol stays operational) but the operator chasing a
+        # mis-configured-peer / non-conforming-server symptom needs
+        # the breadcrumb to correlate against per-cluster config audits.
+        if response.heartbeat_timeout == 0:
+            # Wire-layer docstring at ``responses.py:410-416`` flags 0
+            # as semantically ambiguous: upstream ``config.c`` defaults
+            # to 15000 and never emits 0, so 0 from the wire is either
+            # a misconfigured peer or a non-conforming server.
+            logger.debug(
+                "handshake: server advertised heartbeat=0 (semantically "
+                "ambiguous per wire spec; widening disabled)"
+            )
         # Use the server-advertised heartbeat only when explicitly
         # trusted. Previously we always widened ``self._timeout`` up
         # to 300 s based on the server value, which let a hostile
@@ -328,14 +342,23 @@ class DqliteProtocol:
         # read here for diagnostics but has no effect on the deadline.
         if self._trust_server_heartbeat and response.heartbeat_timeout > 0:
             heartbeat_seconds = response.heartbeat_timeout / 1000.0
+            if heartbeat_seconds > _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS:
+                # Cap firing: surface at WARNING so an operator can
+                # tell that the server-advertised value was over-large
+                # and was clipped at the client cap.
+                logger.warning(
+                    "handshake: server-advertised heartbeat %.2fs exceeds "
+                    "client cap %.2fs; clipping",
+                    heartbeat_seconds,
+                    _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS,
+                )
+                heartbeat_seconds = _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS
             # Cap to prevent a malicious/buggy server from disabling timeouts.
             # Only widen the READ deadline — the write-path self._timeout
             # stays pinned to the operator-configured value so a hostile
             # server cannot advertise a long heartbeat to stretch every
             # writer.drain() beyond the operator's SLO.
-            new_read_timeout = max(
-                self._read_timeout, min(heartbeat_seconds, _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS)
-            )
+            new_read_timeout = max(self._read_timeout, heartbeat_seconds)
             if new_read_timeout != self._read_timeout:
                 # Security-relevant opt-in: surface the actual widening
                 # at DEBUG so an operator who flipped the knob can
@@ -347,6 +370,20 @@ class DqliteProtocol:
                     heartbeat_seconds,
                 )
                 self._read_timeout = new_read_timeout
+            else:
+                # No-op widening: the server's value was smaller than
+                # the operator's configured deadline. The operator
+                # opted into ``trust_server_heartbeat`` expecting
+                # widening; surface the mismatch so they can
+                # recalibrate either the server config or the client
+                # read deadline.
+                logger.debug(
+                    "handshake: trust_server_heartbeat=True but server "
+                    "advertised %.2fs <= configured read timeout %.2fs; "
+                    "no widening applied",
+                    heartbeat_seconds,
+                    self._read_timeout,
+                )
         return response.heartbeat_timeout
 
     async def get_leader(self) -> tuple[int, str]:
