@@ -171,6 +171,25 @@ async def open_connection(
     ``net.Dialer{}.DialContext`` overridden by ``WithDialFunc``). The
     custom-dial path bypasses every default socket option this module
     sets on the TCP path; the caller owns SO_KEEPALIVE / TLS / etc.
+
+    Admission-validation contract on the ``dial_func`` override path:
+    the caller's dialer receives the raw ``address`` string. Default
+    ``parse_address`` shape validation (CRLF / ``@`` /
+    non-ASCII rejection) runs ONLY on the
+    :func:`open_connection_with_keepalive` fallback path. Server-
+    supplied redirect addresses pass through ``sanitize_server_text``
+    at decode but NOT through ``parse_address`` on the dial_func
+    override. Operators wrapping in TLS or binding to non-
+    ``host:port`` transports (Unix socket, abstract socket) should
+    validate the input shape inside the custom dialer. The non-
+    ``host:port`` support is deliberate — see
+    ``done/ISSUE-1409`` (dial_func override surface) — so the helper
+    cannot unconditionally call ``parse_address`` without breaking
+    those operators. The downstream :class:`DqliteConnection.__init__`
+    re-validates via ``parse_address`` and rejects malformed
+    addresses before any wire RPC, but the user's dialer has already
+    executed by that point. See also ``wont-fix/ISSUE-96``
+    (TLS-via-dial_func).
     """
     if dial_func is not None:
         return await dial_func(address)
