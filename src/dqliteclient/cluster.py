@@ -1565,9 +1565,7 @@ class ClusterClient:
             )
             raise
 
-    async def cluster_info(
-        self, *, policy: RedirectPolicy | None = None
-    ) -> list[_WireNodeInfo]:
+    async def cluster_info(self, *, policy: RedirectPolicy | None = None) -> list[_WireNodeInfo]:
         """Return the current cluster's node list (id, address, role).
 
         Sends ``ClusterRequest(format=1)`` to the current leader and

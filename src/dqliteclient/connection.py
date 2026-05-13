@@ -662,7 +662,7 @@ def _is_no_tx_rollback_error(exc: BaseException) -> bool:
 # in URI ``reg-name``. Match both forms; the canonical form drops
 # the trailing dot so two surface variants of the same FQDN
 # canonicalise identically for allowlist comparisons.
-_HOSTNAME_LABEL_RE = re.compile(
+_HOSTNAME_LABEL_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?=.{1,254}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)"
     r"(?:\.(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?))*"
     r"\.?$"

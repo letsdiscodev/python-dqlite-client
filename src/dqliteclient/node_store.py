@@ -9,7 +9,7 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
 from dqliteclient.exceptions import ClusterError
 from dqlitewire import NodeRole
@@ -270,7 +270,7 @@ def _validate_and_normalise_nodes(nodes: Sequence[NodeInfo]) -> tuple[NodeInfo, 
 # value, matching go-dqlite's ``yaml.v2`` output of ``NodeRole int``.
 # Normalisation strips dashes and underscores so ``stand-by``,
 # ``stand_by``, and ``standby`` all map to the same role.
-_YAML_ROLE_STRING_ALIASES: dict[str, NodeRole] = {
+_YAML_ROLE_STRING_ALIASES: Final[dict[str, NodeRole]] = {
     "voter": NodeRole.VOTER,
     "standby": NodeRole.STANDBY,
     "spare": NodeRole.SPARE,
