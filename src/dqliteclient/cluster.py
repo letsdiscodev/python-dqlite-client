@@ -2160,8 +2160,20 @@ class ClusterClient:
                     # ``(reader, writer)`` if the outer cancel lands
                     # between dial-resolve and unpack). Mirrors the
                     # ``_query_leader`` discipline.
-                    async with asyncio.timeout(self._dial_timeout):
-                        reader, writer = await open_connection(address, dial_func=self._dial_func)
+                    try:
+                        async with asyncio.timeout(self._dial_timeout):
+                            reader, writer = await open_connection(
+                                address, dial_func=self._dial_func
+                            )
+                    except TimeoutError as e:
+                        # Dial-specific timeout (the inner
+                        # ``asyncio.timeout(self._dial_timeout)`` fired).
+                        # Re-raised inside the outer envelope so the
+                        # outer attempt_timeout arm below can
+                        # distinguish handshake-stall from dial-stall.
+                        raise DqliteConnectionError(
+                            f"Connection to {_sanitize_display_text(address)} timed out"
+                        ) from e
                     protocol = DqliteProtocol(
                         reader,
                         writer,
@@ -2183,8 +2195,13 @@ class ClusterClient:
                     # the success path.
                     await protocol.handshake()
             except TimeoutError as e:
+                # Outer ``attempt_timeout`` fired AFTER the dial
+                # completed — i.e. the handshake stalled. Emit a
+                # distinct message so an operator paging on
+                # ``Connection ... timed out`` does not conflate dial-
+                # vs handshake-stall diagnostics.
                 raise DqliteConnectionError(
-                    f"Connection to {_sanitize_display_text(address)} timed out"
+                    f"Admin handshake to {_sanitize_display_text(address)} exceeded attempt_timeout"
                 ) from e
             except OSError as e:
                 raise DqliteConnectionError(
