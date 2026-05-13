@@ -20,6 +20,7 @@ from dqliteclient.connection import (
     CLOSE_TIMEOUT_FLOOR_RATIONALE,
     DqliteConnection,
     _is_no_tx_rollback_error,
+    get_current_pid,
     validate_timeout,
 )
 from dqliteclient.exceptions import (
@@ -148,6 +149,7 @@ def _pool_unclosed_warning(
     closed_flag: list[bool],
     reserved_flag: list[bool],
     queue: "asyncio.Queue[DqliteConnection] | None" = None,
+    creator_pid: int | None = None,
 ) -> None:
     """Emit a ``ResourceWarning`` when a ``ConnectionPool`` is GC'd
     without ``await close()``.
@@ -157,8 +159,23 @@ def _pool_unclosed_warning(
     without closing leaks the queued connections — this finalizer
     surfaces the leak as a driver-attributable diagnostic.
 
-    Two-flag gate:
+    Three-flag gate:
 
+    - ``get_current_pid() != creator_pid``: forked child. The
+      ``(closed_flag, reserved_flag, queue)`` snapshots belong to
+      the parent process at fork-time; emitting a ResourceWarning
+      here would falsely accuse the child of leaking what the
+      parent owns. Mirrors the dbapi sibling's discipline at
+      ``aio/connection.py::_async_unclosed_warning`` and the per-
+      connection sibling at
+      ``connection.py::_connection_unclosed_warning``. Without
+      this gate, a forked worker that inherited a parent's open
+      pool would emit one warning for the pool AND one for each
+      queued ``DqliteConnection`` — an N+1 cascade of false
+      positives. ``creator_pid=None`` keeps the helper callable
+      from positional-only call sites that pre-date the pid guard
+      (the helper is exported via ``__all__`` indirectly through
+      the test suite).
     - ``closed_flag[0]`` flipped True by ``close()`` so orderly
       shutdown skips the warning.
     - ``reserved_flag[0]`` flipped True the first time the pool
@@ -177,6 +194,9 @@ def _pool_unclosed_warning(
     minimum-change fix preferred by reviewer over a private-deque
     hop or a parallel-set bookkeeping rewrite.
     """
+    if creator_pid is not None and get_current_pid() != creator_pid:
+        # Forked child. Skip — the parent owns the lifecycle.
+        return
     if closed_flag[0] or not reserved_flag[0]:
         return
     queued_count: int | None = None
@@ -483,6 +503,7 @@ class ConnectionPool:
             self._closed_flag,
             self._reserved_flag,
             self._pool,
+            self._creator_pid,
         )
 
     @property

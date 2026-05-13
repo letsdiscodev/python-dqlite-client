@@ -964,7 +964,10 @@ _parse_address = parse_address
 
 
 def _connection_unclosed_warning(
-    closed_flag: list[bool], connected_flag: list[bool], address: str
+    closed_flag: list[bool],
+    connected_flag: list[bool],
+    address: str,
+    creator_pid: int,
 ) -> None:
     """Emit a ``ResourceWarning`` when a ``DqliteConnection`` is
     GC'd without ``await close()``.
@@ -977,8 +980,15 @@ def _connection_unclosed_warning(
     "Task was destroyed but it is pending" pointing at the wrong
     layer.
 
-    Two-flag gate:
+    Three-flag gate:
 
+    - ``get_current_pid() != creator_pid``: forked child. The
+      ``(closed_flag, connected_flag)`` snapshots belong to the
+      parent process at fork-time; emitting a ResourceWarning here
+      would falsely accuse the child of leaking what the parent
+      owns. Mirrors the dbapi sibling at
+      ``aio/connection.py::_async_unclosed_warning`` and every
+      other fork-traversing site in the package.
     - ``closed_flag[0]`` flipped to True by ``close()`` /
       ``_close_impl`` so the warning skips orderly cleanup.
     - ``connected_flag[0]`` flipped to True by ``connect()`` so a
@@ -989,6 +999,9 @@ def _connection_unclosed_warning(
     ``RuntimeError`` suppress narrows interpreter-shutdown races
     (the warnings module may have been torn down by GC).
     """
+    if get_current_pid() != creator_pid:
+        # Forked child. Skip — the parent owns the lifecycle.
+        return
     if closed_flag[0] or not connected_flag[0]:
         return
     with contextlib.suppress(RuntimeError):
@@ -1128,13 +1141,26 @@ class DqliteConnection:
         # never-connected instance has both False — close() is still
         # a no-op but the predicate distinguishes the states.
         self._closed = False
+        # Fork-after-init is unsupported: the inherited TCP socket
+        # would be shared with the parent and writes would interleave
+        # on the wire, and asyncio primitives bound to the parent's
+        # loop are unusable in the child. Capture the creator pid
+        # BEFORE the finalizer registration so the finalizer's
+        # fork-pid guard has a baseline to compare against; the
+        # public-method guards downstream reuse the same attribute.
+        # Mirrors the dbapi/aio sibling's ordering
+        # (``aio/connection.py``: creator_pid captured ahead of
+        # ``weakref.finalize`` registration).
+        self._creator_pid = os.getpid()
         # ResourceWarning finalizer: emit a driver-attributable
         # warning when this connection is GC'd without close().
         # Mirrors the dbapi-layer ``AsyncConnection`` finalizer so
         # direct dqliteclient consumers get the same diagnostic.
-        # Two-flag gate via list cells so the finalizer reads the
+        # Three-flag gate via list cells so the finalizer reads the
         # latest values even after ``close()`` has run; lists are
-        # picked up by the WeakRef-bound closure naturally.
+        # picked up by the WeakRef-bound closure naturally. The
+        # ``creator_pid`` arg lets the finalizer skip emission in a
+        # forked child (the parent owns the inherited socket).
         self._closed_flag: list[bool] = [False]
         self._connected_flag: list[bool] = [False]
         self._finalizer: weakref.finalize[Any, Any] | None = weakref.finalize(
@@ -1143,6 +1169,7 @@ class DqliteConnection:
             self._closed_flag,
             self._connected_flag,
             self._address,
+            self._creator_pid,
         )
         # Hold the bound loop via weakref so a long-lived
         # ``DqliteConnection`` whose loop has been closed (but the
@@ -1181,13 +1208,12 @@ class DqliteConnection:
         # ``_invalidate`` so a subsequent ``close()`` can await it and
         # keep the reader task from outliving the connection.
         self._pending_drain: asyncio.Task[None] | None = None
-        # Fork-after-init is unsupported: the inherited TCP socket
-        # would be shared with the parent and writes would interleave
-        # on the wire, and asyncio primitives bound to the parent's
-        # loop are unusable in the child. Store the creator pid so
-        # cross-fork use raises a clear ``InterfaceError`` from any
-        # public method instead of silent corruption.
-        self._creator_pid = os.getpid()
+        # ``self._creator_pid`` is set earlier in this constructor
+        # (before the finalizer registration) so the fork-pid guard
+        # in the finalizer has a baseline to compare against. The
+        # public-method guards in ``_check_in_use`` / ``connect`` /
+        # etc. reuse the same attribute to raise ``InterfaceError``
+        # on cross-fork use instead of silent corruption.
 
     @property
     def address(self) -> str:

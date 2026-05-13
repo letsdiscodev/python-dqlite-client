@@ -9,6 +9,7 @@ wrong layer.
 """
 
 import gc
+import os
 import warnings
 
 from dqliteclient.connection import (
@@ -25,7 +26,7 @@ def test_unclosed_warning_skips_never_connected() -> None:
     connected_flag = [False]
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        _connection_unclosed_warning(closed_flag, connected_flag, "h:9001")
+        _connection_unclosed_warning(closed_flag, connected_flag, "h:9001", os.getpid())
     assert not any(issubclass(rec.category, ResourceWarning) for rec in w)
 
 
@@ -35,7 +36,7 @@ def test_unclosed_warning_skips_when_close_was_called() -> None:
     connected_flag = [True]
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        _connection_unclosed_warning(closed_flag, connected_flag, "h:9001")
+        _connection_unclosed_warning(closed_flag, connected_flag, "h:9001", os.getpid())
     assert not any(issubclass(rec.category, ResourceWarning) for rec in w)
 
 
@@ -47,7 +48,7 @@ def test_unclosed_warning_fires_when_connected_but_not_closed() -> None:
     connected_flag = [True]
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        _connection_unclosed_warning(closed_flag, connected_flag, "h:9001")
+        _connection_unclosed_warning(closed_flag, connected_flag, "h:9001", os.getpid())
     matching = [r for r in w if issubclass(r.category, ResourceWarning)]
     assert len(matching) == 1
     assert "DqliteConnection" in str(matching[0].message)
