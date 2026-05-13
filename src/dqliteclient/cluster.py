@@ -1073,6 +1073,21 @@ class ClusterClient:
             self._set_last_known_leader(winning_address)
             return winning_address
         if policy_error is not None:
+            # Even on policy rejection, surface the accumulated per-node
+            # transport history so an operator can distinguish "policy
+            # rejected the leader on an otherwise-healthy cluster" from
+            # "policy rejected the leader on a half-down cluster". The
+            # chaining discipline mirrors the no-policy aggregate arm
+            # below; ``raise ... from ...`` preserves the original
+            # exception class so callers branching on
+            # ``isinstance(exc, ClusterPolicyError)`` continue to match.
+            if len(per_node_excs) > 1:
+                raise policy_error from _bounded_group(
+                    "find_leader: per-node failures alongside policy rejection",
+                    per_node_excs,
+                )
+            if per_node_excs:
+                raise policy_error from per_node_excs[0]
             raise policy_error
 
         joined = "; ".join(errors)
