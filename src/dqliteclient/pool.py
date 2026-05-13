@@ -941,8 +941,25 @@ class ConnectionPool:
         # ``done/client-pool-close-no-recheck-before-put-nowait-leaks-conn.md``
         # established the same discipline for the _release path.
         if self._closed:
-            with contextlib.suppress(OSError):
-                await conn.close()
+            # Clear ``_pool_released`` BEFORE close so the close path
+            # actually runs. ``DqliteConnection.close()`` early-returns
+            # at the ``if self._pool_released: return`` guard when the
+            # flag is True — set by the prior ``_release`` write
+            # before the put_nowait that this late-winner conn came
+            # out of. Without the flip the close becomes a no-op and
+            # the transport / reader task leak while
+            # ``_release_reservation`` decrements as though the close
+            # had happened. Mirrors the ``_drain_idle`` discipline.
+            conn._pool_released = False
+            try:
+                with contextlib.suppress(OSError):
+                    await asyncio.shield(conn.close())
+            finally:
+                # Restore the flag for contract symmetry with
+                # ``_drain_idle``: any stale-reference second close()
+                # falls through the documented early-return rather
+                # than re-running close on a dead conn.
+                conn._pool_released = True
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.shield(self._release_reservation())
             return
@@ -957,9 +974,15 @@ class ConnectionPool:
             # count so the pool shrinks cleanly instead of leaking.
             # Suppression of close's own errors is narrow — OSError on
             # an already-dead writer is expected; anything else
-            # propagates.
-            with contextlib.suppress(OSError):
-                await conn.close()
+            # propagates. Flip ``_pool_released`` to ``False`` first
+            # so the close actually runs (see the closed-pool arm
+            # above for the rationale).
+            conn._pool_released = False
+            try:
+                with contextlib.suppress(OSError):
+                    await asyncio.shield(conn.close())
+            finally:
+                conn._pool_released = True
             # Route through the helper so the counter stays
             # lock-protected and sibling acquirers parked on
             # ``closed_event.wait()`` get woken via
