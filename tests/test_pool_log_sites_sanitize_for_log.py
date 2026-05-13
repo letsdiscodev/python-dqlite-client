@@ -131,15 +131,17 @@ def test_pool_imports_sanitize_for_log_from_wire() -> None:
     )
 
 
-def test_pool_initialize_warning_sanitizes_failure_repr() -> None:
+def test_pool_initialize_warning_sanitizes_failure_str() -> None:
     """``pool.initialize`` re-emits each per-create failure via a
-    WARNING that interpolates the exception. Because exception
-    ``__repr__`` echoes server-supplied ``OperationalError`` text
-    (and ``DqliteConnectionError.args[0]``), that interpolation must
-    pass through ``sanitize_for_log`` to strip control characters from
-    hostile peer diagnostics."""
+    WARNING that interpolates ``str(exc)`` through ``sanitize_for_log``
+    (previously ``repr(exc)``; the repr-then-sanitise pipeline was safe
+    but double-encoded the same characters the wire-layer sanitiser
+    was designed to handle — see
+    ``done/pool-initialize-warning-uses-repr-not-sanitized-display.md``).
+    The class-name context that ``repr()`` provided is preserved via a
+    separate ``type(exc).__name__`` format arg."""
     source = _POOL_PY.read_text()
-    needle = '"pool.initialize: create_connection %d/%d failed: %s"'
+    needle = '"pool.initialize: create_connection %d/%d failed: %s: %s"'
     idx = source.find(needle)
     assert idx >= 0, (
         "Could not locate the pool.initialize per-create-failure WARNING — production code drifted."
@@ -156,17 +158,22 @@ def test_pool_initialize_warning_sanitizes_failure_repr() -> None:
             depth -= 1
         i += 1
     block = source[open_idx:i]
-    assert "sanitize_for_log(repr(exc))" in block, (
+    assert "sanitize_for_log(str(exc))" in block, (
         f"pool.initialize WARNING must wrap the failure exception via "
-        f"sanitize_for_log(repr(exc)); block was:\n{block}"
+        f"sanitize_for_log(str(exc)); block was:\n{block}"
+    )
+    assert "type(exc).__name__" in block, (
+        f"pool.initialize WARNING must preserve class-context via "
+        f"type(exc).__name__; block was:\n{block}"
     )
 
 
-def test_pool_initialize_debug_sanitizes_first_failure_repr() -> None:
+def test_pool_initialize_debug_sanitizes_first_failure_str() -> None:
     """The companion DEBUG line at the abort-after-N-creates branch
-    interpolates ``failures[0]`` and must apply the same discipline."""
+    interpolates ``failures[0]`` via ``sanitize_for_log(str(...))`` (no
+    longer ``repr``)."""
     source = _POOL_PY.read_text()
-    needle = '"closing %d survivors (first failure: %s)"'
+    needle = '"closing %d survivors (first failure: %s: %s)"'
     idx = source.find(needle)
     assert idx >= 0, (
         "Could not locate the pool.initialize abort DEBUG line — production code drifted."
@@ -183,9 +190,13 @@ def test_pool_initialize_debug_sanitizes_first_failure_repr() -> None:
             depth -= 1
         i += 1
     block = source[open_idx:i]
-    assert "sanitize_for_log(repr(failures[0]))" in block, (
-        f"pool.initialize abort DEBUG must wrap failures[0] via "
-        f"sanitize_for_log(repr(failures[0])); block was:\n{block}"
+    assert "sanitize_for_log(str(_first_failure))" in block, (
+        f"pool.initialize abort DEBUG must wrap the first failure via "
+        f"sanitize_for_log(str(...)); block was:\n{block}"
+    )
+    assert "type(_first_failure).__name__" in block, (
+        f"pool.initialize abort DEBUG must preserve class-context via "
+        f"type(_first_failure).__name__; block was:\n{block}"
     )
 
 

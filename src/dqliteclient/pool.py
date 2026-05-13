@@ -668,18 +668,28 @@ class ConnectionPool:
                         # ``%r`` on a server-supplied exception would
                         # echo ``OperationalError.message`` / wrapped
                         # peer text into the log without sanitisation.
-                        # Pre-stringify with ``repr()`` then route
-                        # through the wire-layer sanitiser so control
-                        # characters / bidi tricks in hostile peer
-                        # diagnostics are stripped before they reach
-                        # operator dashboards.
+                        # Route ``str(exc)`` (not ``repr(exc)``) through
+                        # ``sanitize_for_log`` so the wire-layer
+                        # single-stage substitution (``?`` for control /
+                        # bidi / invisible, ``\n`` / ``\t`` literal-
+                        # escape for LF / Tab) lands on the operator-
+                        # facing text directly — ``repr()`` would have
+                        # double-encoded the same characters through
+                        # Python's escape sequences, producing harder-
+                        # to-read log lines than the sibling
+                        # ``sanitize_for_log(str(...))`` sites use.
+                        # Prepend ``type(exc).__name__`` so the class-
+                        # context cue that ``repr()`` provided survives
+                        # the switch.
+                        _first_failure = failures[0]
                         logger.debug(
                             "pool.initialize: aborting after %d/%d creates succeeded; "
-                            "closing %d survivors (first failure: %s)",
+                            "closing %d survivors (first failure: %s: %s)",
                             len(successes),
                             self._min_size,
                             len(successes),
-                            sanitize_for_log(repr(failures[0])),
+                            type(_first_failure).__name__,
+                            sanitize_for_log(str(_first_failure)),
                         )
                         # Log every failure individually so operators
                         # see the full picture before unpacking the
@@ -690,10 +700,11 @@ class ConnectionPool:
                         # signal.
                         for i, exc in enumerate(failures):
                             logger.warning(
-                                "pool.initialize: create_connection %d/%d failed: %s",
+                                "pool.initialize: create_connection %d/%d failed: %s: %s",
                                 i + 1,
                                 len(failures),
-                                sanitize_for_log(repr(exc)),
+                                type(exc).__name__,
+                                sanitize_for_log(str(exc)),
                             )
                         for conn in successes:
                             try:
