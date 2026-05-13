@@ -130,9 +130,6 @@ requires-dist = [
 ]
 provides-extras = ["dev"]
 
-[package.metadata.requires-dev]
-dev = [{ name = "pytest-cov", specifier = ">=7.1.0" }]
-
 [[package]]
 name = "iniconfig"
 version = "2.3.0"
