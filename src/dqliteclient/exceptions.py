@@ -124,6 +124,24 @@ class DqliteConnectionError(DqliteError):
         self.code = code
         super().__init__(message, raw_message=raw_message)
 
+    def __repr__(self) -> str:
+        # Surface ``code`` in ``repr(exc)`` so forensic log sites
+        # (``logger.exception``, ``logger.error("%r", exc)``,
+        # ``pytest``'s exception-with-args display) capture the
+        # wire-level code rather than dropping it. Mirrors the
+        # dbapi sibling at
+        # ``dqlitedbapi.exceptions.DatabaseError.__repr__``;
+        # asymmetry meant a caller catching ``DqliteConnectionError``
+        # at the client surface logged less than a caller catching
+        # the dbapi-layer equivalent. ``code=None`` (transport-only
+        # faults with no wire-level signal) renders without the
+        # ``code=`` suffix to avoid a noisy ``code=None`` line.
+        msg = self.args[0] if self.args else ""
+        cls = type(self).__name__
+        if self.code is None:
+            return f"{cls}({msg!r})"
+        return f"{cls}({msg!r}, code={self.code!r})"
+
 
 class ProtocolError(DqliteError, _WireProtocolError):
     """Protocol-level error.
