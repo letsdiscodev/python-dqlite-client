@@ -32,7 +32,11 @@ from dqliteclient.protocol import (
 )
 from dqlitewire import DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES
 from dqlitewire import DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS
-from dqlitewire import LEADER_ERROR_CODES, NO_TRANSACTION_MESSAGE_SUBSTRINGS
+from dqlitewire import (
+    LEADER_ERROR_CODES,
+    NO_TRANSACTION_MESSAGE_SUBSTRINGS,
+    WIRE_DECODE_FAILED_PREFIX,
+)
 from dqlitewire import SQLITE_BUSY as _SQLITE_BUSY
 from dqlitewire import TX_AUTO_ROLLBACK_PRIMARY_CODES as _TX_AUTO_ROLLBACK_PRIMARY_CODES
 from dqlitewire import primary_sqlite_code as _primary_sqlite_code
@@ -1496,11 +1500,12 @@ class DqliteConnection:
                     # was broken: wire layer set raw_message → connect()
                     # rewrap discarded it → user-facing
                     # DqliteConnectionError.raw_message reverted to the
-                    # synthetic "Wire decode failed during handshake to..."
+                    # synthetic WIRE_DECODE_FAILED_PREFIX during handshake
                     # prefix. Mirrors the sibling LEADER_ERROR_CODES
                     # rewrap above which threads both fields.
                     raise DqliteConnectionError(
-                        f"Wire decode failed during handshake to {self._safe_address}: {e}",
+                        f"{WIRE_DECODE_FAILED_PREFIX} during handshake to "
+                        f"{self._safe_address}: {e}",
                         code=getattr(e, "code", None),
                         raw_message=getattr(e, "raw_message", None) or str(e),
                     ) from e

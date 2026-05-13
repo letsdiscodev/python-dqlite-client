@@ -37,7 +37,7 @@ async def test_handshake_protocolerror_wrapped_as_dqlite_connection_error() -> N
             "dqliteclient.connection.DqliteProtocol.handshake",
             new=AsyncMock(side_effect=ProtocolError("simulated torn frame")),
         ),
-        pytest.raises(DqliteConnectionError, match="Wire decode failed"),
+        pytest.raises(DqliteConnectionError, match="(?i)wire decode failed"),
     ):
         await conn.connect()
 

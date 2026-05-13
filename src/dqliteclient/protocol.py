@@ -13,7 +13,7 @@ from dqlitewire import (
 from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
-from dqlitewire import MessageDecoder, MessageEncoder, NodeRole
+from dqlitewire import WIRE_DECODE_FAILED_PREFIX, MessageDecoder, MessageEncoder, NodeRole
 from dqlitewire import sanitize_server_text as _sanitize_server_text
 from dqlitewire.exceptions import (
     ProtocolError as _WireProtocolError,
@@ -659,16 +659,16 @@ class DqliteProtocol:
         # connection is invalidated rather than silently routing
         # writes against the wrong DB.
         if response.db_id != db_id:
-            # Prefix with the canonical "wire decode failed" phrase so
-            # SA's ``is_disconnect`` substring matcher routes this
-            # through the pool-invalidate path. Without the prefix,
-            # the registry-drift event would surface as a non-
-            # disconnect ProtocolError and the SA pool would keep the
-            # broken slot. The prefix matches the wire-decode
-            # invalidation already wired into
+            # Prefix with the canonical ``WIRE_DECODE_FAILED_PREFIX``
+            # phrase so SA's ``is_disconnect`` substring matcher routes
+            # this through the pool-invalidate path. Without the
+            # prefix, the registry-drift event would surface as a
+            # non-disconnect ProtocolError and the SA pool would keep
+            # the broken slot. The prefix matches the wire-decode
+            # invalidation wired into
             # ``sqlalchemy-dqlite._dqlite_disconnect_messages``.
             raise ProtocolError(
-                f"wire decode failed: StmtResponse db_id {response.db_id} "
+                f"{WIRE_DECODE_FAILED_PREFIX}: StmtResponse db_id {response.db_id} "
                 f"does not match requested db_id {db_id}{self._addr_suffix()}"
             )
 
@@ -1170,7 +1170,7 @@ class DqliteProtocol:
             # remains available for third-party harnesses that
             # consume ``DqliteProtocol`` directly and want a
             # different policy.
-            raise ProtocolError(f"Wire decode failed{self._addr_suffix()}: {e}") from e
+            raise ProtocolError(f"{WIRE_DECODE_FAILED_PREFIX}{self._addr_suffix()}: {e}") from e
 
     async def _read_response(self, deadline: float | None = None) -> Message:
         """Read and decode the next response message.
@@ -1189,7 +1189,7 @@ class DqliteProtocol:
 
             message = self._decoder.decode()
         except _WireProtocolError as e:
-            raise ProtocolError(f"Wire decode failed{self._addr_suffix()}: {e}") from e
+            raise ProtocolError(f"{WIRE_DECODE_FAILED_PREFIX}{self._addr_suffix()}: {e}") from e
 
         if message is None:  # pragma: no cover
             # Defensive: ``decoder.decode()`` returns None only when
