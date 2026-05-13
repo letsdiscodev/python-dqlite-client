@@ -49,7 +49,14 @@ async def test_public_connect_close_failure_during_cleanup_logged_at_debug(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A close-time exception during cleanup is suppressed and DEBUG-
-    logged so the original connect error propagates unchanged."""
+    logged so the original connect error propagates unchanged.
+
+    Pins both the suppression (the OSError propagates, not the
+    secondary RuntimeError from the cleanup-close) AND the DEBUG
+    record shape (carries exc_info pointing at the close-time
+    RuntimeError) so a refactor that drops, narrows, or re-orders
+    the suppression arm at ``__init__.py:175-181`` is caught.
+    """
     import logging
 
     with (
@@ -63,6 +70,23 @@ async def test_public_connect_close_failure_during_cleanup_logged_at_debug(
         pytest.raises(OSError, match="boom"),
     ):
         await dqliteclient.connect("localhost:9001", database="test", timeout=5.0)
+
+    debug_rec = next(
+        (r for r in caplog.records if "cleanup-close after failed connect" in r.getMessage()),
+        None,
+    )
+    assert debug_rec is not None, (
+        "expected a DEBUG record from the connect cleanup-close suppression arm"
+    )
+    assert debug_rec.levelno == logging.DEBUG, (
+        "cleanup-close suppression must log at DEBUG level — a refactor that "
+        "bumps to INFO/WARNING surfaces the secondary failure too loudly"
+    )
+    assert debug_rec.exc_info is not None, (
+        "DEBUG record must carry exc_info so operators can see why cleanup failed"
+    )
+    assert isinstance(debug_rec.exc_info[1], RuntimeError)
+    assert "close-also-broken" in str(debug_rec.exc_info[1])
 
 
 @pytest.mark.asyncio
