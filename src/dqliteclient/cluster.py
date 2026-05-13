@@ -930,7 +930,8 @@ class ClusterClient:
                     )
                     return _ProbeMiss(
                         message=(
-                            f"{_sanitize_display_text(node.address)}: {_truncate_error(str(e))}"
+                            f"{_sanitize_display_text(node.address)}: "
+                            f"{sanitize_for_log(_truncate_error(str(e)))}"
                         ),
                         exc=e,
                     )
