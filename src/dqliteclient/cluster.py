@@ -2061,17 +2061,23 @@ class ClusterClient:
         if weight < 0:
             raise ValueError(f"weight must be >= 0, got {weight}")
 
+        leader_targeted = address is None
         target = address if address is not None else await self.find_leader()
         try:
             async with self.open_admin_connection(target) as protocol:
                 await protocol.weight(weight)
         finally:
-            # ``set_weight`` does not directly change quorum, but a
-            # marginal cluster on the edge of an election can be
-            # tipped by the weight shift. Invalidate on both success
-            # and failure so a leader-flip-induced failure doesn't
-            # leave the cache stale.
-            self._set_last_known_leader(None)
+            if leader_targeted:
+                # ``set_weight`` does not directly change quorum, but a
+                # marginal cluster on the edge of an election can be
+                # tipped by the weight shift. Invalidate on both success
+                # and failure so a leader-flip-induced failure doesn't
+                # leave the cache stale. Per-node form (``address!=None``)
+                # dials the target directly and never touches the leader
+                # cache, so the invalidation is skipped — mirrors the
+                # sibling ``describe`` discipline at
+                # ``leader_targeted = address is None``.
+                self._set_last_known_leader(None)
 
     async def dump(self, database: str) -> dict[str, bytes]:
         """Dump a database to ``{filename: bytes}``.
