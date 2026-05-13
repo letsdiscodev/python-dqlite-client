@@ -1515,9 +1515,10 @@ class DqliteConnection:
                     # responding with a torn frame, an in-flight
                     # leader flip producing a partial reply, etc.
                     # Without rewrapping, ``ProtocolError`` would not
-                    # match the ``connect()`` retry tuple at
-                    # ``cluster.py:_DEFAULT_RETRYABLE_EXCEPTIONS``
-                    # (DqliteConnectionError, ClusterError, OSError),
+                    # match the ``connect()`` retry tuple in
+                    # ``cluster.py`` (inline ``retryable_exceptions``
+                    # arg, currently
+                    # ``(DqliteConnectionError, ClusterError, OSError)``),
                     # so the operator's 3-attempt retry budget would
                     # not fire on a real transient failure. Surface
                     # as DqliteConnectionError so the retry classifier
@@ -2019,8 +2020,8 @@ class DqliteConnection:
                     # ``task.exception()``. Without the observer,
                     # asyncio's task-finalisation logger emits
                     # "Task exception was never retrieved" at GC.
-                    # Mirrors the cluster.py:1134 / cluster.py:1863 /
-                    # connection.py:1450-1453 sibling sites and the
+                    # Mirrors the ``_observe_drain_exception`` /
+                    # ``add_done_callback`` sites in cluster.py and the
                     # dbapi's ``_cancel_and_observe`` pattern.
                     from dqliteclient.cluster import _observe_drain_exception
 

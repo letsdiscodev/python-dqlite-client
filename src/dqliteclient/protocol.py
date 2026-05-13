@@ -970,8 +970,9 @@ class DqliteProtocol:
         # ConnectionError / BrokenPipeError / ConnectionResetError /
         # ConnectionAbortedError / ConnectionRefusedError are all OSError
         # subclasses since PEP 3151 — the bare OSError arm already catches
-        # them. See sqlalchemy-dqlite/src/sqlalchemydqlite/base.py:362-368
-        # for the project's source-of-truth on this idiom. RuntimeError is
+        # them. See the canonical OSError / PEP-3151 idiom in
+        # ``sqlalchemydqlite.base`` (the dialect's ``is_disconnect``
+        # OSError-cause-walk). RuntimeError is
         # kept (not an OSError subclass) to cover "Transport is closed".
         except (OSError, RuntimeError) as e:
             raise DqliteConnectionError(f"Write failed{self._addr_suffix()}: {e}") from e
