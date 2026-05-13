@@ -34,7 +34,7 @@ def test_wire_alias_resolves_to_wire_node_info_class() -> None:
     import dqliteclient.cluster as cluster_mod
     import dqlitewire.messages.responses as wire_responses
 
-    assert cluster_mod._WireNodeInfo is wire_responses.NodeInfo
+    assert cluster_mod._WireNodeInfo is wire_responses.NodeInfo  # type: ignore[attr-defined]
 
 
 def test_user_facing_node_info_is_node_store_node_info() -> None:
