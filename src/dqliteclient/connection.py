@@ -37,6 +37,7 @@ from dqlitewire import (
     LEADER_LOST_DB_LOOKUP_SUBSTRING,
     NO_TRANSACTION_MESSAGE_SUBSTRINGS,
     WIRE_DECODE_FAILED_PREFIX,
+    sanitize_for_log,
 )
 from dqlitewire import SQLITE_BUSY as _SQLITE_BUSY
 from dqlitewire import SQLITE_NOTFOUND as _SQLITE_NOTFOUND
@@ -1196,7 +1197,12 @@ class DqliteConnection:
     @property
     def _safe_address(self) -> str:
         """Sanitised form of ``self._address`` for embedding in
-        exception messages and log lines.
+        exception messages.
+
+        Use this property for exception-message interpolation (PEP 249
+        ``args`` / ``str(exc)``). Use :attr:`_log_safe_address` for
+        logger-record interpolation — logger records need LF/Tab
+        escaping that ``sanitize_server_text`` deliberately preserves.
 
         ``self._address`` ultimately originates from either operator
         configuration (trusted) or a server-supplied
@@ -1211,6 +1217,18 @@ class DqliteConnection:
         used in :meth:`DqliteProtocol._addr_suffix`.
         """
         return _sanitize_display_text(self._address)
+
+    @property
+    def _log_safe_address(self) -> str:
+        """Logger-safe form of ``self._address`` for interpolation
+        into ``logger.*`` records. Layers ``sanitize_for_log`` over
+        ``sanitize_server_text`` so a hostile peer cannot stuff
+        ``\\n`` / ``\\t`` into a server-supplied address field and
+        split a journald / syslog log record (CWE-117). Mirrors the
+        cluster.py log-site discipline established by
+        ``done/client-cluster-log-sites-use-display-sanitize-not-log-sanitize.md``.
+        """
+        return sanitize_for_log(self._address)
 
     @property
     def is_connected(self) -> bool:
@@ -1435,7 +1453,7 @@ class DqliteConnection:
                     await self._protocol.handshake()
                     logger.debug(
                         "connect: handshake ok address=%s client_id=%d",
-                        self._safe_address,
+                        self._log_safe_address,
                         self._protocol._client_id,
                     )
                     self._db_id = await self._protocol.open_database(self._database)
@@ -1444,7 +1462,7 @@ class DqliteConnection:
                     self._connected_flag[0] = True
                     logger.debug(
                         "connect: db opened address=%s db_id=%d database=%r",
-                        self._safe_address,
+                        self._log_safe_address,
                         self._db_id,
                         self._database,
                     )
@@ -1765,7 +1783,7 @@ class DqliteConnection:
         except Exception:
             logger.debug(
                 "close: unexpected drain error for %s",
-                self._safe_address,
+                self._log_safe_address,
                 exc_info=True,
             )
 
@@ -1800,7 +1818,7 @@ class DqliteConnection:
         except Exception:
             logger.debug(
                 "_abort_protocol: unexpected drain error for %s",
-                self._safe_address,
+                self._log_safe_address,
                 exc_info=True,
             )
 
@@ -2910,7 +2928,7 @@ class DqliteConnection:
                         "transaction(address=%s, id=%s): rollback was "
                         "cancelled mid-flight; connection invalidated; "
                         "propagating cancellation",
-                        self._safe_address,
+                        self._log_safe_address,
                         id(self),
                         exc_info=True,
                     )
@@ -2930,7 +2948,7 @@ class DqliteConnection:
                             "transaction(address=%s, id=%s): rollback "
                             "found no active transaction (server-side "
                             "tx already gone); preserving connection",
-                            self._safe_address,
+                            self._log_safe_address,
                             id(self),
                         )
                         # Server reports no transaction is active — the
@@ -2948,7 +2966,7 @@ class DqliteConnection:
                             "transaction(address=%s, id=%s): rollback failed "
                             "with OperationalError; connection invalidated; "
                             "propagating original body exception",
-                            self._safe_address,
+                            self._log_safe_address,
                             id(self),
                             exc_info=True,
                         )
@@ -2970,7 +2988,7 @@ class DqliteConnection:
                         "transaction(address=%s, id=%s): rollback failed; "
                         "connection invalidated; propagating original body "
                         "exception",
-                        self._safe_address,
+                        self._log_safe_address,
                         id(self),
                         exc_info=True,
                     )
