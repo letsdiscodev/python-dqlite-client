@@ -34,10 +34,12 @@ from dqlitewire import DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUAT
 from dqlitewire import DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS
 from dqlitewire import (
     LEADER_ERROR_CODES,
+    LEADER_LOST_DB_LOOKUP_SUBSTRING,
     NO_TRANSACTION_MESSAGE_SUBSTRINGS,
     WIRE_DECODE_FAILED_PREFIX,
 )
 from dqlitewire import SQLITE_BUSY as _SQLITE_BUSY
+from dqlitewire import SQLITE_NOTFOUND as _SQLITE_NOTFOUND
 from dqlitewire import TX_AUTO_ROLLBACK_PRIMARY_CODES as _TX_AUTO_ROLLBACK_PRIMARY_CODES
 from dqlitewire import primary_sqlite_code as _primary_sqlite_code
 from dqlitewire import sanitize_server_text as _sanitize_display_text
@@ -1458,7 +1460,13 @@ class DqliteConnection:
                     self._invalidation_cause = None
                 except OperationalError as e:
                     await self._abort_protocol()
-                    if e.code in LEADER_ERROR_CODES:
+                    _is_leader_flip = e.code in LEADER_ERROR_CODES or (
+                        e.code == _SQLITE_NOTFOUND
+                        and (getattr(e, "raw_message", None) or e.message or "").startswith(
+                            LEADER_LOST_DB_LOOKUP_SUBSTRING
+                        )
+                    )
+                    if _is_leader_flip:
                         # Leader-change errors during OPEN are
                         # transport-level problems — the caller needs
                         # to reconnect elsewhere, not treat this as a
@@ -1472,7 +1480,11 @@ class DqliteConnection:
                         # on the floor and SA's is_disconnect can only
                         # fall back to the substring branch (which
                         # works today but would break on a future
-                        # message rewording).
+                        # message rewording). The SQLITE_NOTFOUND arm
+                        # mirrors Go's ``driverError`` (gateway.c
+                        # ``LOOKUP_DB`` emits "no database opened" when
+                        # ``g->leader == NULL`` post-demotion); see
+                        # the parallel arm in ``_run_protocol``.
                         raise DqliteConnectionError(
                             f"Node {self._safe_address} is no longer leader: {e.message}",
                             code=e.code,
@@ -2192,6 +2204,26 @@ class DqliteConnection:
             raise
         except OperationalError as e:
             if e.code in LEADER_ERROR_CODES:
+                self._invalidate(e)
+            elif e.code == _SQLITE_NOTFOUND and (
+                (getattr(e, "raw_message", None) or e.message or "").startswith(
+                    LEADER_LOST_DB_LOOKUP_SUBSTRING
+                )
+            ):
+                # Go-parity: ``driverError`` at
+                # ``go-dqlite/driver/driver.go`` maps ``errNotFound``
+                # (=SQLITE_NOTFOUND=12) to ``driver.ErrBadConn`` with
+                # the comment "potentially after leadership loss".
+                # Upstream ``gateway.c::LOOKUP_DB`` emits the
+                # "no database opened" wording when ``g->leader ==
+                # NULL`` post-demotion; the orthogonal ``LOOKUP_STMT``
+                # arm emits ``SQLITE_NOTFOUND`` too but with a
+                # different message ("no statement with the given
+                # id") that is a server-side state bug rather than a
+                # transport flip. Substring-gating keeps the leader-
+                # flip semantic from over-triggering on the stmt-id
+                # bug. Pinned by
+                # tests/test_run_protocol_notfound_after_leader_loss_invalidates_connection.py.
                 self._invalidate(e)
             elif _primary_sqlite_code(e.code) in _TX_AUTO_ROLLBACK_PRIMARY_CODES:
                 # Server-side SQLite engine auto-rolled-back the
