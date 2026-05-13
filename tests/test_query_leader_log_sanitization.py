@@ -60,7 +60,7 @@ async def test_query_leader_empty_addr_with_nonzero_id_sanitizes_debug_log(
         from unittest.mock import patch
 
         with (
-            patch("dqliteclient.cluster.asyncio.open_connection", new=fake_open_connection),
+            patch("asyncio.open_connection", new=fake_open_connection),
             patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
         ):
             await cluster._query_leader("localhost:9001", trust_server_heartbeat=False)
@@ -100,7 +100,7 @@ async def test_query_leader_zero_id_with_hostile_addr_sanitizes_debug_log(
 
     with (
         caplog.at_level(logging.DEBUG, logger="dqliteclient.cluster"),
-        patch("dqliteclient.cluster.asyncio.open_connection", new=fake_open_connection),
+        patch("asyncio.open_connection", new=fake_open_connection),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
         pytest.raises(ProtocolError),
     ):
@@ -135,7 +135,7 @@ async def test_query_leader_bidi_addr_in_debug_log_is_sanitized(
 
     with (
         caplog.at_level(logging.DEBUG, logger="dqliteclient.cluster"),
-        patch("dqliteclient.cluster.asyncio.open_connection", new=fake_open_connection),
+        patch("asyncio.open_connection", new=fake_open_connection),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
         pytest.raises(ProtocolError),
     ):

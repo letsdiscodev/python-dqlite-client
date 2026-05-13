@@ -36,7 +36,7 @@ async def test_connect_clears_stale_invalidation_cause(monkeypatch) -> None:
         return (MagicMock(), MagicMock())
 
     monkeypatch.setattr(
-        "dqliteclient.connection.asyncio.open_connection",
+        "asyncio.open_connection",
         _fake_open_connection,
     )
     monkeypatch.setattr(
