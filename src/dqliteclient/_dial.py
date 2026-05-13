@@ -57,6 +57,12 @@ type DialFunc = Callable[
     Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWriter]],
 ]
 
+__all__ = [
+    "DialFunc",
+    "open_connection",
+    "open_connection_with_keepalive",
+]
+
 # Best-effort tunables for the per-socket keepalive interval. These
 # match the defaults Go's ``net.Dialer`` uses when KeepAlive is set to
 # 15s (its 1.13+ default). We pick more conservative values to avoid

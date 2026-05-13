@@ -12,6 +12,7 @@ import importlib
 import pytest
 
 _SUBMODULES = [
+    "dqliteclient._dial",
     "dqliteclient.cluster",
     "dqliteclient.connection",
     "dqliteclient.exceptions",
