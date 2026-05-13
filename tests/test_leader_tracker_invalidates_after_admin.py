@@ -203,3 +203,154 @@ async def test_add_node_invalidates_cache_on_failure() -> None:
             p.stop()
 
     assert cluster._get_last_known_leader() is None
+
+
+# ---------------------------------------------------------------------------
+# Read-only admin RPCs (cluster_info / leader_info / dump / describe) —
+# the membership-mutating RPCs above already invalidate the leader cache on
+# failure. The four read-only RPCs that ALSO call ``find_leader`` (every one
+# except ``describe(address=<specific>)``) MUST mirror that discipline so a
+# leader-flip mid-RPC doesn't leave the cache pointing at a now-stale peer.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cluster_info_invalidates_cache_on_failure() -> None:
+    """``cluster_info`` is sent to the leader. A leader-flip mid-RPC
+    surfaces as ``OperationalError`` / ``DqliteConnectionError`` and
+    must invalidate the cache so the next ``find_leader`` runs a full
+    sweep instead of paying a fast-path miss against the dead peer."""
+    from dqliteclient.exceptions import OperationalError
+
+    cluster = _make_cluster_with_cached_leader()
+    assert cluster._get_last_known_leader() == "node1:9001"
+
+    fake_proto = MagicMock()
+    fake_proto.handshake = AsyncMock()
+    fake_proto.cluster = AsyncMock(
+        side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
+    )
+
+    patches = _patch_admin(cluster, fake_proto)
+    for p in patches:
+        p.start()
+    try:
+        with pytest.raises(OperationalError):
+            await cluster.cluster_info()
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+    assert cluster._get_last_known_leader() is None
+
+
+@pytest.mark.asyncio
+async def test_leader_info_invalidates_cache_on_failure() -> None:
+    """``leader_info`` is sent to the leader (after ``find_leader``).
+    A leader-flip mid-RPC must invalidate the cache."""
+    from dqliteclient.exceptions import OperationalError
+
+    cluster = _make_cluster_with_cached_leader()
+    fake_proto = MagicMock()
+    fake_proto.handshake = AsyncMock()
+    fake_proto.get_leader = AsyncMock(
+        side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
+    )
+
+    patches = _patch_admin(cluster, fake_proto)
+    for p in patches:
+        p.start()
+    try:
+        with pytest.raises(OperationalError):
+            await cluster.leader_info()
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+    assert cluster._get_last_known_leader() is None
+
+
+@pytest.mark.asyncio
+async def test_dump_invalidates_cache_on_failure() -> None:
+    """``dump`` is sent to the leader (Python design choice). A
+    leader step-down mid-dump is plausible given the long-lived
+    socket; invalidate the cache so the next ``find_leader`` runs a
+    full sweep instead of probing the dead peer."""
+    from dqliteclient.exceptions import OperationalError
+
+    cluster = _make_cluster_with_cached_leader()
+    fake_proto = MagicMock()
+    fake_proto.handshake = AsyncMock()
+    fake_proto.dump = AsyncMock(
+        side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
+    )
+
+    patches = _patch_admin(cluster, fake_proto)
+    for p in patches:
+        p.start()
+    try:
+        with pytest.raises(OperationalError):
+            await cluster.dump("default")
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+    assert cluster._get_last_known_leader() is None
+
+
+@pytest.mark.asyncio
+async def test_describe_no_address_invalidates_cache_on_failure() -> None:
+    """``describe(address=None)`` calls ``find_leader`` and sends to
+    the leader. A leader-flip mid-RPC must invalidate the cache.
+    ``describe(address=<specific>)`` does NOT call ``find_leader``
+    and is covered by a separate negative pin below."""
+    from dqliteclient.exceptions import OperationalError
+
+    cluster = _make_cluster_with_cached_leader()
+    fake_proto = MagicMock()
+    fake_proto.handshake = AsyncMock()
+    fake_proto.describe = AsyncMock(
+        side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
+    )
+
+    patches = _patch_admin(cluster, fake_proto)
+    for p in patches:
+        p.start()
+    try:
+        with pytest.raises(OperationalError):
+            await cluster.describe()
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+    assert cluster._get_last_known_leader() is None
+
+
+@pytest.mark.asyncio
+async def test_describe_with_specific_address_preserves_cache_on_failure() -> None:
+    """Negative twin: ``describe(address=<specific>)`` bypasses
+    ``find_leader`` entirely — the request lands on the named peer,
+    not the leader. The leader cache is unrelated to the call and
+    MUST NOT be invalidated on a per-peer failure (over-aggressive
+    invalidation would force an avoidable sweep)."""
+    from dqliteclient.exceptions import OperationalError
+
+    cluster = _make_cluster_with_cached_leader()
+    fake_proto = MagicMock()
+    fake_proto.handshake = AsyncMock()
+    fake_proto.describe = AsyncMock(
+        side_effect=OperationalError("peer rejected", code=1, raw_message="peer rejected")
+    )
+
+    patches = _patch_admin(cluster, fake_proto)
+    for p in patches:
+        p.start()
+    try:
+        with pytest.raises(OperationalError):
+            await cluster.describe(address="node2:9001")
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+    # Cache untouched — the call did not target the leader.
+    assert cluster._get_last_known_leader() == "node1:9001"

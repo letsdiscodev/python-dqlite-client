@@ -1610,32 +1610,46 @@ class ClusterClient:
                 (e.g. mid-shutdown).
             ProtocolError: on a wire-level shape mismatch.
         """
-        leader_addr = await self.find_leader()
-        async with self.open_admin_connection(leader_addr) as protocol:
-            nodes = await protocol.cluster()
-        # Fall back to the instance-level policy when no per-call
-        # override; matches the precedence used by ``leader_info`` and
-        # by ``find_leader``'s redirect arms.
-        effective_policy = policy if policy is not None else self._redirect_policy
-        if effective_policy is None:
-            return nodes
-        filtered: list[_WireNodeInfo] = []
-        for node in nodes:
-            if effective_policy(node.address):
-                filtered.append(node)
-            else:
-                logger.warning(
-                    "cluster_info: dropping node %s (id=%d, role=%s) — address rejected by policy",
-                    # ``sanitize_for_log`` escapes LF / Tab in addition
-                    # to control / bidi / invisible chars; WARNING-
-                    # level records reach SIEM / journald / syslog
-                    # shippers, so a server-controlled address must
-                    # not split into a forged second line (CWE-117).
-                    sanitize_for_log(node.address),
-                    node.node_id,
-                    node.role.name,
-                )
-        return filtered
+        try:
+            leader_addr = await self.find_leader()
+            async with self.open_admin_connection(leader_addr) as protocol:
+                nodes = await protocol.cluster()
+            # Fall back to the instance-level policy when no per-call
+            # override; matches the precedence used by ``leader_info``
+            # and by ``find_leader``'s redirect arms.
+            effective_policy = policy if policy is not None else self._redirect_policy
+            if effective_policy is None:
+                return nodes
+            filtered: list[_WireNodeInfo] = []
+            for node in nodes:
+                if effective_policy(node.address):
+                    filtered.append(node)
+                else:
+                    logger.warning(
+                        "cluster_info: dropping node %s (id=%d, role=%s)"
+                        " — address rejected by policy",
+                        # ``sanitize_for_log`` escapes LF / Tab in
+                        # addition to control / bidi / invisible
+                        # chars; WARNING-level records reach SIEM /
+                        # journald / syslog shippers, so a server-
+                        # controlled address must not split into a
+                        # forged second line (CWE-117).
+                        sanitize_for_log(node.address),
+                        node.node_id,
+                        node.role.name,
+                    )
+            return filtered
+        finally:
+            # Mirror the membership-RPC discipline established by
+            # ``done/client-admin-rpc-set-last-known-leader-invalidation-skipped-on-failure.md``:
+            # a leader step-down mid-RPC surfaces as
+            # ``OperationalError(LEADER_ERROR_CODES)`` or
+            # ``DqliteConnectionError`` and would otherwise leave the
+            # cache pointing at the now-stale peer, wasting one
+            # fast-path RTT on the next ``find_leader``. Invalidate
+            # on both success and failure for symmetry across all
+            # admin RPCs that target the leader.
+            self._set_last_known_leader(None)
 
     async def transfer_leadership(self, target_node_id: int) -> None:
         """Transfer leadership to ``target_node_id``.
@@ -1740,25 +1754,33 @@ class ClusterClient:
         # Open question: could we have find_leader keep the node_id
         # it discards and surface it here? Yes, but that is a wider
         # refactor of the single-flight slot map; deferred.
-        leader_addr = await self.find_leader()
-        async with self.open_admin_connection(leader_addr) as protocol:
-            node_id, address = await protocol.get_leader()
-            if node_id == 0 or not address:
-                # Mid-election: the leader we just connected to no
-                # longer self-identifies as leader. Surface ``None``
-                # rather than confabulating an answer.
-                return None
-            # Re-validate the responder's reported address against
-            # the redirect policy when leadership flipped between
-            # find_leader and this follow-up get_leader (a hostile
-            # follower could otherwise tunnel an attacker-controlled
-            # address through this admin path). Skip the check when
-            # the responder confirmed itself — the same address that
-            # find_leader already approved through its own
-            # ``_check_redirect`` arm.
-            if not _addr_equiv(address, leader_addr):
-                self._check_redirect(address, policy=policy)
-            return LeaderInfo(node_id=node_id, address=address)
+        try:
+            leader_addr = await self.find_leader()
+            async with self.open_admin_connection(leader_addr) as protocol:
+                node_id, address = await protocol.get_leader()
+                if node_id == 0 or not address:
+                    # Mid-election: the leader we just connected to
+                    # no longer self-identifies as leader. Surface
+                    # ``None`` rather than confabulating an answer.
+                    return None
+                # Re-validate the responder's reported address
+                # against the redirect policy when leadership flipped
+                # between find_leader and this follow-up get_leader
+                # (a hostile follower could otherwise tunnel an
+                # attacker-controlled address through this admin
+                # path). Skip the check when the responder confirmed
+                # itself — the same address that find_leader already
+                # approved through its own ``_check_redirect`` arm.
+                if not _addr_equiv(address, leader_addr):
+                    self._check_redirect(address, policy=policy)
+                return LeaderInfo(node_id=node_id, address=address)
+        finally:
+            # Mirror the membership-RPC discipline: a leader
+            # step-down mid-RPC would otherwise leave the cache
+            # pointing at the stale peer. Invalidate on both success
+            # and failure for symmetry across all admin RPCs that
+            # target the leader.
+            self._set_last_known_leader(None)
 
     async def add_node(
         self,
@@ -1930,13 +1952,27 @@ class ClusterClient:
             OperationalError: when the node rejects the request.
             ProtocolError: on a wire-level shape mismatch.
         """
+        # ``describe(address=<specific>)`` bypasses ``find_leader``
+        # and targets the named peer — invalidating the leader cache
+        # on that path would be over-aggressive (the cache is
+        # unrelated to the call). Only the ``address is None`` arm
+        # routes through the leader, so only that arm participates
+        # in the membership-RPC invalidation discipline.
+        leader_targeted = address is None
         target = address if address is not None else await self.find_leader()
-        async with self.open_admin_connection(target) as protocol:
-            response = await protocol.describe()
-            return NodeMetadata(
-                failure_domain=response.failure_domain,
-                weight=response.weight,
-            )
+        try:
+            async with self.open_admin_connection(target) as protocol:
+                response = await protocol.describe()
+                return NodeMetadata(
+                    failure_domain=response.failure_domain,
+                    weight=response.weight,
+                )
+        finally:
+            if leader_targeted:
+                # Mirror the membership-RPC discipline: a leader
+                # step-down mid-RPC would otherwise leave the cache
+                # pointing at the stale peer.
+                self._set_last_known_leader(None)
 
     async def set_weight(self, weight: int, *, address: str | None = None) -> None:
         """Set a node's weight (leader-election preference).
@@ -1984,9 +2020,16 @@ class ClusterClient:
         are critical operations and a forced-explicit signature is
         the right discipline.
 
-        The dump request is sent to the leader; the response
-        materialises every file in the database (typically two: the
-        database itself and its ``-wal`` sidecar).
+        The dump request is sent to the leader by this method as a
+        Python design choice — the upstream gateway
+        (``handle_dump`` in ``gateway.c``) does NOT call
+        ``CHECK_LEADER``, so any cluster member (voter, standby, or
+        spare) can serve the request. Operators wanting to back up
+        from a spare to avoid leader-CPU contention during the dump
+        can drive the wire layer directly via
+        :meth:`open_admin_connection` against the target peer. The
+        response materialises every file in the database (typically
+        two: the database itself and its ``-wal`` sidecar).
 
         The wire layer enforces caps on file count + per-file size
         + 8-byte content alignment so a hostile peer cannot exhaust
@@ -2010,9 +2053,16 @@ class ClusterClient:
         if not isinstance(database, str) or not database:
             raise TypeError(f"database must be a non-empty str, got {type(database).__name__}")
 
-        leader_addr = await self.find_leader()
-        async with self.open_admin_connection(leader_addr) as protocol:
-            return await protocol.dump(database)
+        try:
+            leader_addr = await self.find_leader()
+            async with self.open_admin_connection(leader_addr) as protocol:
+                return await protocol.dump(database)
+        finally:
+            # Mirror the membership-RPC discipline: ``dump`` reads a
+            # long-lived socket, so a leader step-down mid-dump is
+            # plausible. Invalidate so a leader-flip-induced failure
+            # doesn't leave the cache pointing at the dead peer.
+            self._set_last_known_leader(None)
 
     @contextlib.asynccontextmanager
     async def open_admin_connection(self, address: str) -> AsyncIterator[DqliteProtocol]:
