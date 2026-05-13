@@ -37,8 +37,17 @@ from dqlitewire import (
 )
 from dqlitewire import NodeRole, sanitize_for_log
 from dqlitewire import sanitize_server_text as _sanitize_display_text
+
+# Aliased from the wire layer to avoid silent shadowing of
+# ``dqliteclient.node_store.NodeInfo`` (the public user-facing class
+# also re-exported as ``dqliteclient.NodeInfo``). The two classes
+# share field shape (node_id, address, role) but are distinct types;
+# ``isinstance`` against the user-facing class on a ``cluster_info()``
+# return value depends on the disambiguation. Wire-side NodeInfo is
+# used internally by ``cluster_info()`` to decode ``ServersResponse``;
+# the user-facing NodeInfo lives in ``node_store``.
 from dqlitewire.messages.responses import (
-    NodeInfo,
+    NodeInfo as _WireNodeInfo,
 )
 
 __all__ = [
@@ -1556,7 +1565,9 @@ class ClusterClient:
             )
             raise
 
-    async def cluster_info(self, *, policy: RedirectPolicy | None = None) -> list[NodeInfo]:
+    async def cluster_info(
+        self, *, policy: RedirectPolicy | None = None
+    ) -> list[_WireNodeInfo]:
         """Return the current cluster's node list (id, address, role).
 
         Sends ``ClusterRequest(format=1)`` to the current leader and
@@ -1603,7 +1614,7 @@ class ClusterClient:
         effective_policy = policy if policy is not None else self._redirect_policy
         if effective_policy is None:
             return nodes
-        filtered: list[NodeInfo] = []
+        filtered: list[_WireNodeInfo] = []
         for node in nodes:
             if effective_policy(node.address):
                 filtered.append(node)
