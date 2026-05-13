@@ -24,7 +24,7 @@ async def test_concurrent_find_leader_callers_share_one_task() -> None:
     impl_calls = 0
     leader_event = asyncio.Event()
 
-    async def _fake_impl(*, trust_server_heartbeat: bool) -> str:
+    async def _fake_impl(*, trust_server_heartbeat: bool, policy: object = None) -> str:
         nonlocal impl_calls
         impl_calls += 1
         # Park until released so all 20 callers stack up on the
@@ -56,7 +56,7 @@ async def test_consecutive_find_leader_calls_get_fresh_probes() -> None:
 
     impl_calls = 0
 
-    async def _fake_impl(*, trust_server_heartbeat: bool) -> str:
+    async def _fake_impl(*, trust_server_heartbeat: bool, policy: object = None) -> str:
         nonlocal impl_calls
         impl_calls += 1
         return f"leader-{impl_calls}:9001"

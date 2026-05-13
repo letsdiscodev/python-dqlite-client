@@ -39,7 +39,7 @@ async def test_inner_exception_observed_via_done_callback_probe() -> None:
     inner_started = asyncio.Event()
     inner_release = asyncio.Event()
 
-    async def _fake_impl(*, trust_server_heartbeat: bool) -> str:
+    async def _fake_impl(*, trust_server_heartbeat: bool, policy: object = None) -> str:
         inner_started.set()
         await inner_release.wait()
         raise ClusterError("simulated: no leader on any node")
@@ -100,7 +100,7 @@ async def test_success_path_unaffected() -> None:
     store = MemoryNodeStore(["localhost:9001"])
     cluster = ClusterClient(store, timeout=0.5)
 
-    async def _fake_impl(*, trust_server_heartbeat: bool) -> str:
+    async def _fake_impl(*, trust_server_heartbeat: bool, policy: object = None) -> str:
         return "elected:9001"
 
     cluster._find_leader_impl = _fake_impl
@@ -118,7 +118,7 @@ async def test_inner_exception_propagates_to_live_caller() -> None:
     store = MemoryNodeStore(["localhost:9001"])
     cluster = ClusterClient(store, timeout=0.5)
 
-    async def _fake_impl(*, trust_server_heartbeat: bool) -> str:
+    async def _fake_impl(*, trust_server_heartbeat: bool, policy: object = None) -> str:
         raise ClusterError("simulated: no leader on any node")
 
     cluster._find_leader_impl = _fake_impl

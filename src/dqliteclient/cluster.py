@@ -449,9 +449,11 @@ class ClusterClient:
         # collapse onto the same task — the per-call flag would
         # otherwise be silently ignored for the second caller, which
         # is a security-adjacent regression for operators who opted
-        # one pool out of widened heartbeats. Bounded to two slots
-        # since the flag is a bool.
-        self._find_leader_tasks: dict[tuple[bool], asyncio.Task[str]] = {}
+        # one pool out of widened heartbeats. The slot key also
+        # includes the per-call ``policy`` override so callers passing
+        # distinct audit-mode policies do not share each other's
+        # results.
+        self._find_leader_tasks: dict[tuple[bool, RedirectPolicy | None], asyncio.Task[str]] = {}
         # Fork-after-init: the slot map holds asyncio.Task instances
         # bound to the parent's loop. A child that forks mid-sweep
         # would observe an inherited task and ``await
@@ -554,7 +556,12 @@ class ClusterClient:
             logger.debug("cluster: redirect rejected by policy to=%s", sanitize_for_log(address))
             raise ClusterPolicyError(f"Leader redirect to {address!r} rejected by redirect_policy")
 
-    async def find_leader(self, *, trust_server_heartbeat: bool = False) -> str:
+    async def find_leader(
+        self,
+        *,
+        trust_server_heartbeat: bool = False,
+        policy: RedirectPolicy | None = None,
+    ) -> str:
         """Find the current cluster leader.
 
         Returns the leader address. ``trust_server_heartbeat`` is forwarded
@@ -562,11 +569,25 @@ class ClusterClient:
         heartbeat window for the main query path get the same semantics
         during leader discovery.
 
+        ``policy`` is an optional :data:`RedirectPolicy` callable applied
+        to every leader-redirect target encountered during the sweep
+        (cached fast path AND parallel arms). Mirrors the precedence
+        used by :meth:`leader_info` and :meth:`cluster_info`: falls back
+        to ``self._redirect_policy`` when ``None``. Use to enforce a
+        strict one-off policy (audit mode) without mutating the
+        instance-level default and racing concurrent callers.
+
         Concurrent callers share an in-flight discovery task (single-
         flight). Under a leader flip with N waiting acquirers, this
         collapses N independent per-node sweeps into one. Failures are
         not cached: once the current task completes, the slot clears
         so the next caller runs a fresh probe.
+
+        Single-flight caveat re ``policy``: the slot key includes the
+        policy callable, so two concurrent callers passing distinct
+        policy callables will NOT share a task — diversity defeats the
+        collapse. Callers reusing the same module-level policy
+        constant (or ``None``) continue to share normally.
 
         Single-flight staleness window: the in-flight task snapshots
         the node store once at the top of its sweep
@@ -589,11 +610,14 @@ class ClusterClient:
                 f"configuration in the target process. (created in "
                 f"pid {self._creator_pid}, current pid {_conn_mod.get_current_pid()})"
             )
-        key: tuple[bool] = (trust_server_heartbeat,)
+        key: tuple[bool, RedirectPolicy | None] = (trust_server_heartbeat, policy)
         task = self._find_leader_tasks.get(key)
         if task is None or task.done():
             task = asyncio.create_task(
-                self._find_leader_impl(trust_server_heartbeat=trust_server_heartbeat)
+                self._find_leader_impl(
+                    trust_server_heartbeat=trust_server_heartbeat,
+                    policy=policy,
+                )
             )
 
             def _clear_slot(t: asyncio.Task[str]) -> None:
@@ -634,7 +658,12 @@ class ClusterClient:
         # via ``await asyncio.shield``.
         return await asyncio.shield(task)
 
-    async def _find_leader_impl(self, *, trust_server_heartbeat: bool) -> str:
+    async def _find_leader_impl(
+        self,
+        *,
+        trust_server_heartbeat: bool,
+        policy: RedirectPolicy | None = None,
+    ) -> str:
         """Perform the actual leader discovery sweep. See ``find_leader``
         for the public contract — this method is the single-flight
         backing implementation.
@@ -685,7 +714,7 @@ class ClusterClient:
                         # Cached node redirected us elsewhere.
                         # ``_check_redirect`` may raise
                         # ``ClusterPolicyError`` — handled below.
-                        self._check_redirect(cached_leader)
+                        self._check_redirect(cached_leader, policy=policy)
                         # Re-verify the redirect target self-identifies
                         # as leader before trusting the hint. On
                         # mismatch (stale-hint cached node), clear the
@@ -735,7 +764,7 @@ class ClusterClient:
                         # waiting for the next leader flip. The cache
                         # is already correct for this address; no
                         # write needed.
-                        self._check_redirect(cached_leader)
+                        self._check_redirect(cached_leader, policy=policy)
                         return cached_leader
                 else:
                     # Cached node replied with no-leader-known: the
@@ -891,7 +920,7 @@ class ClusterClient:
                     if not _addr_equiv(leader_address, node.address):
                         # Re-raises ClusterPolicyError on rejection;
                         # the gather loop catches it and propagates.
-                        self._check_redirect(leader_address)
+                        self._check_redirect(leader_address, policy=policy)
                         # Re-probe the redirect target to confirm it
                         # self-identifies as leader. Stale-hint
                         # peers can hand back a node that no longer
@@ -1611,7 +1640,7 @@ class ClusterClient:
             ProtocolError: on a wire-level shape mismatch.
         """
         try:
-            leader_addr = await self.find_leader()
+            leader_addr = await self.find_leader(policy=policy)
             async with self.open_admin_connection(leader_addr) as protocol:
                 nodes = await protocol.cluster()
             # Fall back to the instance-level policy when no per-call
@@ -1755,7 +1784,7 @@ class ClusterClient:
         # it discards and surface it here? Yes, but that is a wider
         # refactor of the single-flight slot map; deferred.
         try:
-            leader_addr = await self.find_leader()
+            leader_addr = await self.find_leader(policy=policy)
             async with self.open_admin_connection(leader_addr) as protocol:
                 node_id, address = await protocol.get_leader()
                 if node_id == 0 or not address:

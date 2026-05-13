@@ -31,7 +31,7 @@ async def test_cancelled_inner_task_clears_slot_without_calling_exception() -> N
     inner_started = asyncio.Event()
     inner_release = asyncio.Event()
 
-    async def _fake_impl(*, trust_server_heartbeat: bool) -> str:
+    async def _fake_impl(*, trust_server_heartbeat: bool, policy: object = None) -> str:
         inner_started.set()
         await inner_release.wait()
         return "ignored:9001"
@@ -70,7 +70,7 @@ async def test_cancelled_inner_task_next_caller_starts_fresh_probe() -> None:
     inner_started = asyncio.Event()
     inner_release = asyncio.Event()
 
-    async def _fake_impl(*, trust_server_heartbeat: bool) -> str:
+    async def _fake_impl(*, trust_server_heartbeat: bool, policy: object = None) -> str:
         nonlocal call_count
         call_count += 1
         if call_count == 1:

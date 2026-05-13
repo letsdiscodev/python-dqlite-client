@@ -38,7 +38,7 @@ async def test_in_flight_sweep_does_not_observe_concurrent_set_nodes() -> None:
     parked = asyncio.Event()
     release = asyncio.Event()
 
-    async def _impl(*, trust_server_heartbeat: bool) -> str:
+    async def _impl(*, trust_server_heartbeat: bool, policy: object = None) -> str:
         nodes = await store.get_nodes()
         snapshots.append([n.address for n in nodes])
         parked.set()
@@ -73,7 +73,7 @@ async def test_next_sweep_after_set_nodes_observes_update() -> None:
 
     snapshots: list[list[str]] = []
 
-    async def _impl(*, trust_server_heartbeat: bool) -> str:
+    async def _impl(*, trust_server_heartbeat: bool, policy: object = None) -> str:
         nodes = await store.get_nodes()
         snapshots.append([n.address for n in nodes])
         return f"leader:from-{snapshots[-1][0]}"

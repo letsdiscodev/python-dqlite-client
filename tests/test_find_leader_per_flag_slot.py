@@ -27,7 +27,7 @@ async def test_concurrent_callers_with_different_flags_do_not_collapse() -> None
 
     observed_flags: list[bool] = []
 
-    async def fake_impl(*, trust_server_heartbeat: bool) -> str:
+    async def fake_impl(*, trust_server_heartbeat: bool, policy: object = None) -> str:
         observed_flags.append(trust_server_heartbeat)
         # Yield once so concurrent callers get to start before we
         # finish; we still need to terminate so the await unblocks.
@@ -57,7 +57,7 @@ async def test_concurrent_callers_with_same_flag_still_collapse() -> None:
 
     call_count = 0
 
-    async def fake_impl(*, trust_server_heartbeat: bool) -> str:
+    async def fake_impl(*, trust_server_heartbeat: bool, policy: object = None) -> str:
         nonlocal call_count
         call_count += 1
         await asyncio.sleep(0.01)
