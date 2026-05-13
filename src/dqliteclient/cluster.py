@@ -1738,6 +1738,16 @@ class ClusterClient:
             # at the call site.
             raise ValueError(f"target_node_id must be >= 1, got {target_node_id}")
 
+        # Bypass the find_leader cache fast path: this is the one admin
+        # RPC whose success mechanism is to step the current leader
+        # down. After a recent transfer the cache points at a peer that
+        # has just stepped down (or is about to be asked to step down
+        # now); the cache-probe would burn one round-trip against the
+        # stepped-down peer before falling through to the full sweep.
+        # Discarding it pre-call shifts the cost to a single fresh
+        # sweep instead. The post-call ``finally:`` below still
+        # invalidates for the leader-flip-mid-RPC case.
+        self._set_last_known_leader(None)
         leader_addr = await self.find_leader()
         try:
             async with self.open_admin_connection(leader_addr) as protocol:
