@@ -1514,7 +1514,14 @@ class ClusterClient:
                     attempt,
                     attempts_cap,
                     leader,
-                    exc,
+                    # Server-controlled exception messages can carry LF
+                    # (sanitize_server_text preserves it for exception
+                    # readability); strip via sanitize_for_log so a
+                    # hostile peer cannot split this DEBUG record into
+                    # multiple journald lines (CWE-117). Sibling
+                    # WARNING below at attempts-exhausted uses the same
+                    # shape.
+                    sanitize_for_log(_truncate_error(str(exc))),
                 )
                 raise
 
