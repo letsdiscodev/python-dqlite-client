@@ -460,6 +460,77 @@ class YamlNodeStore(NodeStore):
     async def get_nodes(self) -> Sequence[NodeInfo]:
         return self._nodes
 
+    def _write_atomic_sync(self, text: str) -> None:
+        """Synchronous body of the atomic-rename ritual.
+
+        Extracted so :meth:`set_nodes` can dispatch via
+        :func:`asyncio.to_thread` and keep the event loop responsive
+        — ``yaml.safe_dump`` is cheap CPU, but ``os.fsync`` against
+        a contended disk (slow NAS, encrypted volume, full-disk SSD
+        GC pause) can stall for tens to hundreds of milliseconds and
+        the directory fsync stalls again. Every coroutine on the
+        loop — Connection reader tasks, pool acquirers parked on
+        ``_pool.get``, heartbeat probes, SQLAlchemy ``do_ping`` — is
+        frozen for the duration without the thread dispatch.
+        """
+        parent = self._path.parent if str(self._path.parent) else Path(".")
+        fd_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=parent,
+                prefix=f".{self._path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                tmp.write(text)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+                fd_path = tmp.name
+            # ``tempfile.NamedTemporaryFile`` opens via
+            # ``mkstemp`` which creates the file with mode 0600 on
+            # POSIX (matching go-dqlite's ``renameio.WriteFile``
+            # 0600 discipline). No additional chmod is needed —
+            # adding one creates a TOCTOU window where bytes are
+            # already on disk before any chmod tightening could
+            # take effect, if a future tempfile default ever
+            # relaxed to 0644. Debug-mode assertion pins the
+            # invariant so a future regression in tempfile defaults
+            # is caught at test time.
+            if __debug__ and os.name == "posix":
+                actual_mode = stat.S_IMODE(os.stat(fd_path).st_mode)
+                assert actual_mode == 0o600, (
+                    f"tempfile created with unexpected mode {oct(actual_mode)}; "
+                    "set_nodes pre-rename mode discipline is broken"
+                )
+            os.replace(fd_path, self._path)
+            fd_path = None  # ownership transferred
+            # Sync the parent directory so the rename's metadata
+            # block is durable across a hard reboot. POSIX rename
+            # is atomic for visibility but the directory entry
+            # change can revert after a power loss / kernel
+            # panic / VM hard-stop without the directory fsync.
+            # More durable than go-dqlite's ``renameio.WriteFile``,
+            # which fsyncs the file but not the parent directory
+            # (per the upstream package: "concerns itself only
+            # with atomicity"). Mirrors the standard atomic-rename
+            # + parent-fsync pattern (git, sqlite WAL, etc.).
+            # Best-effort: non-POSIX (Windows) and some FUSE
+            # filesystems don't support fsync on directories —
+            # suppress OSError so the rename is still visible
+            # even if the durability barrier isn't available.
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+        finally:
+            if fd_path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(fd_path)
+
     async def set_nodes(self, nodes: Sequence[NodeInfo]) -> None:
         # Serialise concurrent writes — file rename is atomic but two
         # writers racing the load -> serialise -> write sequence
@@ -487,64 +558,16 @@ class YamlNodeStore(NodeStore):
                 for n in normalised
             ]
             text = yaml.safe_dump(payload, default_flow_style=False, sort_keys=False)
-            parent = self._path.parent if str(self._path.parent) else Path(".")
-            fd_path: str | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    encoding="utf-8",
-                    dir=parent,
-                    prefix=f".{self._path.name}.",
-                    suffix=".tmp",
-                    delete=False,
-                ) as tmp:
-                    tmp.write(text)
-                    tmp.flush()
-                    os.fsync(tmp.fileno())
-                    fd_path = tmp.name
-                # ``tempfile.NamedTemporaryFile`` opens via
-                # ``mkstemp`` which creates the file with mode 0600 on
-                # POSIX (matching go-dqlite's ``renameio.WriteFile``
-                # 0600 discipline). No additional chmod is needed —
-                # adding one creates a TOCTOU window where bytes are
-                # already on disk before any chmod tightening could
-                # take effect, if a future tempfile default ever
-                # relaxed to 0644. Debug-mode assertion pins the
-                # invariant so a future regression in tempfile defaults
-                # is caught at test time.
-                if __debug__ and os.name == "posix":
-                    actual_mode = stat.S_IMODE(os.stat(fd_path).st_mode)
-                    assert actual_mode == 0o600, (
-                        f"tempfile created with unexpected mode {oct(actual_mode)}; "
-                        "set_nodes pre-rename mode discipline is broken"
-                    )
-                os.replace(fd_path, self._path)
-                fd_path = None  # ownership transferred
-                # Sync the parent directory so the rename's metadata
-                # block is durable across a hard reboot. POSIX rename
-                # is atomic for visibility but the directory entry
-                # change can revert after a power loss / kernel
-                # panic / VM hard-stop without the directory fsync.
-                # More durable than go-dqlite's ``renameio.WriteFile``,
-                # which fsyncs the file but not the parent directory
-                # (per the upstream package: "concerns itself only
-                # with atomicity"). Mirrors the standard atomic-rename
-                # + parent-fsync pattern (git, sqlite WAL, etc.).
-                # Best-effort: non-POSIX (Windows) and some FUSE
-                # filesystems don't support fsync on directories —
-                # suppress OSError so the rename is still visible
-                # even if the durability barrier isn't available.
-                with contextlib.suppress(OSError):
-                    dir_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
-                    try:
-                        os.fsync(dir_fd)
-                    finally:
-                        os.close(dir_fd)
-                # Store the canonical (validated, deduped) tuple in
-                # memory so get_nodes returns the same shape that
-                # _load_from_disk would surface after restart.
-                self._nodes = normalised
-            finally:
-                if fd_path is not None:
-                    with contextlib.suppress(OSError):
-                        os.unlink(fd_path)
+            # Dispatch the sync I/O ritual (yaml.safe_dump's tempfile
+            # write, fsync, rename, parent-dir fsync, unlink cleanup)
+            # to a worker thread so the event loop stays responsive
+            # during the disk barrier. Without this, a slow fsync
+            # (NAS / encrypted volume / SSD GC pause) freezes every
+            # coroutine on the loop for the duration — RPC timeouts
+            # cannot fire, heartbeat windows expire silently, pool
+            # acquirers parked on _pool.get cannot wake.
+            await asyncio.to_thread(self._write_atomic_sync, text)
+            # Store the canonical (validated, deduped) tuple in
+            # memory so get_nodes returns the same shape that
+            # _load_from_disk would surface after restart.
+            self._nodes = normalised
