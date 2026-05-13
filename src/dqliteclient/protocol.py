@@ -750,42 +750,70 @@ class DqliteProtocol:
         # the max_continuation_frames cap so a slow-dripping server
         # cannot pin the client on per-frame decode work inside that
         # deadline window (same rationale as _drain_continuations).
+        #
+        # Loop-till-EmptyResponse mirrors Go's ``Protocol.Interrupt``
+        # (``/tmp/go-dqlite/internal/protocol/protocol.go:103-113``).
+        # The gateway dispatches INTERRUPT one of two ways
+        # (``dqlite-upstream/src/gateway.c:1366-1390``):
+        #
+        # 1. If a request is still in flight (``g->req != NULL``) when
+        #    the INTERRUPT lands, the dispatcher calls ``interrupt(g)``
+        #    (sets ``cancellation_requested`` / aborts ``leader_exec``)
+        #    and the in-flight RPC's done-callback emits the response
+        #    — RESULT or FAILURE for EXEC, EMPTY for cancelled QUERY,
+        #    plus any in-flight ROWS continuation frames already queued.
+        #    No separate EMPTY for the INTERRUPT itself in this path.
+        # 2. If the in-flight RPC's done-callback has ALREADY fired
+        #    (``g->req = NULL`` per ``gateway.c:536`` for EXEC,
+        #    ``:780`` for QUERY) before the INTERRUPT is dispatched,
+        #    the dispatcher falls through to ``handle_interrupt``
+        #    (``gateway.c:952-960``) which DOES emit a separate EMPTY
+        #    for the INTERRUPT ack. Wire then carries
+        #    ``[RESULT-or-ROWS-stream, EMPTY]`` — the prior RPC's
+        #    response followed by the INTERRUPT's own EMPTY.
+        #
+        # Treating RESULT as the terminal would consume case (2)'s
+        # prior-RPC frame and leave the trailing EMPTY in the decoder
+        # buffer, poisoning the next RPC on the connection. Drain
+        # through RESULT (and ROWS) and only exit on EMPTY — same
+        # discipline as Go.
         deadline = self._operation_deadline()
         frames = 0
         while True:
-            response = await self._read_response(deadline=deadline)
+            response = await self._read_response(deadline=deadline, allow_trailing=True)
             if isinstance(response, EmptyResponse):
                 return
-            # ``ResultResponse`` is the EXEC-side terminal: when the
-            # interrupted statement was an EXEC / EXEC_SQL whose
-            # done-callback emitted RESULT before the INTERRUPT
-            # took effect, the response queue holds the RESULT
-            # before the EmptyResponse acknowledgement. Treat it as
-            # equivalent to EmptyResponse — the wire is in a
-            # coherent state and the interrupt has been honoured.
-            # Without this branch, a cancel landing on an EXEC
-            # path would hit the "Expected EmptyResponse" arm and
-            # poison the wire.
-            if isinstance(response, ResultResponse):
-                return
             if isinstance(response, FailureResponse):
+                # FAILURE is terminal: the C server replaces the EMPTY
+                # ack with FAILURE on the interrupt-during-EXEC abort
+                # path (``handle_exec_done_cb`` calls ``exec_failure``
+                # at ``gateway.c:542-544`` when ``raft_status != 0``).
+                # There is no FAILURE-then-EMPTY pair because the
+                # failure callback nulls ``g->req`` before the
+                # dispatcher could read the next request.
                 raise OperationalError(
                     self._failure_text(response), response.code, raw_message=response.message
                 )
-            # RowsResponse mid-drain is expected: the server's in-flight
-            # continuation may land before the interrupt takes effect.
-            # Other message types indicate stream desync.
-            if not isinstance(response, RowsResponse):
+            # ROWS and RESULT are drain-through frames in the
+            # interrupt context. ROWS is the in-flight QUERY's
+            # continuation stream; RESULT is the in-flight EXEC's
+            # terminal — either way, the EMPTY for the INTERRUPT ack
+            # is the next frame and we keep reading. Other message
+            # types indicate stream desync.
+            if not isinstance(response, (RowsResponse, ResultResponse)):
                 raise ProtocolError(
                     f"Expected EmptyResponse after Interrupt, got "
                     f"{type(response).__name__}{self._addr_suffix()}"
                 )
-            # No-progress check: a server emitting empty rows frames with
-            # has_more=True before EmptyResponse would consume up to
+            # No-progress check is RowsResponse-specific: a server
+            # emitting empty rows frames with has_more=True before
+            # EmptyResponse would consume up to
             # ``max_continuation_frames`` iterations of decode work,
             # mirroring the slow-frame DoS shape the query path
-            # already defends against. Mirror the discipline.
-            if not response.rows and response.has_more:
+            # already defends against. ResultResponse has no
+            # ``has_more`` field — RESULT is a single frame per
+            # in-flight RPC and the cap below counts it.
+            if isinstance(response, RowsResponse) and not response.rows and response.has_more:
                 raise ProtocolError(
                     f"ROWS continuation made no progress during INTERRUPT "
                     f"drain: frame had 0 rows and has_more=True"
@@ -798,9 +826,7 @@ class DqliteProtocol:
                     f"({self._max_continuation_frames}); server may be "
                     f"slow-dripping rows{self._addr_suffix()}."
                 )
-            # Fall through: any RowsResponse (has_more=True or False)
-            # means more frames may still arrive before the
-            # terminating EmptyResponse.
+            # Fall through: keep reading until EmptyResponse arrives.
 
     async def exec_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
@@ -1173,13 +1199,27 @@ class DqliteProtocol:
             # different policy.
             raise ProtocolError(f"{WIRE_DECODE_FAILED_PREFIX}{self._addr_suffix()}: {e}") from e
 
-    async def _read_response(self, deadline: float | None = None) -> Message:
+    async def _read_response(
+        self,
+        deadline: float | None = None,
+        *,
+        allow_trailing: bool = False,
+    ) -> Message:
         """Read and decode the next response message.
 
         If ``deadline`` is None, a fresh per-operation deadline is set for
         this one response; callers that span multiple reads (e.g. query_sql
         across continuation frames) pass an externally-held deadline so
         the cumulative wall time is bounded.
+
+        ``allow_trailing=True`` relaxes the "no extra buffered frames"
+        check below. The INTERRUPT drain loop sets this because it
+        deliberately consumes multiple frames in sequence (the prior
+        RPC's terminal response followed by the EMPTY ack for the
+        INTERRUPT itself) — see ``_interrupt`` for the gateway.c race
+        that produces RESULT-then-EMPTY pairs. Every other caller leaves
+        the default ``False`` so the hostile-server hardening below
+        still fires on the one-request-one-response wire contract.
         """
         if deadline is None:
             deadline = self._operation_deadline()
@@ -1217,7 +1257,18 @@ class DqliteProtocol:
         # for a single Rows result legitimately carry across multiple
         # decode steps. The continuation drain path does its own
         # has_message-aware iteration.
-        if not isinstance(message, RowsResponse) and self._decoder.has_message():
+        #
+        # ``allow_trailing=True`` is the INTERRUPT-drain caller's
+        # explicit opt-out (see docstring): the drain context
+        # legitimately expects multiple frames in sequence (RESULT
+        # from the just-completed EXEC, then EMPTY for the INTERRUPT
+        # ack — gateway.c re-dispatches via ``handle_interrupt`` when
+        # ``g->req == NULL`` at the time the INTERRUPT lands).
+        if (
+            not allow_trailing
+            and not isinstance(message, RowsResponse)
+            and self._decoder.has_message()
+        ):
             raise ProtocolError(
                 f"Server emitted extra response after "
                 f"{type(message).__name__}{self._addr_suffix()} — protocol "

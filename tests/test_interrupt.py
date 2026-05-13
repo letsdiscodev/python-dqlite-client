@@ -43,25 +43,67 @@ class TestInterrupt:
         # Write was issued.
         protocol._writer.write.assert_called()  # type: ignore[attr-defined]
 
-    async def test_interrupt_drains_in_flight_result_response(
+    async def test_interrupt_drains_result_then_empty_consumes_both(
         self, protocol: DqliteProtocol
     ) -> None:
-        """Pin the EXEC-side terminal: an INTERRUPT landing on an
-        EXEC / EXEC_SQL whose done-callback has already emitted
-        ``RESULT`` before the interrupt took effect leaves a
-        ``ResultResponse`` in the response queue ahead of the
-        ``EmptyResponse`` acknowledgement. The drain loop must
-        treat ``ResultResponse`` as equivalent to
-        ``EmptyResponse`` (wire is coherent, interrupt has been
-        honoured); without this, the "Expected EmptyResponse"
-        arm would fire and poison the wire.
+        """An INTERRUPT landing AFTER an EXEC's done-callback has nulled
+        the server-side ``g->req`` re-dispatches via ``handle_interrupt``
+        (gateway.c:952-960), which emits a separate ``EmptyResponse`` for
+        the interrupt itself. The wire then carries ``[RESULT, EMPTY]``
+        — RESULT from the just-completed EXEC, EMPTY for the
+        INTERRUPT ack. The drain loop must consume BOTH and leave the
+        decoder buffer empty for the next RPC. Mirrors Go's
+        ``Protocol.Interrupt`` loop-till-ResponseEmpty discipline.
         """
         from dqlitewire.messages import ResultResponse
 
         result = ResultResponse(last_insert_id=42, rows_affected=1).encode()
-        protocol._reader.read = AsyncMock(side_effect=[result, b""])
-        # Must NOT raise — ResultResponse is the EXEC-side terminal.
+        empty = EmptyResponse().encode()
+        protocol._reader.read = AsyncMock(side_effect=[result + empty, b""])
         await protocol._interrupt(db_id=1)
+        # Decoder buffer must be fully drained: no trailing EMPTY left
+        # to poison the next RPC's read.
+        assert not protocol._decoder.has_message(), (
+            "EMPTY following RESULT must be consumed by the drain loop"
+        )
+
+    async def test_interrupt_drains_result_then_empty_separate_reads(
+        self, protocol: DqliteProtocol
+    ) -> None:
+        """Same gateway.c race as the prior test, but RESULT and EMPTY
+        arrive in separate ``reader.read()`` calls (no TCP coalescing).
+        The drain loop must still consume both. This is the most
+        plausible wire shape — the server emits the prior RPC's
+        terminal first, then the EMPTY for the INTERRUPT ack a small
+        amount of wall-clock time later.
+        """
+        from dqlitewire.messages import ResultResponse
+
+        result = ResultResponse(last_insert_id=42, rows_affected=1).encode()
+        empty = EmptyResponse().encode()
+        protocol._reader.read = AsyncMock(side_effect=[result, empty, b""])
+        await protocol._interrupt(db_id=1)
+        assert not protocol._decoder.has_message()
+
+    async def test_interrupt_drain_terminal_rows_then_empty(self, protocol: DqliteProtocol) -> None:
+        """A terminal ROWS frame (has_more=False) immediately followed
+        by EMPTY: drain loop must consume both. Wire shape covers the
+        case where the in-flight QUERY emitted its last continuation
+        frame just before the INTERRUPT dispatched a separate EMPTY
+        (gateway.c re-dispatch path via ``handle_interrupt`` when
+        ``g->req == NULL`` at INTERRUPT-read time).
+        """
+        rows_terminal = RowsResponse(
+            column_names=["x"],
+            column_types=[ValueType.INTEGER],
+            rows=[[1]],
+            row_types=[[ValueType.INTEGER]],
+            has_more=False,
+        ).encode()
+        empty = EmptyResponse().encode()
+        protocol._reader.read = AsyncMock(side_effect=[rows_terminal + empty, b""])
+        await protocol._interrupt(db_id=1)
+        assert not protocol._decoder.has_message()
 
     async def test_interrupt_swallows_in_flight_rows(self, protocol: DqliteProtocol) -> None:
         """A RowsResponse landing after INTERRUPT (in-flight from before

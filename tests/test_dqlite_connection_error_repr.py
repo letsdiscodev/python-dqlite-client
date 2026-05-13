@@ -49,8 +49,7 @@ def test_dqlite_connection_error_repr_omits_code_when_none() -> None:
     r = repr(e)
     assert "DqliteConnectionError" in r
     assert "code=" not in r, (
-        f"DqliteConnectionError.__repr__ must omit code= when code is "
-        f"None; got {r!r}"
+        f"DqliteConnectionError.__repr__ must omit code= when code is None; got {r!r}"
     )
 
 

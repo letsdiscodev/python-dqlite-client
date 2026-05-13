@@ -111,8 +111,7 @@ def test_pool_finalizer_registration_captures_creator_pid() -> None:
         assert peeked is not None
         _obj, _func, args, _kwargs = peeked
         assert pool._creator_pid in args, (
-            "pool finalizer registration dropped the creator_pid arg — "
-            "fork-pid guard cannot fire"
+            "pool finalizer registration dropped the creator_pid arg — fork-pid guard cannot fire"
         )
     finally:
         finalizer.detach()
