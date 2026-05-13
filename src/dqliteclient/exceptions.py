@@ -2,6 +2,7 @@
 
 from typing import Any, ClassVar
 
+from dqlitewire._truncate import _DEFAULT_MAX_RAW_MESSAGE
 from dqlitewire._truncate import _cap_raw_message as _wire_cap_raw_message
 from dqlitewire.exceptions import ProtocolError as _WireProtocolError
 
@@ -36,15 +37,13 @@ class DqliteError(Exception):
     ``_MAX_RAW_MESSAGE`` cap automatically.
     """
 
-    # Cap on ``raw_message``. The wire layer caps
-    # ``FailureResponse.message`` at ~64 KiB; combined with
-    # ``BaseExceptionGroup`` chains in ``find_leader`` and
-    # ``pool.initialize``, a 100-node sweep against hostile peers
-    # would otherwise produce ~6 MB exception payloads that flow
-    # through cross-process pickling (``ProcessPoolExecutor``, Celery,
-    # structured-error capture). 4 KiB is well above any realistic
-    # SQLite error string while bounding the worst-case fan-out.
-    _MAX_RAW_MESSAGE: ClassVar[int] = 4 * 1024
+    # Cap on ``raw_message``. The rationale (~64 KiB
+    # ``FailureResponse``, ``BaseExceptionGroup`` fan-out under hostile
+    # peers, cross-process pickling) lives in
+    # ``dqlitewire._truncate._DEFAULT_MAX_RAW_MESSAGE`` — the single
+    # source of truth shared with ``dqlitedbapi``. Subclasses may
+    # override.
+    _MAX_RAW_MESSAGE: ClassVar[int] = _DEFAULT_MAX_RAW_MESSAGE
 
     raw_message: str | None
 
