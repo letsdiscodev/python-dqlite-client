@@ -1704,8 +1704,8 @@ class DqliteConnection:
         # few rounds the racing _invalidate sees ``_protocol is None``
         # and the cycle terminates). Cap at 3 to fail loudly on a
         # pathological feedback loop rather than spin.
-        _RESNAPSHOT_CAP = 3
-        for _attempt in range(_RESNAPSHOT_CAP):
+        resnapshot_cap = 3
+        for _attempt in range(resnapshot_cap):
             pending = self._pending_drain
             self._pending_drain = None
             if pending is None or pending.done():
@@ -1750,7 +1750,7 @@ class DqliteConnection:
                 "%d re-snapshot iterations; cancelling residual task to avoid "
                 "'Task was destroyed but it is pending' at GC. This indicates "
                 "a pathological _invalidate feedback loop on connection id=%s.",
-                _RESNAPSHOT_CAP,
+                resnapshot_cap,
                 id(self),
             )
         # Mirror ``_invalidate``'s atomic clear of the transaction
