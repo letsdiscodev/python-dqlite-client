@@ -542,9 +542,7 @@ class ClusterClient:
             # at DEBUG so SSRF-style attempts or policy
             # misconfigurations are traceable from logs alone,
             # not only through an exception stack.
-            logger.debug(
-                "cluster: redirect rejected by policy to=%s", _sanitize_display_text(address)
-            )
+            logger.debug("cluster: redirect rejected by policy to=%s", sanitize_for_log(address))
             raise ClusterPolicyError(f"Leader redirect to {address!r} rejected by redirect_policy")
 
     async def find_leader(self, *, trust_server_heartbeat: bool = False) -> str:
@@ -899,17 +897,26 @@ class ClusterClient:
                             trust_server_heartbeat=trust_server_heartbeat,
                         )
                         if verified is None:
-                            _safe_addr = _sanitize_display_text(node.address)
-                            _safe_hint = _sanitize_display_text(leader_address)
+                            # Log-only sanitiser: ``sanitize_for_log``
+                            # also escapes LF / Tab so a server-supplied
+                            # ``leader_address`` cannot split a logger
+                            # record into multiple lines (CWE-117). The
+                            # exception-message field below stays on
+                            # ``_sanitize_display_text`` which preserves
+                            # LF / Tab for interactive readability.
+                            _safe_addr_log = sanitize_for_log(node.address)
+                            _safe_hint_log = sanitize_for_log(leader_address)
                             logger.debug(
                                 "find_leader: %s redirected to %s "
                                 "but verification failed (stale hint); "
                                 "falling through (%d/%d)",
-                                _safe_addr,
-                                _safe_hint,
+                                _safe_addr_log,
+                                _safe_hint_log,
                                 idx + 1,
                                 total_nodes,
                             )
+                            _safe_addr = _sanitize_display_text(node.address)
+                            _safe_hint = _sanitize_display_text(leader_address)
                             return _ProbeMiss(
                                 message=(f"{_safe_addr}: stale redirect to {_safe_hint}"),
                                 exc=None,
@@ -1301,12 +1308,15 @@ class ClusterClient:
         if reported and _addr_equiv(reported, hint_address):
             return hint_address
         # Stale or pointing elsewhere. Log both addresses through
-        # ``_sanitize_display_text`` so a hostile peer can't inject
-        # CRLF / control-chars into operator-facing logs.
+        # ``sanitize_for_log`` so a hostile peer can't inject CRLF /
+        # Tab / control-chars into operator-facing logs (CWE-117).
+        # ``_sanitize_display_text`` preserves LF / Tab for
+        # exception-message readability — wrong helper for logger
+        # records.
         logger.debug(
             "verify_redirect: %s reports leader=%s (stale hint, falling through)",
-            _sanitize_display_text(hint_address),
-            _sanitize_display_text(reported) if reported else "<none>",
+            sanitize_for_log(hint_address),
+            sanitize_for_log(reported) if reported else "<none>",
         )
         return None
 
@@ -1600,7 +1610,12 @@ class ClusterClient:
             else:
                 logger.warning(
                     "cluster_info: dropping node %s (id=%d, role=%s) — address rejected by policy",
-                    _sanitize_display_text(node.address),
+                    # ``sanitize_for_log`` escapes LF / Tab in addition
+                    # to control / bidi / invisible chars; WARNING-
+                    # level records reach SIEM / journald / syslog
+                    # shippers, so a server-controlled address must
+                    # not split into a forged second line (CWE-117).
+                    sanitize_for_log(node.address),
                     node.node_id,
                     node.role.name,
                 )
