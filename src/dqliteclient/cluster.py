@@ -747,8 +747,8 @@ class ClusterClient:
                                 "leader %s redirected to %s but "
                                 "verification failed; clearing cache "
                                 "and falling through to full sweep",
-                                _sanitize_display_text(cached),
-                                _sanitize_display_text(cached_leader),
+                                sanitize_for_log(cached),
+                                sanitize_for_log(cached_leader),
                             )
                             self._set_last_known_leader(None)
                             # Skip the no-leader-known log below and
@@ -774,7 +774,7 @@ class ClusterClient:
                         "find_leader: fast-path probe of cached leader %s "
                         "returned no-leader-known; clearing cache and falling "
                         "through to full sweep",
-                        _sanitize_display_text(cached),
+                        sanitize_for_log(cached),
                     )
                     self._set_last_known_leader(None)
             except (
@@ -791,7 +791,7 @@ class ClusterClient:
                 logger.debug(
                     "find_leader: fast-path probe of cached leader %s failed (%s); "
                     "clearing cache and falling through to full sweep",
-                    _sanitize_display_text(cached),
+                    sanitize_for_log(cached),
                     type(e).__name__,
                 )
                 self._set_last_known_leader(None)
@@ -871,7 +871,7 @@ class ClusterClient:
                     _safe_addr = _sanitize_display_text(node.address)
                     logger.debug(
                         "find_leader: %s timed out after %.3fs (%d/%d)",
-                        _safe_addr,
+                        sanitize_for_log(node.address),
                         self._attempt_timeout,
                         idx + 1,
                         total_nodes,
@@ -898,7 +898,7 @@ class ClusterClient:
                     _safe_addr = _sanitize_display_text(node.address)
                     logger.debug(
                         "find_leader: %s failed with %s: %s (%d/%d)",
-                        _safe_addr,
+                        sanitize_for_log(node.address),
                         type(e).__name__,
                         _truncate_error(str(e)),
                         idx + 1,
@@ -968,7 +968,7 @@ class ClusterClient:
                 _safe_addr = _sanitize_display_text(node.address)
                 logger.debug(
                     "find_leader: %s reports no leader known (%d/%d)",
-                    _safe_addr,
+                    sanitize_for_log(node.address),
                     idx + 1,
                     total_nodes,
                 )
