@@ -579,9 +579,19 @@ class ClusterClient:
         """Find the current cluster leader.
 
         Returns the leader address. ``trust_server_heartbeat`` is forwarded
-        to each probe protocol so operators who opted into a widened
-        heartbeat window for the main query path get the same semantics
-        during leader discovery.
+        to each probe protocol's constructor for API parity with the
+        full-connect path (:class:`DqliteConnection`), but **has no effect
+        on the probe traversal**: ``_query_leader`` uses
+        :meth:`DqliteProtocol.negotiate_protocol_only` (not the full
+        :meth:`DqliteProtocol.handshake`) to skip per-peer client-id
+        registration, which means no ``WelcomeResponse`` is read on the
+        probe path — so the welcome-driven read-timeout widening branch
+        that consumes ``self._trust_server_heartbeat`` never fires. The
+        probe read deadline is therefore bounded by ``self._timeout``
+        regardless of this flag. Operators tuning ``trust_server_heartbeat``
+        for slow-leader-probe scenarios will not see the widening apply to
+        the probe ``get_leader`` reads — it only applies to the main
+        query path after a full handshake.
 
         ``policy`` is an optional :data:`RedirectPolicy` callable applied
         to every leader-redirect target encountered during the sweep
