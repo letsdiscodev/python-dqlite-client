@@ -1349,6 +1349,20 @@ class DqliteConnection:
                     if cancelling_after > cancelling_before:
                         raise
                 except Exception:
+                    # A prior drain that completed with a non-Cancel
+                    # exception (e.g. an _invalidate whose bounded
+                    # wait_closed surfaced a transport RuntimeError) is
+                    # swallowed so the reconnect can proceed. The new
+                    # connect attempt surfaces its own failure mode to
+                    # the caller. Widening this to ``except
+                    # BaseException`` would consume legitimate
+                    # KeyboardInterrupt / SystemExit / outer
+                    # CancelledError (regression history at
+                    # done/client-connect-pending-drain-suppress-
+                    # baseexception-consumes-task-cancel.md). Narrowing
+                    # to a specific subclass blocks reconnect on
+                    # otherwise-recoverable drain failures. Pinned by
+                    # tests/test_connect_impl_pending_drain_non_cancel_exception.py.
                     pass
             self._pending_drain = None
 
