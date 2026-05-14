@@ -667,9 +667,8 @@ class YamlNodeStore(NodeStore):
                 # retrieved" warning under ``-X dev`` /
                 # ``PYTHONASYNCIODEBUG``. The original
                 # ``CancelledError`` is re-raised by ``raise`` below
-                # — per architect+reviewer agreement, a non-cancel
-                # inner failure observed here is NOT swallowed
-                # silently; it would have been caught by the
+                # — a non-cancel inner failure observed here is NOT
+                # swallowed silently; it would have been caught by the
                 # ``except Exception`` arm above if it surfaced
                 # during the drain re-await.
                 if inner.exception() is not None:

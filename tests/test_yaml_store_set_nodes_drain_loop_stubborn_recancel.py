@@ -12,16 +12,16 @@ shielded task. Two contracts that were previously uncovered:
 1. **Stubborn-recancel coverage**: a second cancel landing while the
    drain re-await is parked must NOT release the lock early. The loop
    re-enters its re-await and the lock stays held until ``inner.done()``.
-   The final raise must be ``CancelledError`` (architect + reviewer
-   agreement keeps the current re-raise behaviour).
+   The final raise must be ``CancelledError`` (the current re-raise
+   behaviour is preserved).
 
 2. **Non-cancel inner exception observed at DEBUG**: if
    ``_write_and_publish`` raises an ``OSError`` (ENOSPC / EROFS /
    fsync failure) during a cancel drain, the exception supplants the
-   cancel (per architect+reviewer agreement — the caller still needs
-   to see the disk error) but is also logged at DEBUG so the
-   observability gap is closed. ``inner.exception()`` is implicitly
-   observed because the drain re-await raises it.
+   cancel (the caller still needs to see the disk error) but is also
+   logged at DEBUG so the observability gap is closed.
+   ``inner.exception()`` is implicitly observed because the drain
+   re-await raises it.
 """
 
 from __future__ import annotations
@@ -128,10 +128,9 @@ async def test_inner_oserror_during_drain_observed_at_debug(
     """When ``_write_and_publish`` raises ``OSError`` while a cancel
     is being drained, the drain loop must observe the non-cancel
     failure at DEBUG before letting it propagate. The exception
-    still supplants the cancel context (per architect+reviewer
-    agreement — the caller needs to see the disk error), but the
-    DEBUG log closes the observability gap that previously left a
-    silent unwind.
+    still supplants the cancel context (the caller needs to see the
+    disk error), but the DEBUG log closes the observability gap that
+    previously left a silent unwind.
     """
     store = YamlNodeStore(tmp_path / "nodes.yaml")
     new_nodes = [
@@ -205,10 +204,10 @@ async def test_no_cancel_inner_oserror_propagates_to_caller(
 ) -> None:
     """Boundary contract: when there is NO cancel and the inner
     write fails with ``OSError``, the caller MUST see the OSError
-    (the disk error is not swallowed). This pins the architect +
-    reviewer constraint "do NOT widen the catch to swallow OSError
-    from the outer await — caller still needs to see the disk
-    error." Failure of this test would mean the fix overreached.
+    (the disk error is not swallowed). This pins the documented
+    constraint "do NOT widen the catch to swallow OSError from the
+    outer await — caller still needs to see the disk error."
+    Failure of this test would mean the fix overreached.
     """
     store = YamlNodeStore(tmp_path / "nodes.yaml")
     new_nodes = [
