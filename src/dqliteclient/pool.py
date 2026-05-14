@@ -2085,6 +2085,18 @@ class ConnectionPool:
                 self._finalizer = None
             return
         if self._closed:
+            # Cross-loop edge case (same pid, past the fork gate):
+            # ``self._close_done`` is an ``asyncio.Event`` captured by
+            # the FIRST caller's loop. A second caller arriving on a
+            # DIFFERENT loop (e.g. per-test ``asyncio.run()`` fixtures
+            # that retain a shared pool object) would crash here with
+            # ``RuntimeError`` from the Event's loop-binding check.
+            # The pool does not currently install a defensive guard:
+            # the documented use is single-loop-per-pool, and
+            # multi-loop reuse is already gated upstream by the
+            # pid-aware ``acquire``. Operators hitting this RuntimeError
+            # have misconfigured pool lifecycle and should reconstruct
+            # the pool in the new loop's context.
             if self._close_done is not None:
                 await self._close_done.wait()
             # If the FIRST caller's drain was interrupted mid-flight
