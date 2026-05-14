@@ -3,12 +3,19 @@ list INSIDE the ``try:`` frame so a ``BaseException`` (synthetic
 KeyboardInterrupt, outer cancel) landing mid-construction does not
 leak orphaned ``_create_connection`` tasks.
 
-Pre-fix the comprehension at ``pool.py:544-546`` ran BEFORE the
-``try:`` at line 557. A ``BaseException`` raised by the n-th
-``asyncio.create_task`` orphaned every already-created task — the
-``finally`` never ran, the ``gather_returned``-flag-driven
-recovery loop never walked the partial list, and the orphan tasks'
-exceptions were unobserved.
+The anchor is the in-try comment block beginning
+``"Build ``create_tasks`` INSIDE the try frame"`` inside
+``ConnectionPool.initialize`` in ``pool.py``; the construction
+itself is the ``create_tasks: list[...] = []`` allocation followed
+by the ``for _ in range(self._min_size): create_tasks.append(...)``
+loop, both nested under the same ``try:``.
+
+Pre-fix this construction (then written as a list comprehension,
+now an explicit ``for`` loop) ran BEFORE the ``try:`` frame. A
+``BaseException`` raised by the n-th ``asyncio.create_task``
+orphaned every already-created task — the ``finally`` never ran,
+the ``gather_returned``-flag-driven recovery loop never walked the
+partial list, and the orphan tasks' exceptions were unobserved.
 
 Mirrors the cluster-side hardening at ``_find_leader_impl`` and the
 pool-acquire hardening in
@@ -33,7 +40,7 @@ async def test_pool_initialize_keyboardinterrupt_during_task_creation_no_orphan(
 ) -> None:
     """Inject ``KeyboardInterrupt`` into the n-th ``create_task`` call
     inside ``ConnectionPool.initialize``. The first task is created;
-    the comprehension/loop aborts before ``gather`` can run. Pin: the
+    the ``for`` loop aborts before ``gather`` can run. Pin: the
     task is consumed by the ``finally`` (cancelled + gathered), no
     orphan-task warnings."""
     pool = ConnectionPool(["localhost:19001"], min_size=3, max_size=3, timeout=0.5)
@@ -78,7 +85,7 @@ async def test_pool_initialize_keyboardinterrupt_during_task_creation_no_orphan(
             await leaked
         pytest.fail(
             "ConnectionPool.initialize orphaned a _create_connection task: "
-            "comprehension is outside the try frame"
+            "task construction is outside the try frame"
         )
 
     # Pin no orphan-task warnings via the loop exception handler.
