@@ -634,13 +634,25 @@ class ClusterClient:
                 f"configuration in the target process. (created in "
                 f"pid {self._creator_pid}, current pid {_conn_mod.get_current_pid()})"
             )
-        key: tuple[bool, RedirectPolicy | None] = (trust_server_heartbeat, policy)
+        # Resolve ``policy=None`` to ``self._redirect_policy`` BEFORE
+        # building the slot key. Otherwise callers passing ``None`` and
+        # callers passing ``self._redirect_policy`` explicitly hash to
+        # different keys despite the same effective behaviour, causing
+        # the single-flight collapse to miss and two concurrent probes
+        # to run for the same effective policy. Internal re-dispatch
+        # paths (e.g. ``_check_redirect`` retries at L1683/L1837) forward
+        # ``policy=policy`` explicitly, so the collision is reachable
+        # from first-party code, not just a theoretical edge case.
+        effective_policy: RedirectPolicy | None = (
+            policy if policy is not None else self._redirect_policy
+        )
+        key: tuple[bool, RedirectPolicy | None] = (trust_server_heartbeat, effective_policy)
         task = self._find_leader_tasks.get(key)
         if task is None or task.done():
             task = asyncio.create_task(
                 self._find_leader_impl(
                     trust_server_heartbeat=trust_server_heartbeat,
-                    policy=policy,
+                    policy=effective_policy,
                 )
             )
 
