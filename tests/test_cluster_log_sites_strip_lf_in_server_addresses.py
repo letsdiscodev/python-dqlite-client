@@ -19,10 +19,10 @@ the SIEM ingest side.
 
 The four sites the audit identified:
 
-- ``find_leader`` redirect-rejected DEBUG (cluster.py:545-547)
-- ``find_leader`` redirect-verify-failed DEBUG (cluster.py:902-912)
-- ``verify_redirect`` stale-hint DEBUG (cluster.py:1306-1310)
-- ``cluster_info`` dropping-node WARNING (cluster.py:1601-1606) —
+- ``find_leader`` redirect-rejected DEBUG ("redirect rejected by policy")
+- ``find_leader`` redirect-verify-failed DEBUG ("verify failed" arm)
+- ``_verify_redirect`` stale-hint DEBUG ("verify_redirect:" prefix)
+- ``cluster_info`` dropping-node WARNING ("dropping node" message) —
   highest exposure (WARNING level reaches SIEM)
 """
 
@@ -56,9 +56,10 @@ async def test_check_redirect_logs_strip_lf_in_server_address(
     cluster: ClusterClient,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Site 1 — cluster.py:545-547. The DEBUG arm fires when the user-
-    supplied ``redirect_policy`` rejects a server-advised redirect
-    target. The address comes straight from the wire."""
+    """Site 1 — ``ClusterClient._check_redirect`` DEBUG arm (matched
+    by the ``"redirect rejected by policy"`` substring below). Fires
+    when the user-supplied ``redirect_policy`` rejects a server-advised
+    redirect target. The address comes straight from the wire."""
     caplog.set_level(logging.DEBUG, logger="dqliteclient.cluster")
     address_with_lf = "evil.example.com:9001\nFORGED log row"
 
@@ -82,9 +83,11 @@ async def test_verify_redirect_logs_strip_lf_in_reported_address(
     cluster: ClusterClient,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Site 3 — cluster.py:1306-1310. The stale-hint DEBUG fires when
-    ``_verify_redirect`` dials the hinted peer and the peer reports
-    a different leader address. ``reported`` is server-supplied."""
+    """Site 3 — ``ClusterClient._verify_redirect`` stale-hint DEBUG
+    (matched by the ``"verify_redirect:"`` substring below). Fires
+    when ``_verify_redirect`` dials the hinted peer and the peer
+    reports a different leader address. ``reported`` is
+    server-supplied."""
     caplog.set_level(logging.DEBUG, logger="dqliteclient.cluster")
     address_with_lf = "evil.example.com:9001\nFORGED leader-row"
 
@@ -112,10 +115,11 @@ async def test_verify_redirect_logs_strip_lf_in_reported_address(
 async def test_cluster_info_warning_strips_lf_in_dropped_node_address(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Site 4 — cluster.py:1601-1606. WARNING level reaches SIEM /
-    journald / syslog, so this is the highest-exposure log site.
-    ``node.address`` per-entry is server-supplied (every entry of
-    ``ServersResponse``).
+    """Site 4 — ``ClusterClient.cluster_info`` dropping-node WARNING
+    (matched by the ``"cluster_info: dropping node"`` substring
+    below). WARNING level reaches SIEM / journald / syslog, so this
+    is the highest-exposure log site. ``node.address`` per-entry is
+    server-supplied (every entry of ``ServersResponse``).
 
     Drive the WARNING arm by mocking ``open_admin_connection`` to
     return a protocol whose ``cluster()`` reply includes a node with
