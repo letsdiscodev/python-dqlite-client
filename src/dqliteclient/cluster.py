@@ -936,12 +936,11 @@ class ClusterClient:
                     # ``ClusterPolicyError``-on-``ValueError`` wrap at
                     # ``try_connect`` covers only the constructor path;
                     # this is the inner-sweep counterpart.
-                    _safe_addr = _sanitize_display_text(node.address)
                     logger.debug(
                         "find_leader: %s failed with %s: %s (%d/%d)",
                         sanitize_for_log(node.address),
                         type(e).__name__,
-                        _truncate_error(str(e)),
+                        sanitize_for_log(_truncate_error(str(e))),
                         idx + 1,
                         total_nodes,
                     )
