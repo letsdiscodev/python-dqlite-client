@@ -326,10 +326,10 @@ class DqliteProtocol:
         # mis-configured-peer / non-conforming-server symptom needs
         # the breadcrumb to correlate against per-cluster config audits.
         if response.heartbeat_timeout == 0:
-            # Wire-layer docstring at ``responses.py:410-416`` flags 0
-            # as semantically ambiguous: upstream ``config.c`` defaults
-            # to 15000 and never emits 0, so 0 from the wire is either
-            # a misconfigured peer or a non-conforming server.
+            # Wire-layer ``WelcomeResponse.heartbeat_timeout`` docstring
+            # flags 0 as semantically ambiguous: upstream ``config.c``
+            # defaults to 15000 and never emits 0, so 0 from the wire is
+            # either a misconfigured peer or a non-conforming server.
             logger.debug(
                 "handshake: server advertised heartbeat=0 (semantically "
                 "ambiguous per wire spec; widening disabled)"
