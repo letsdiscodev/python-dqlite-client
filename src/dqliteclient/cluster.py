@@ -191,9 +191,16 @@ def _addr_equiv(a: str, b: str) -> bool:
 
 
 def _truncate_error(message: str) -> str:
+    # Report the overflow count (``len - max``) in the suffix to
+    # match the wire-layer ``_cap_raw_message`` SSOT and the sibling
+    # ``_truncate_for_message`` / ``_truncate_for_log`` helpers in
+    # dbapi and SA. Reporting total length here would mislead an
+    # operator reading ``[truncated, 4096 chars]`` into thinking the
+    # original was 4096 long, when ``max + 4096`` is the real value.
     if len(message) <= _MAX_ERROR_MESSAGE_SNIPPET:
         return message
-    return message[:_MAX_ERROR_MESSAGE_SNIPPET] + f"... [truncated, {len(message)} chars]"
+    overflow = len(message) - _MAX_ERROR_MESSAGE_SNIPPET
+    return message[:_MAX_ERROR_MESSAGE_SNIPPET] + f"... [truncated, {overflow} chars]"
 
 
 def _validate_node_id(node_id: object) -> None:
