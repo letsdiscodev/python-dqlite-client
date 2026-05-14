@@ -3,8 +3,8 @@ to ``False`` before ``await conn.close()`` so the close actually runs.
 
 Conns sitting in ``self._pool`` were placed there by ``_release`` and
 carry ``_pool_released = True``. ``DqliteConnection.close()``
-short-circuits at the ``if self._pool_released: return`` guard
-(``connection.py:1619-1622``) — the close becomes a no-op. Without
+short-circuits at the ``if self._pool_released: return`` guard at the
+top of the method — the close becomes a no-op. Without
 the flip, the post-cancel drain leaks one transport + one reader
 task per queued conn (the kernel times the socket out via
 ``CLOSE_WAIT``; the reader Task emits the "Task was destroyed but it
@@ -69,9 +69,9 @@ async def test_drain_remaining_after_cancel_clears_flag_before_close() -> None:
         assert any(conn._close_events), (
             "drain_remaining_after_cancel must clear conn._pool_released "
             "before close() so the close actually tears down the "
-            "transport; the early-return at connection.py:1619-1622 "
-            "otherwise turns close() into a no-op and the transport / "
-            "reader task leak"
+            "transport; the early-return on _pool_released at the top "
+            "of DqliteConnection.close otherwise turns close() into a "
+            "no-op and the transport / reader task leak"
         )
     # Reservation accounting: each iteration decrements _size via
     # _release_reservation, so _size must be 0 after sweeping three.

@@ -1196,8 +1196,9 @@ class ConnectionPool:
             # close path actually runs. Conns sitting in ``self._pool``
             # were placed there by ``_release`` and carry
             # ``_pool_released = True`` so a user-side ``close()`` on a
-            # checked-in conn no-ops (the pool-contract early-return at
-            # ``connection.py:1619-1622``). The drain is pool-owned
+            # checked-in conn no-ops (the pool-contract early-return on
+            # the ``_pool_released`` guard at the top of
+            # ``DqliteConnection.close``). The drain is pool-owned
             # cleanup; the flag must come down for the close to pass
             # the guard, otherwise the transport + reader task leak
             # while ``_release_reservation`` decrements ``_size`` as
