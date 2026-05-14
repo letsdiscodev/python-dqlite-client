@@ -1870,8 +1870,8 @@ class ConnectionPool:
                     # exception is sanitised via repr() so the
                     # OperationalError(...) shape reaches operators
                     # without %r doubly-quoting an already-sanitised
-                    # string. Aligns with the round-33
-                    # ``pool.initialize`` per-failure-warning shape.
+                    # string. Aligns with ``pool.initialize``'s
+                    # per-failure-warning shape.
                     logger.warning(
                         "pool: dropping connection %s after ROLLBACK failure: %s",
                         sanitize_for_log(str(conn._address)),
