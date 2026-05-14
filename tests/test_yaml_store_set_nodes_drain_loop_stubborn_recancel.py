@@ -198,6 +198,103 @@ async def test_inner_oserror_during_drain_observed_at_debug(
 
 
 @pytest.mark.asyncio
+async def test_set_nodes_observes_inner_exception_set_before_outer_cancel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pin the defensive ``inner.exception()`` read on the
+    pre-cancel-race arm: when ``inner`` is DONE with an exception
+    before the outer ``except asyncio.CancelledError`` catches the
+    cancel, the drain loop's ``while not inner.done()`` body never
+    enters; the defensive observe arm reads ``inner.exception()`` to
+    mark the task "retrieved" and emits a distinct DEBUG log
+    (``"inner write raised before cancel drain entry"``). Without
+    this read the asyncio ``-X dev`` / ``PYTHONASYNCIODEBUG`` would
+    surface "Task exception was never retrieved" at GC time.
+
+    Deterministic construction: replace ``asyncio.shield`` (the one
+    bound in ``node_store``) so the first call drives ``inner`` to
+    completion with an exception (synchronously, via
+    ``loop.run_until_complete``-style stepping using
+    ``asyncio.wait``), then raises ``CancelledError`` to the outer
+    await. With ``inner.done() is True`` the drain ``while`` never
+    enters and the defensive observe arm fires.
+    """
+    import asyncio as _asyncio_top
+
+    store = YamlNodeStore(tmp_path / "nodes.yaml")
+    new_nodes = [
+        NodeInfo(node_id=1, address="127.0.0.1:9001", role=NodeRole.VOTER),
+    ]
+
+    class _Boom(OSError):
+        pass
+
+    # Inner failure surfaces before the outer cancel observes it:
+    # _write_and_publish raises OSError on the first run-step.
+    async def raising_write_and_publish(*_args: object, **_kwargs: object) -> None:
+        raise _Boom(28, "simulated disk-full before drain entry")
+
+    monkeypatch.setattr(YamlNodeStore, "_write_and_publish", raising_write_and_publish)
+
+    real_shield = _asyncio_top.shield
+    shield_calls: list[int] = []
+
+    async def fake_shield(arg: object, *, loop: object = None) -> None:
+        # First shield call (the outer ``await asyncio.shield(inner)``
+        # at the top of the try): drive ``inner`` to completion with
+        # its exception, then raise CancelledError into the outer
+        # await. This synthesises the race where inner finished with
+        # an exception BEFORE the outer cancel arm catches the cancel
+        # — the drain loop's body therefore never runs.
+        shield_calls.append(1)
+        if len(shield_calls) == 1:
+            assert isinstance(arg, _asyncio_top.Future)
+            # Let inner run to completion (it will raise immediately).
+            done, _ = await _asyncio_top.wait({arg})
+            assert arg.done()
+            # Mark the inner exception as retrieved for the wait
+            # bookkeeping — we'll re-read it via inner.exception()
+            # inside set_nodes (the defensive arm). Suppress any
+            # warning here by reading it now too.
+            assert arg.exception() is not None
+            raise _asyncio_top.CancelledError()
+        # Subsequent calls (none expected on this path) fall back.
+        return await real_shield(arg)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("dqliteclient.node_store.asyncio.shield", fake_shield)
+
+    caplog.set_level(logging.DEBUG, logger="dqliteclient.node_store")
+
+    # set_nodes should re-raise CancelledError (per the defensive
+    # comment: "The original CancelledError is re-raised by raise
+    # below"), NOT the inner OSError.
+    with pytest.raises(_asyncio_top.CancelledError):
+        await store.set_nodes(new_nodes)
+
+    # The distinct DEBUG message from the defensive observe arm at
+    # node_store.py L675-679 fires. This substring is intentionally
+    # different from the sibling drain-loop arm
+    # ("...raised during cancel drain") so the two pins are
+    # independently observable.
+    debug_msgs = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.DEBUG and r.name == "dqliteclient.node_store"
+    ]
+    assert any("before cancel drain entry" in m for m in debug_msgs), (
+        f"expected DEBUG log mentioning 'before cancel drain entry' from the "
+        f"defensive observe arm; got {debug_msgs!r}"
+    )
+
+    # The defensive read marked the inner exception "retrieved" — no
+    # ``Task exception was never retrieved`` warning escapes. Lock
+    # released after the finally.
+    assert not store._lock.locked(), "lock must be released after defensive observe arm fires"
+
+
+@pytest.mark.asyncio
 async def test_no_cancel_inner_oserror_propagates_to_caller(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
