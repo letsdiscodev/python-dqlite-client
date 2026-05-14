@@ -9,10 +9,9 @@ up in ``ClusterError.args[0]`` (and from there into downstream
 ``leader_address`` containing an embedded ``\\n`` would split the log
 record across lines (CWE-117 log injection, secondary surface).
 
-Mirrors the round-1 fix at the sibling probe-failure arm (done issue
-``probe-miss-message-str-e-no-lf-strip``): apply ``sanitize_for_log``
-at the emission site so every downstream log path inherits the
-LF-stripped form.
+Mirrors the sibling probe-failure arm's LF-strip discipline: apply
+``sanitize_for_log`` at the emission site so every downstream log
+path inherits the LF-stripped form.
 """
 
 from __future__ import annotations

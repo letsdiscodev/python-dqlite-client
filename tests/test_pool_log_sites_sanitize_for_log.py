@@ -81,7 +81,7 @@ def test_rollback_warning_sanitizes_exception_text() -> None:
     exception via ``%s`` with the value pre-stringified through
     ``sanitize_for_log(repr(exc))``. The earlier shape used ``%r`` on
     a sanitised string, doubly-quoting/escaping the operator-facing
-    diagnostic; the canonical form (matching the round-33
+    diagnostic; the canonical form (matching the
     ``pool.initialize`` per-failure-warning shape) is ``%s`` plus
     ``sanitize_for_log(repr(exc))``.
     """
@@ -116,7 +116,7 @@ def test_rollback_warning_sanitizes_exception_text() -> None:
     # the bare message string).
     assert "sanitize_for_log(repr(exc))" in block, (
         "ROLLBACK failure WARNING must wrap the exception via "
-        "sanitize_for_log(repr(exc)) — same shape as the round-33 "
+        "sanitize_for_log(repr(exc)) — same shape as the "
         "pool.initialize per-failure-warning."
     )
 

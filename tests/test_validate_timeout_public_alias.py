@@ -3,7 +3,7 @@ validator and is re-exported from the package root. Downstream
 consumers (``dqlitedbapi.connection``) import the public name.
 
 The previously-kept underscore-prefixed ``_validate_timeout`` alias
-has been removed: zero in-tree call sites used it after the round-32
+has been removed: zero in-tree call sites used it after the
 public-name migration, so the alias was dead surface.
 """
 

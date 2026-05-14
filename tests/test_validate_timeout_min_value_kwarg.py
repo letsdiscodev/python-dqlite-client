@@ -6,9 +6,8 @@ Threat model: a programmer using ``dqliteclient.DqliteConnection(addr,
 close_timeout=0.001)`` directly bypasses the SA / dbapi-layer floor.
 Below 0.01 s the dispose-time writer-close may complete before FIN
 flushes, leaving connections lingering in TIME_WAIT. The dbapi-side
-floor was added in a prior round; this round centralises it at the
-client layer's ``validate_timeout`` so every entry path enforces the
-same contract.
+floor lives at the client layer's ``validate_timeout`` so every
+entry path enforces the same contract.
 """
 
 from __future__ import annotations

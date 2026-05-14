@@ -24,10 +24,11 @@ from dqliteclient.node_store import MemoryNodeStore
 
 
 def test_cluster_imports_sanitize_for_log_via_public_name() -> None:
-    """Pin: ``dqliteclient.cluster`` imports the public ``sanitize_for_log``
-    rather than the round-30 private ``_sanitize_for_log`` underscore
-    name. Cross-package private imports were the round-31 cleanup
-    target (parallel to ISSUE-1438 which promoted ``sanitize_server_text``).
+    """Pin: ``dqliteclient.cluster`` imports the public
+    ``sanitize_for_log`` rather than any private underscore name.
+    The wire layer promoted ``sanitize_for_log`` (and
+    ``sanitize_server_text``) to the curated top-level surface so
+    cross-package callers consume the public name.
     """
     from dqliteclient import cluster as cluster_mod
 
