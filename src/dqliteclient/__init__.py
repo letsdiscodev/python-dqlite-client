@@ -50,7 +50,7 @@ from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
 
-__version__: Final[str] = "0.1.5"
+__version__: Final[str] = "0.1.6"
 
 logger = logging.getLogger(__name__)
 # Convention from the Python logging HOWTO: attach a ``NullHandler``
