@@ -951,7 +951,19 @@ class ConnectionPool:
             # had happened. Mirrors the ``_drain_idle`` discipline.
             conn._pool_released = False
             try:
-                with contextlib.suppress(OSError):
+                # Suppress the canonical ``_POOL_CLEANUP_EXCEPTIONS``
+                # tuple (OSError + DqliteConnectionError + ProtocolError
+                # + OperationalError + InterfaceError), not just
+                # ``OSError``. A late-winner conn whose transport was
+                # broken by a peer reset between checkout and close
+                # raises one of the broader categories from
+                # ``close()``; pre-fix that exception escaped, the
+                # ``finally`` restored the flag, and
+                # ``_release_reservation`` was NEVER reached — the
+                # reservation slot leaked permanently. Matches the
+                # canonical ``_release`` discipline at the sibling
+                # close-and-track path.
+                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
                     await asyncio.shield(conn.close())
             finally:
                 # Restore the flag for contract symmetry with
@@ -971,14 +983,17 @@ class ConnectionPool:
             # the reference would leak a live reader task and a
             # socket. Close explicitly and adjust the reservation
             # count so the pool shrinks cleanly instead of leaking.
-            # Suppression of close's own errors is narrow — OSError on
-            # an already-dead writer is expected; anything else
-            # propagates. Flip ``_pool_released`` to ``False`` first
-            # so the close actually runs (see the closed-pool arm
-            # above for the rationale).
+            # Suppress the canonical ``_POOL_CLEANUP_EXCEPTIONS``
+            # tuple — a half-torn-down transport raises
+            # ``DqliteConnectionError`` / ``InterfaceError`` /
+            # ``ProtocolError`` / ``OperationalError`` in addition to
+            # plain ``OSError``; pre-fix the broader categories
+            # escaped and the slot leaked. Flip ``_pool_released``
+            # to ``False`` first so the close actually runs (see
+            # the closed-pool arm above for the rationale).
             conn._pool_released = False
             try:
-                with contextlib.suppress(OSError):
+                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
                     await asyncio.shield(conn.close())
             finally:
                 conn._pool_released = True
