@@ -97,3 +97,27 @@ async def test_closed_pool_arm_does_not_leave_flag_false() -> None:
         "the flag must be restored to True after the close so the "
         "documented stale-reference early-return discipline survives"
     )
+
+
+@pytest.mark.asyncio
+async def test_queue_full_arm_does_not_leave_flag_false() -> None:
+    """Contract symmetry with the closed-pool arm AND with
+    ``_drain_idle``: the QueueFull-fallback close site must also
+    restore ``conn._pool_released`` to ``True`` in its finally so a
+    later stale-reference second close() call falls through the
+    documented early-return rather than re-running close on a dead
+    conn. Without this pin a future revert dropping the QueueFull
+    arm's finally would pass review."""
+    # max_size=1 so we can fill the underlying _pool to capacity and
+    # force put_nowait to raise QueueFull (the open-pool arm).
+    pool = ConnectionPool(["127.0.0.1:9001"], max_size=1, timeout=1.0)
+    pool._pool.put_nowait(MagicMock())
+    pool._size = 2  # reservation accounting we'll decrement back to 1
+    pool._closed = False  # pool open — this is the QueueFull case
+
+    conn = _make_conn_with_released_flag()
+    await pool._put_back_or_release_late_winner(conn)
+    assert conn._pool_released is True, (
+        "QueueFull arm must restore the flag to True after close so "
+        "the documented stale-reference early-return discipline survives"
+    )
