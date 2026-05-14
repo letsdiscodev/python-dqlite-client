@@ -999,9 +999,8 @@ class ClusterClient:
                             # server-supplied LF in ``leader_address``
                             # cannot split downstream log records
                             # (CWE-117 secondary). Mirrors the
-                            # ``probe-miss-message-str-e-no-lf-strip``
-                            # round-1 fix at the sibling probe-failure
-                            # arm above.
+                            # LF-stripping discipline at the sibling
+                            # probe-failure arm above.
                             return _ProbeMiss(
                                 message=(f"{_safe_addr_log}: stale redirect to {_safe_hint_log}"),
                                 exc=None,
