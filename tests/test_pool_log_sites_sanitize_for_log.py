@@ -122,13 +122,16 @@ def test_rollback_warning_sanitizes_exception_text() -> None:
 
 
 def test_pool_imports_sanitize_for_log_from_wire() -> None:
-    """The import path must come from the public ``dqlitewire.messages.
-    responses`` surface (post round-31 promotion), not the private
-    ``_sanitize_*`` underscore name."""
+    """The import path must come from the public ``dqlitewire`` top-level
+    surface, not the private ``_sanitize_*`` underscore name. Either the
+    deep submodule path or the top-level re-export is acceptable, since
+    the top-level form (matching sibling sites in ``cluster.py`` and
+    ``connection.py``) is preferred and the submodule path remains a
+    public re-export."""
     source = _POOL_PY.read_text()
-    assert "from dqlitewire.messages.responses import sanitize_for_log" in source, (
-        "pool.py must import sanitize_for_log from the public wire surface"
-    )
+    top_level = "from dqlitewire import" in source and "sanitize_for_log" in source
+    deep = "from dqlitewire.messages.responses import sanitize_for_log" in source
+    assert top_level or deep, "pool.py must import sanitize_for_log from the public wire surface"
 
 
 def test_pool_initialize_warning_sanitizes_failure_str() -> None:

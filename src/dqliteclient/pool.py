@@ -37,8 +37,7 @@ from dqlitewire import (
 from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
-from dqlitewire import LEADER_ERROR_CODES
-from dqlitewire.messages.responses import sanitize_for_log
+from dqlitewire import LEADER_ERROR_CODES, sanitize_for_log
 
 __all__ = ["ConnectionPool"]
 
