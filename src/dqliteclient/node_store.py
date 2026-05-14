@@ -230,11 +230,16 @@ def _validate_and_normalise_nodes(nodes: Sequence[NodeInfo]) -> tuple[NodeInfo, 
     2. Strip leading/trailing whitespace (operator-friendly canonicalisation).
     3. Reject empty stripped addresses with ``ValueError``.
     4. Validate ``host:port`` shape via ``parse_address``.
-    5. Deduplicate by canonical (stripped) address.
-    6. Return frozen ``NodeInfo`` tuples with the canonical address so
+    5. Deduplicate by the ``parse_address`` canonical ``(host, port)``
+       tuple so address variants that differ only in lexical shape
+       (mixed-case hostnames per RFC 1035, IPv6 short-vs-long form,
+       non-canonical IPv4 literals) dedup to a single entry.
+       Mirrors the canonical-tuple discipline used by
+       :func:`dqliteclient.cluster._addr_equiv`.
+    6. Return frozen ``NodeInfo`` tuples with the stripped address so
        downstream lookups by address match.
     """
-    seen: set[str] = set()
+    seen: set[tuple[str, int]] = set()
     unique: list[NodeInfo] = []
     # Local import to avoid the cluster import cycle (cluster imports
     # node_store; node_store would otherwise need cluster's
@@ -250,17 +255,17 @@ def _validate_and_normalise_nodes(nodes: Sequence[NodeInfo]) -> tuple[NodeInfo, 
         if not addr:
             raise ValueError("NodeInfo.address must be a non-empty 'host:port' string")
         try:
-            _parse_addr_validator(addr)
+            canonical = _parse_addr_validator(addr)
         except ValueError as e:
             raise ValueError(f"NodeInfo.address {addr!r} is not a valid 'host:port': {e}") from e
-        if addr in seen:
+        if canonical in seen:
             continue
-        seen.add(addr)
+        seen.add(canonical)
         if addr is node.address:
             unique.append(node)
         else:
-            # NodeInfo is a frozen dataclass; rebuild with the canonical
-            # (stripped) address so a downstream lookup by-address matches.
+            # NodeInfo is a frozen dataclass; rebuild with the stripped
+            # address so a downstream lookup by-address matches.
             unique.append(NodeInfo(node_id=node.node_id, address=addr, role=node.role))
     return tuple(unique)
 
