@@ -562,7 +562,22 @@ class YamlNodeStore(NodeStore):
         # last-writer-wins ordering deterministic.
         import yaml
 
-        async with self._lock:
+        # Manual ``acquire`` / ``release`` (rather than ``async with``)
+        # so the lock is held across the shielded inner write even
+        # when an outer cancel lands mid-``to_thread``. The previous
+        # ``async with self._lock: await asyncio.shield(...)`` shape
+        # released the lock in the ``__aexit__`` while the shielded
+        # ``_write_and_publish`` was still running in the background
+        # — a concurrent ``set_nodes`` could then acquire the freed
+        # lock and race the orphan shielded write, reintroducing the
+        # disk/memory divergence the round-2 shield was supposed to
+        # prevent. Capturing the inner task and awaiting it under
+        # the lock on the cancel path keeps the second writer parked
+        # until the first writer's commit truly finishes. Go's
+        # ``store.go::SetServers`` runs under a ``sync.Mutex`` which
+        # is uninterruptible for the same reason.
+        await self._lock.acquire()
+        try:
             # Run the same strip / dedup / parse_address validation
             # pipeline as MemoryNodeStore. Without this, set_nodes
             # could persist whitespace-laden / duplicated / malformed
@@ -601,7 +616,25 @@ class YamlNodeStore(NodeStore):
             # assignment (in-memory state = OLD), leaving the two
             # divergent for the lifetime of the process. The shield
             # bundles the commit so the cancel only re-raises after
-            # both sides have been updated. Go's
-            # ``store.go::SetServers`` runs under a ``sync.Mutex``
-            # which is uninterruptible for the same reason.
-            await asyncio.shield(self._write_and_publish(normalised, text))
+            # both sides have been updated.
+            inner = asyncio.ensure_future(self._write_and_publish(normalised, text))
+            try:
+                await asyncio.shield(inner)
+            except asyncio.CancelledError:
+                # The outer await was cancelled but the shielded
+                # ``inner`` task continues running. Drain it under
+                # the lock so the lock remains held until the
+                # commit truly finishes — without this, the
+                # ``finally`` would release the lock while a
+                # concurrent writer could race the orphan.
+                # Loop on repeated cancel so a stubborn outer
+                # cancel cascade still waits out the worker
+                # thread, which asyncio cannot abort.
+                while not inner.done():
+                    try:
+                        await asyncio.shield(inner)
+                    except asyncio.CancelledError:
+                        continue
+                raise
+        finally:
+            self._lock.release()
