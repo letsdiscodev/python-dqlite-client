@@ -3,8 +3,8 @@ through ``sanitize_for_log`` — NOT ``_sanitize_display_text`` — so
 LF and Tab are ESCAPED (``\\n`` / ``\\t``) at the logger boundary
 rather than preserved verbatim.
 
-The sibling site ``_verify_redirect`` (``cluster.py:1416-1420``)
-already uses ``sanitize_for_log`` with an explicit code comment
+The sibling site ``_verify_redirect`` already uses
+``sanitize_for_log`` with an explicit code comment
 calling out that ``_sanitize_display_text`` preserves LF / Tab for
 exception-message readability — wrong helper for logger records
 (CWE-117 log injection).
@@ -118,8 +118,8 @@ async def test_query_leader_nonzero_id_empty_addr_uses_sanitize_for_log(
     """Arm 1 (``node_id != 0 and not leader_addr``): even though the
     ``address`` reaches this log after a successful ``parse_address``
     gate (so no LF / Tab survives in practice), the helper must be
-    ``sanitize_for_log`` to match the sibling discipline at
-    ``cluster.py:1416-1420``. Pin via direct helper-identity check:
+    ``sanitize_for_log`` to match the sibling discipline in
+    ``_verify_redirect``. Pin via direct helper-identity check:
     monkeypatch both helpers on the cluster module and assert
     ``sanitize_for_log`` was called for the log site."""
     cluster = _make_cluster()
