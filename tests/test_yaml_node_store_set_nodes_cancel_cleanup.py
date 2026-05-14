@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -86,4 +87,83 @@ async def test_set_nodes_orphan_tempfile_cleaned_up_on_replace_failure(
     assert orphans == [], (
         f"orphan tempfile leak after os.replace failure: {orphans}; "
         f"the finally: os.unlink cleanup did not run"
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_nodes_cancel_during_to_thread_leaves_no_orphan_tempfile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancel delivered to the ``set_nodes`` task while the worker
+    thread is blocked mid-write must NOT leak an orphan tempfile.
+
+    asyncio does not abort the worker thread on cancel; the cancel
+    parks until the worker returns, then re-raises ``CancelledError``
+    from the awaited ``to_thread`` future. The cleanup contract is:
+    whatever state the worker leaves behind on disk must be
+    self-consistent — either the rename completed (in which case the
+    tempfile is gone) or the finally-arm unlink ran (in which case
+    the tempfile is gone). No orphan tempfiles either way.
+    """
+    store = YamlNodeStore(tmp_path / "nodes.yaml")
+
+    started = threading.Event()
+    can_finish = threading.Event()
+
+    real_replace = os.replace
+    replace_calls: list[tuple[str, str]] = []
+
+    def slow_replace(
+        src: str | os.PathLike[str],
+        dst: str | os.PathLike[str],
+    ) -> None:
+        # Signal that the worker is mid-write, then park until the
+        # test releases us. The cancel arrives at the awaiting
+        # coroutine while this thread is blocked here.
+        started.set()
+        can_finish.wait(timeout=5.0)
+        replace_calls.append((str(src), str(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr("dqliteclient.node_store.os.replace", slow_replace)
+
+    task = asyncio.create_task(
+        store.set_nodes([NodeInfo(node_id=1, address="127.0.0.1:9001", role=NodeRole.VOTER)])
+    )
+
+    # Wait until the worker thread is parked inside slow_replace.
+    # Poll the threading.Event in the loop rather than blocking the
+    # event loop on a synchronous wait — and avoid second-executor-
+    # thread serialisation races with asyncio.to_thread.
+    for _ in range(200):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set(), "worker thread did not reach slow_replace within the test budget"
+
+    # Deliver the cancel WHILE the worker is parked. asyncio cannot
+    # interrupt the thread; the cancel hangs until we release the
+    # worker.
+    task.cancel()
+
+    # Release the worker so the rename completes and the to_thread
+    # future resolves; the cancel then surfaces at the await.
+    can_finish.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Filter glob to only paths that actually exist at assert time —
+    # some filesystem/dirent-cache shapes return paths via ``glob`` that
+    # have already been renamed/unlinked by the worker thread by the
+    # time the assert runs. The contract is "no orphan tempfile lives
+    # on disk after the operation," not "glob saw no entry at any
+    # point during the race."
+    orphans = [p for p in tmp_path.glob(".nodes.yaml.*.tmp") if p.exists()]
+    assert orphans == [], (
+        f"orphan tempfile leak after cancel-during-to_thread: {orphans}; "
+        f"replace_calls={replace_calls}; "
+        f"the finally-arm cleanup or the rename did not converge to "
+        f"a self-consistent on-disk state"
     )
