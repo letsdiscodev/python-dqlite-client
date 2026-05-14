@@ -1244,11 +1244,19 @@ class ClusterClient:
                 # ProtocolError surfaced upstream. Log at DEBUG so the
                 # WARN/ERROR paths stay uncluttered during healthy
                 # per-node probes.
+                #
+                # Log both addresses through ``sanitize_for_log`` so a
+                # hostile peer can't inject CRLF / Tab / control-chars
+                # into operator-facing logs (CWE-117).
+                # ``_sanitize_display_text`` preserves LF / Tab for
+                # exception-message readability — wrong helper for
+                # logger records. Mirrors the sibling discipline at
+                # ``_verify_redirect`` (this module).
                 logger.debug(
                     "query_leader: %s returned malformed redirect (node_id=%s, address=%r)",
-                    _sanitize_display_text(address),
+                    sanitize_for_log(address),
                     node_id,
-                    _sanitize_display_text(leader_addr),
+                    sanitize_for_log(leader_addr),
                 )
                 raise ProtocolError(
                     f"server {_sanitize_display_text(address)} returned "
@@ -1261,10 +1269,15 @@ class ClusterClient:
                 # id=0, so a peer returning this is either confused or
                 # hostile. Reject symmetrically so the redirect target
                 # is not trusted without a matching id.
+                #
+                # Same helper rationale as the arm above:
+                # ``sanitize_for_log`` for the DEBUG log record (LF /
+                # Tab escaped, CWE-117), ``_sanitize_display_text`` for
+                # the exception-message rendering below.
                 logger.debug(
                     "query_leader: %s returned malformed redirect (node_id=0, address=%r)",
-                    _sanitize_display_text(address),
-                    _sanitize_display_text(leader_addr),
+                    sanitize_for_log(address),
+                    sanitize_for_log(leader_addr),
                 )
                 raise ProtocolError(
                     f"server {_sanitize_display_text(address)} returned "
