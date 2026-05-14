@@ -460,6 +460,25 @@ class YamlNodeStore(NodeStore):
     async def get_nodes(self) -> Sequence[NodeInfo]:
         return self._nodes
 
+    async def _write_and_publish(
+        self,
+        normalised: tuple[NodeInfo, ...],
+        text: str,
+    ) -> None:
+        """Atomically commit ``text`` to disk and publish the
+        ``normalised`` membership in memory.
+
+        Called by :meth:`set_nodes` wrapped in :func:`asyncio.shield`
+        so a cancel arriving between the worker-thread return and
+        the in-memory assignment cannot leave disk and ``self._nodes``
+        divergent — see the long-form note at the call site.
+        """
+        await asyncio.to_thread(self._write_atomic_sync, text)
+        # Store the canonical (validated, deduped) tuple in memory so
+        # get_nodes returns the same shape that _load_from_disk would
+        # surface after restart.
+        self._nodes = normalised
+
     def _write_atomic_sync(self, text: str) -> None:
         """Synchronous body of the atomic-rename ritual.
 
@@ -566,8 +585,18 @@ class YamlNodeStore(NodeStore):
             # coroutine on the loop for the duration — RPC timeouts
             # cannot fire, heartbeat windows expire silently, pool
             # acquirers parked on _pool.get cannot wake.
-            await asyncio.to_thread(self._write_atomic_sync, text)
-            # Store the canonical (validated, deduped) tuple in
-            # memory so get_nodes returns the same shape that
-            # _load_from_disk would surface after restart.
-            self._nodes = normalised
+            #
+            # Shield the to_thread await + in-memory assignment
+            # together: asyncio cannot abort the worker thread mid-
+            # write, so a cancel arriving WHILE the worker is running
+            # parks until the future resolves and then re-raises
+            # ``CancelledError`` at the await boundary. Pre-fix that
+            # cancel could land BETWEEN the worker returning (on-disk
+            # state = NEW) and the ``self._nodes = normalised``
+            # assignment (in-memory state = OLD), leaving the two
+            # divergent for the lifetime of the process. The shield
+            # bundles the commit so the cancel only re-raises after
+            # both sides have been updated. Go's
+            # ``store.go::SetServers`` runs under a ``sync.Mutex``
+            # which is uninterruptible for the same reason.
+            await asyncio.shield(self._write_and_publish(normalised, text))
