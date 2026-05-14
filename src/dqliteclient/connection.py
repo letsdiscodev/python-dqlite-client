@@ -42,9 +42,9 @@ from dqlitewire import (
 from dqlitewire import SQLITE_BUSY as _SQLITE_BUSY
 from dqlitewire import SQLITE_NOTFOUND as _SQLITE_NOTFOUND
 from dqlitewire import TX_AUTO_ROLLBACK_PRIMARY_CODES as _TX_AUTO_ROLLBACK_PRIMARY_CODES
+from dqlitewire import EncodeError as _WireEncodeError
 from dqlitewire import primary_sqlite_code as _primary_sqlite_code
 from dqlitewire import sanitize_server_text as _sanitize_display_text
-from dqlitewire.exceptions import EncodeError as _WireEncodeError
 
 __all__ = ["DqliteConnection"]
 

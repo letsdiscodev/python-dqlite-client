@@ -13,14 +13,17 @@ from dqlitewire import (
 from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
-from dqlitewire import WIRE_DECODE_FAILED_PREFIX, MessageDecoder, MessageEncoder, NodeRole
+from dqlitewire import (
+    WIRE_DECODE_FAILED_PREFIX,
+    Message,
+    MessageDecoder,
+    MessageEncoder,
+    NodeInfo,
+    NodeRole,
+)
+from dqlitewire import ProtocolError as _WireProtocolError
+from dqlitewire import ServerFailure as _WireServerFailure
 from dqlitewire import sanitize_server_text as _sanitize_server_text
-from dqlitewire.exceptions import (
-    ProtocolError as _WireProtocolError,
-)
-from dqlitewire.exceptions import (
-    ServerFailure as _WireServerFailure,
-)
 from dqlitewire.messages import (
     AddRequest,
     AssignRequest,
@@ -50,8 +53,6 @@ from dqlitewire.messages import (
     WeightRequest,
     WelcomeResponse,
 )
-from dqlitewire.messages.base import Message
-from dqlitewire.messages.responses import NodeInfo
 
 __all__ = ["DqliteProtocol", "validate_positive_int_or_none"]
 

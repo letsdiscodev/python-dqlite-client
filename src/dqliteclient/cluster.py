@@ -35,8 +35,6 @@ from dqlitewire import (
 from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
-from dqlitewire import NodeRole, sanitize_for_log
-from dqlitewire import sanitize_server_text as _sanitize_display_text
 
 # Aliased from the wire layer to avoid silent shadowing of
 # ``dqliteclient.node_store.NodeInfo`` (the public user-facing class
@@ -46,9 +44,9 @@ from dqlitewire import sanitize_server_text as _sanitize_display_text
 # return value depends on the disambiguation. Wire-side NodeInfo is
 # used internally by ``cluster_info()`` to decode ``ServersResponse``;
 # the user-facing NodeInfo lives in ``node_store``.
-from dqlitewire.messages.responses import (
-    NodeInfo as _WireNodeInfo,
-)
+from dqlitewire import NodeInfo as _WireNodeInfo
+from dqlitewire import NodeRole, sanitize_for_log
+from dqlitewire import sanitize_server_text as _sanitize_display_text
 
 __all__ = [
     "ClusterClient",

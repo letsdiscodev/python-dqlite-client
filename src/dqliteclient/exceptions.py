@@ -2,9 +2,9 @@
 
 from typing import Any, ClassVar
 
+from dqlitewire import ProtocolError as _WireProtocolError
 from dqlitewire._truncate import _DEFAULT_MAX_RAW_MESSAGE
 from dqlitewire._truncate import _cap_raw_message as _wire_cap_raw_message
-from dqlitewire.exceptions import ProtocolError as _WireProtocolError
 
 __all__ = [
     "ClusterError",
