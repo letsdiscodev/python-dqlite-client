@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Sequence
-from typing import Final
+from typing import Final as _Final
 
 from dqliteclient._dial import DialFunc
 from dqliteclient.cluster import (
@@ -52,7 +52,7 @@ from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
 
-__version__: Final[str] = "0.1.6"
+__version__: _Final[str] = "0.1.6"
 
 logger = logging.getLogger(__name__)
 # Convention from the Python logging HOWTO: attach a ``NullHandler``

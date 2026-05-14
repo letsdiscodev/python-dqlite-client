@@ -71,11 +71,7 @@ def test_probe_one_failure_debug_log_escapes_lf_tab_in_exception_text(
     store = MemoryNodeStore(["127.0.0.1:9001"])
     cc = ClusterClient(store, timeout=0.5, attempt_timeout=0.05)
 
-    hostile_err = (
-        "connect refused\n"
-        "MAY 14 12:34:56 leader-elected fake-node as leader\t"
-        "col2"
-    )
+    hostile_err = "connect refused\nMAY 14 12:34:56 leader-elected fake-node as leader\tcol2"
 
     with (
         patch.object(
@@ -104,10 +100,8 @@ def test_probe_one_failure_debug_log_escapes_lf_tab_in_exception_text(
     # Positive: the escape sequences are present as literal two-byte
     # forms (``\\n`` / ``\\t``).
     assert "\\n" in exc_text_arg, (
-        f"expected literal '\\n' escape in sanitized exception text; "
-        f"got {exc_text_arg!r}"
+        f"expected literal '\\n' escape in sanitized exception text; got {exc_text_arg!r}"
     )
     assert "\\t" in exc_text_arg, (
-        f"expected literal '\\t' escape in sanitized exception text; "
-        f"got {exc_text_arg!r}"
+        f"expected literal '\\t' escape in sanitized exception text; got {exc_text_arg!r}"
     )
