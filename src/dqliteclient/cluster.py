@@ -1113,9 +1113,10 @@ class ClusterClient:
 
         joined = "; ".join(errors)
         if len(joined) > _MAX_AGGREGATE_ERROR_PAYLOAD:
-            kept = len(joined) - _MAX_AGGREGATE_ERROR_PAYLOAD
+            overflow = len(joined) - _MAX_AGGREGATE_ERROR_PAYLOAD
             joined = (
-                joined[:_MAX_AGGREGATE_ERROR_PAYLOAD] + f"... [aggregate truncated, {kept} chars]"
+                joined[:_MAX_AGGREGATE_ERROR_PAYLOAD]
+                + f"... [aggregate truncated, {overflow} chars]"
             )
         # Aggregate-failure WARNING. Per-node probes are at DEBUG so
         # healthy sweeps do not spam logs, but the all-nodes-failed
