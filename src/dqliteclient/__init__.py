@@ -9,6 +9,8 @@ Python (no-GIL) is not supported — the guard lives in
 raises ``ImportError`` at import time.
 """
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import Sequence
 from typing import Final
@@ -168,12 +170,28 @@ async def connect(
         # orphan ``conn`` until GC. Mirrors
         # ``dqlitedbapi.aio.aconnect`` and
         # ``sqlalchemydqlite.aio.DqliteDialect_aio.connect``.
-        # Suppress only ``Exception`` from the cleanup-close so a
-        # ``CancelledError`` lands AFTER cleanup has run; chaining
-        # via ``__context__`` preserves the original failure for
-        # diagnostics either way.
+        #
+        # ``asyncio.shield`` lets the inner ``close()`` task run to
+        # completion even when a FRESH outer cancel (e.g. from an
+        # ``asyncio.timeout(...)`` wrapping the caller's
+        # ``await connect(...)``) lands while we are suspended in
+        # ``await conn.close()``. Without the shield, the close
+        # would be cancelled mid-flight and the bare ``raise`` below
+        # would re-raise a ``CancelledError`` from the close site
+        # instead of the original connect-time exception — the
+        # original would survive only as ``__context__``.
+        # ``contextlib.suppress(asyncio.CancelledError)`` absorbs
+        # the outer-await CancelledError so the bare ``raise``
+        # below re-delivers the ORIGINAL exception (asyncio will
+        # re-raise the cancel at the next await on this task).
+        # ``except Exception`` catches non-cancel close-time
+        # failures (e.g. OSError on a stale transport) and logs
+        # them at DEBUG so the original connect error remains
+        # user-visible. Mirrors the ``ClusterClient.connect``
+        # try_connect cleanup arm and ISSUE-1428 in dbapi.
         try:
-            await conn.close()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(conn.close())
         except Exception:
             logger.debug(
                 "connect: cleanup-close after failed connect",
