@@ -2,8 +2,8 @@
 deepcopy without losing the ``raw_message`` (base) or ``code``
 (``DqliteConnectionError``) fields.
 
-The fields were added in cycle 27 (XP2 / XP3) so the wire-level
-signal would survive cross-process boundaries — ``ProcessPoolExecutor``,
+The fields were added so the wire-level signal would survive
+cross-process boundaries — ``ProcessPoolExecutor``,
 ``multiprocessing.Queue.put(exception)``, Celery task results, SA's
 multiprocess pool. Without overriding ``__reduce__`` the default
 ``Exception`` pickle path (``(cls, self.args)``) silently drops every
@@ -103,7 +103,7 @@ def test_operational_error_pickle_lossless_within_caps() -> None:
 def test_pickle_round_trip_through_multiprocessing_queue() -> None:
     """End-to-end: an exception sent through ``multiprocessing.Queue``
     survives with code and raw_message intact. This is the canonical
-    cross-process surface XP2 was added to plumb."""
+    cross-process surface these fields are intended for."""
     import multiprocessing
 
     ctx = multiprocessing.get_context("spawn")
