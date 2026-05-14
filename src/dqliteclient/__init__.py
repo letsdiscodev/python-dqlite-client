@@ -188,7 +188,8 @@ async def connect(
         # failures (e.g. OSError on a stale transport) and logs
         # them at DEBUG so the original connect error remains
         # user-visible. Mirrors the ``ClusterClient.connect``
-        # try_connect cleanup arm and ISSUE-1428 in dbapi.
+        # try_connect cleanup arm and the ``dqlitedbapi.aio.aconnect``
+        # cleanup-close shield.
         try:
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.shield(conn.close())

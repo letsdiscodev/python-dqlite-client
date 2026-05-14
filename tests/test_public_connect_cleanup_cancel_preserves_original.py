@@ -17,9 +17,9 @@ fresh outer cancel landing during ``await conn.close()`` raises a new
 exception — the bare ``raise`` is never reached and the original
 error is demoted to ``__context__``.
 
-Mirrors the ISSUE-1428 fix in ``dqlitedbapi.aio`` and the
-``ClusterClient.connect.try_connect`` cleanup arm in
-``cluster.py:1578-1586``: wrap the close in
+Mirrors the ``dqlitedbapi.aio.aconnect`` cleanup-close shield and
+the ``ClusterClient.connect.try_connect`` cleanup arm in
+``cluster.py``: wrap the close in
 ``contextlib.suppress(asyncio.CancelledError) + asyncio.shield(...)``
 so the close runs to completion in the background and the original
 exception's bare ``raise`` is reached.

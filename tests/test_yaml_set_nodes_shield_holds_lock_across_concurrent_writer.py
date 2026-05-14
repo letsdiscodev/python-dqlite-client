@@ -10,8 +10,8 @@ write continues in the background. A concurrent ``set_nodes`` then
 acquires the freed lock and races the orphaned writer on disk and
 in-memory state, allowing a writer-B-then-writer-A-orphan
 interleaving whose final disk state differs from the in-memory
-``_nodes`` — exactly the divergence the round-2 shield was supposed
-to prevent.
+``_nodes`` — exactly the divergence the prior shield-only fix was
+supposed to prevent.
 
 The fix holds the lock for the full duration of the shielded inner
 write so concurrent writers serialise correctly even under cancel.

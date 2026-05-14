@@ -570,8 +570,8 @@ class YamlNodeStore(NodeStore):
         # ``_write_and_publish`` was still running in the background
         # — a concurrent ``set_nodes`` could then acquire the freed
         # lock and race the orphan shielded write, reintroducing the
-        # disk/memory divergence the round-2 shield was supposed to
-        # prevent. Capturing the inner task and awaiting it under
+        # disk/memory divergence the prior shield-only fix was
+        # supposed to prevent. Capturing the inner task and awaiting it under
         # the lock on the cancel path keeps the second writer parked
         # until the first writer's commit truly finishes. Go's
         # ``store.go::SetServers`` runs under a ``sync.Mutex`` which
