@@ -1192,6 +1192,19 @@ class ConnectionPool:
                 conn = self._pool.get_nowait()
             except asyncio.QueueEmpty:  # pragma: no cover
                 break
+            # Flip ``_pool_released`` to ``False`` BEFORE close so the
+            # close path actually runs. Conns sitting in ``self._pool``
+            # were placed there by ``_release`` and carry
+            # ``_pool_released = True`` so a user-side ``close()`` on a
+            # checked-in conn no-ops (the pool-contract early-return at
+            # ``connection.py:1619-1622``). The drain is pool-owned
+            # cleanup; the flag must come down for the close to pass
+            # the guard, otherwise the transport + reader task leak
+            # while ``_release_reservation`` decrements ``_size`` as
+            # though close had run. Mirrors the discipline at
+            # ``_drain_idle`` and the two ``_put_back_or_release_late_winner``
+            # close arms.
+            conn._pool_released = False
             try:
                 # Shield the close so a KeyboardInterrupt / SystemExit
                 # (or a fresh cancel delivered through the lock acquire
@@ -1207,6 +1220,11 @@ class ConnectionPool:
                     exc_info=True,
                 )
             finally:
+                # Restore the flag for contract symmetry with
+                # ``_drain_idle``: any stale-reference second close()
+                # falls through the documented early-return rather
+                # than re-running close on a dead conn.
+                conn._pool_released = True
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.shield(self._release_reservation())
 
