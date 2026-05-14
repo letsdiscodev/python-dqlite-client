@@ -132,8 +132,8 @@ async def test_query_leader_nonzero_id_empty_addr_uses_sanitize_for_log(
 
     from dqliteclient import cluster as cluster_mod
 
-    real_sanitize_for_log = cluster_mod.sanitize_for_log
-    real_display = cluster_mod._sanitize_display_text
+    real_sanitize_for_log = cluster_mod.sanitize_for_log  # type: ignore[attr-defined]
+    real_display = cluster_mod._sanitize_display_text  # type: ignore[attr-defined]
     log_calls: list[str] = []
     display_calls: list[str] = []
 

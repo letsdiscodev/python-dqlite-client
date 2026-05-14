@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import os
 import stat
 import tempfile
@@ -15,6 +16,8 @@ from dqliteclient.exceptions import ClusterError
 from dqlitewire import NodeRole
 
 __all__ = ["MemoryNodeStore", "NodeInfo", "NodeStore", "YamlNodeStore"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -635,6 +638,45 @@ class YamlNodeStore(NodeStore):
                         await asyncio.shield(inner)
                     except asyncio.CancelledError:
                         continue
+                    except Exception:
+                        # Non-cancel inner failure (``OSError`` on a
+                        # near-full disk / ``EROFS`` / fsync error
+                        # ...). Break so the exception escapes and
+                        # supplants the cancel context — the caller
+                        # MUST see the disk error rather than a
+                        # generic ``CancelledError``. The ``await``
+                        # above implicitly observed
+                        # ``inner.exception()``; logging at DEBUG
+                        # closes the observability gap that previously
+                        # left a silent unwind during a cancel cascade
+                        # and prevents the asyncio "exception in
+                        # shielded future" log from being the only
+                        # breadcrumb.
+                        logger.debug(
+                            "set_nodes: inner write raised during cancel drain",
+                            exc_info=True,
+                        )
+                        raise
+                # Defensive: if ``inner`` finished with an exception
+                # WITHOUT the drain re-await observing it (e.g. the
+                # outer ``except asyncio.CancelledError`` caught a
+                # cancel that arrived after inner had already finished
+                # with an exception, so the drain loop never entered),
+                # read it now to mark the task "retrieved" and prevent
+                # the asyncio GC-time "Task exception was never
+                # retrieved" warning under ``-X dev`` /
+                # ``PYTHONASYNCIODEBUG``. The original
+                # ``CancelledError`` is re-raised by ``raise`` below
+                # — per architect+reviewer agreement, a non-cancel
+                # inner failure observed here is NOT swallowed
+                # silently; it would have been caught by the
+                # ``except Exception`` arm above if it surfaced
+                # during the drain re-await.
+                if inner.exception() is not None:
+                    logger.debug(
+                        "set_nodes: inner write raised before cancel drain entry",
+                        exc_info=inner.exception(),
+                    )
                 raise
         finally:
             self._lock.release()
