@@ -1,5 +1,5 @@
 """Pin: every client exception class carries the ``raw_message``
-attribute (defaulting to ``None``), so the cycle-21 invariant — the
+attribute (defaulting to ``None``), so the invariant — the
 verbatim server text survives layer wrapping — applies symmetrically
 across the hierarchy and not only to ``OperationalError``.
 

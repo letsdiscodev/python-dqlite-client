@@ -1,7 +1,7 @@
 """Pin: trigger splitter handles CASE...END expressions and comments
 between CREATE and TRIGGER.
 
-Two cycle-19 follow-ups:
+Two follow-ups:
 
 1. ``CASE WHEN ... END`` inside a trigger body must NOT decrement
    ``trigger_depth`` (the END terminates the CASE expression, not
@@ -66,9 +66,9 @@ class TestTriggerPreambleComments:
         assert len(pieces) == 1, f"got {len(pieces)} pieces: {pieces!r}"
 
 
-class TestRegressionsFromCycle19StillPass:
+class TestBasicTriggerBodyRegression:
     def test_basic_trigger_body_kept_together(self) -> None:
-        """Sanity: cycle 19's basic regression test still passes."""
+        """Sanity: the basic trigger-body regression test still passes."""
         sql = (
             "CREATE TRIGGER aud AFTER INSERT ON x BEGIN\n"
             "  UPDATE y SET v=1 WHERE id=NEW.id;\n"

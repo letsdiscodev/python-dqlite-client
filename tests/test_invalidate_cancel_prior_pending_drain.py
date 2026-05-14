@@ -1,4 +1,4 @@
-"""Pin: cycle 22's cancel-and-detach guard on
+"""Pin: the cancel-and-detach guard on
 ``DqliteConnection._invalidate``.
 
 A second ``_invalidate`` call while a prior bounded-drain task is
@@ -9,15 +9,15 @@ reachable from ``self``), and ``close()`` awaits only the second
 — recreating the exact "Task was destroyed but it is pending"
 warning the drain mechanism was added to suppress.
 
-Also pins the cycle 22 ``RuntimeError("Event loop is closed")``
+Also pins the ``RuntimeError("Event loop is closed")``
 guard around ``loop.create_task``: when the loop is dead the
 fallback sets ``_pending_drain = None`` and preserves the
 original cancel/cause instead of replacing it with a bare
 ``RuntimeError``.
 
 And pins the ``_invalidation_cause`` clear on ``_close_impl``
-(cycle 22) so the cached exception does not pin frame
-globals/locals across close → reconnect cycles.
+so the cached exception does not pin frame globals/locals
+across close → reconnect cycles.
 """
 
 from __future__ import annotations
@@ -85,8 +85,8 @@ async def test_second_invalidate_cancels_prior_pending_drain() -> None:
 
     assert second_task is not None
     assert second_task is not first_task
-    # The cycle 22 contract: prior task has cancel() scheduled
-    # before the slot is overwritten. ``cancel()`` flips the task
+    # The contract: prior task has cancel() scheduled before the
+    # slot is overwritten. ``cancel()`` flips the task
     # to ``cancelling`` (not yet ``cancelled``) until the task
     # observes the CancelledError at its next await — pump the
     # loop so the cancellation lands.
@@ -102,8 +102,8 @@ async def test_invalidate_with_closed_loop_preserves_cause(
 ) -> None:
     """``loop.create_task`` raising
     ``RuntimeError("Event loop is closed")`` must NOT replace the
-    original cancel/cause; cycle 22 added the try/except guard
-    that DEBUG-logs and continues with ``_pending_drain = None``."""
+    original cancel/cause; the try/except guard DEBUG-logs and
+    continues with ``_pending_drain = None``."""
     conn = _make_conn_with_protocol()
     conn._protocol = _FakeProtocol()  # type: ignore[assignment]
 
@@ -134,9 +134,9 @@ async def test_invalidate_with_closed_loop_preserves_cause(
 
 @pytest.mark.asyncio
 async def test_close_impl_clears_invalidation_cause() -> None:
-    """Cycle 22 added ``self._invalidation_cause = None`` on
-    ``_close_impl`` so the cached exception does NOT pin
-    frame globals/locals across close → reconnect cycles. A
+    """``self._invalidation_cause = None`` on ``_close_impl``
+    ensures the cached exception does NOT pin frame
+    globals/locals across close → reconnect cycles. A
     regression that drops the line re-introduces the
     traceback-pin defect."""
     conn = _make_conn_with_protocol()

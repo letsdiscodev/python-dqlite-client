@@ -673,8 +673,8 @@ class TestDqliteProtocol:
     ) -> None:
         """Pin: a server-emitted ``StmtResponse`` whose ``db_id``
         does not match the prepare's ``db_id`` argument indicates
-        prepared-statement registry drift. The cycle 22 fix
-        prefixes the resulting ``ProtocolError`` with the
+        prepared-statement registry drift. The fix prefixes the
+        resulting ``ProtocolError`` with the
         canonical ``"wire decode failed:"`` phrase so SA's
         ``is_disconnect`` substring matcher routes it through
         the pool-invalidate path. Without the prefix, the

@@ -1,7 +1,6 @@
 """Pin: client ``OperationalError`` carries the verbatim
-server text in ``raw_message`` (un-suffixed) — the cycle-21
-contract that the dbapi layer plumbs through to its own
-exceptions.
+server text in ``raw_message`` (un-suffixed) — the contract
+that the dbapi layer plumbs through to its own exceptions.
 
 Pre-fix, ``protocol.py`` composed the addr-suffix into the
 display message before calling ``OperationalError(code,

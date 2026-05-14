@@ -1,11 +1,10 @@
 """Pin: ``MemoryNodeStore.set_nodes`` mirrors ``__init__``'s
 strip / dedup / empty-rejection validation contract.
 
-Cycle 22 applied the ``__init__`` validation to
-``set_nodes`` to close a runtime-update bypass. Without
-these tests, a regression that drops the validation block
-silently re-introduces the exact defect the cycle-22
-commit was meant to prevent.
+The ``__init__`` validation is also applied to ``set_nodes`` to
+close a runtime-update bypass. Without these tests, a regression
+that drops the validation block silently re-introduces the
+defect the validation was meant to prevent.
 
 Six contract behaviours covered:
 

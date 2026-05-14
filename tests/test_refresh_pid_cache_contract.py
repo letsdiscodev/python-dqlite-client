@@ -1,7 +1,7 @@
 """Pin: ``_refresh_pid_cache`` mutates the module-level
 ``_current_pid`` and is registered with ``os.register_at_fork``.
 
-This is the producer side of the cycle-21 pid-cache fork-detection
+This is the producer side of the pid-cache fork-detection
 contract. The fork-guard tests exercise the *consumer* side
 (``_current_pid != _creator_pid`` raising ``InterfaceError``); they
 sidestep the cache by mutating ``_creator_pid`` directly. Coverage
