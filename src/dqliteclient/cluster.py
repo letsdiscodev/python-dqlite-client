@@ -972,13 +972,10 @@ class ClusterClient:
                             trust_server_heartbeat=trust_server_heartbeat,
                         )
                         if verified is None:
-                            # Log-only sanitiser: ``sanitize_for_log``
-                            # also escapes LF / Tab so a server-supplied
+                            # Log-bound sanitiser: ``sanitize_for_log``
+                            # escapes LF / Tab so a server-supplied
                             # ``leader_address`` cannot split a logger
-                            # record into multiple lines (CWE-117). The
-                            # exception-message field below stays on
-                            # ``_sanitize_display_text`` which preserves
-                            # LF / Tab for interactive readability.
+                            # record into multiple lines (CWE-117).
                             _safe_addr_log = sanitize_for_log(node.address)
                             _safe_hint_log = sanitize_for_log(leader_address)
                             logger.debug(
@@ -990,10 +987,18 @@ class ClusterClient:
                                 idx + 1,
                                 total_nodes,
                             )
-                            _safe_addr = _sanitize_display_text(node.address)
-                            _safe_hint = _sanitize_display_text(leader_address)
+                            # ``_ProbeMiss.message`` ends up in
+                            # ``ClusterError.args[0]`` and is logged via
+                            # ``logger.exception`` by upstream callers;
+                            # use the log-bound sanitiser here too so a
+                            # server-supplied LF in ``leader_address``
+                            # cannot split downstream log records
+                            # (CWE-117 secondary). Mirrors the
+                            # ``probe-miss-message-str-e-no-lf-strip``
+                            # round-1 fix at the sibling probe-failure
+                            # arm above.
                             return _ProbeMiss(
-                                message=(f"{_safe_addr}: stale redirect to {_safe_hint}"),
+                                message=(f"{_safe_addr_log}: stale redirect to {_safe_hint_log}"),
                                 exc=None,
                             )
                     return _LeaderHit(address=leader_address)
