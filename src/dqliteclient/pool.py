@@ -936,9 +936,7 @@ class ConnectionPool:
         # a put_nowait after the drain finishes parks the conn in a
         # queue no one will revisit. Close the conn directly and
         # release the reservation so _size stays consistent. Mirrors
-        # the sibling closed-pool short-circuit in ``_release`` —
-        # ``done/client-pool-close-no-recheck-before-put-nowait-leaks-conn.md``
-        # established the same discipline for the _release path.
+        # the sibling closed-pool short-circuit in ``_release``.
         if self._closed:
             # Clear ``_pool_released`` BEFORE close so the close path
             # actually runs. ``DqliteConnection.close()`` early-returns

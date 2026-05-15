@@ -1250,9 +1250,10 @@ class DqliteConnection:
         into ``logger.*`` records. Layers ``sanitize_for_log`` over
         ``sanitize_server_text`` so a hostile peer cannot stuff
         ``\\n`` / ``\\t`` into a server-supplied address field and
-        split a journald / syslog log record (CWE-117). Mirrors the
-        cluster.py log-site discipline established by
-        ``done/client-cluster-log-sites-use-display-sanitize-not-log-sanitize.md``.
+        split a journald / syslog log record (CWE-117). The
+        ``cluster.py`` log sites use the same discipline (log records
+        must use ``sanitize_for_log``, not ``_sanitize_display_text``,
+        which preserves LF / Tab for exception readability).
         """
         return sanitize_for_log(self._address)
 
@@ -1404,13 +1405,10 @@ class DqliteConnection:
                     # wait_closed surfaced a transport RuntimeError) is
                     # swallowed so the reconnect can proceed. The new
                     # connect attempt surfaces its own failure mode to
-                    # the caller. Widening this to ``except
-                    # BaseException`` would consume legitimate
-                    # KeyboardInterrupt / SystemExit / outer
-                    # CancelledError (regression history at
-                    # done/client-connect-pending-drain-suppress-
-                    # baseexception-consumes-task-cancel.md). Narrowing
-                    # to a specific subclass blocks reconnect on
+                    # the caller. Widening to ``except BaseException``
+                    # would consume legitimate KeyboardInterrupt /
+                    # SystemExit / outer CancelledError; narrowing to
+                    # a specific subclass blocks reconnect on
                     # otherwise-recoverable drain failures. Pinned by
                     # tests/test_connect_impl_pending_drain_non_cancel_exception.py.
                     pass

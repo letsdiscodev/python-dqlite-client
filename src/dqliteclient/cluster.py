@@ -1743,15 +1743,13 @@ class ClusterClient:
                     )
             return filtered
         finally:
-            # Mirror the membership-RPC discipline established by
-            # ``done/client-admin-rpc-set-last-known-leader-invalidation-skipped-on-failure.md``:
-            # a leader step-down mid-RPC surfaces as
-            # ``OperationalError(LEADER_ERROR_CODES)`` or
+            # Membership-RPC discipline: a leader step-down mid-RPC
+            # surfaces as ``OperationalError(LEADER_ERROR_CODES)`` or
             # ``DqliteConnectionError`` and would otherwise leave the
-            # cache pointing at the now-stale peer, wasting one
-            # fast-path RTT on the next ``find_leader``. Invalidate
-            # on both success and failure for symmetry across all
-            # admin RPCs that target the leader.
+            # last-known-leader cache pointing at the now-stale peer,
+            # wasting one fast-path RTT on the next ``find_leader``.
+            # Invalidate on both success and failure for symmetry
+            # across all admin RPCs that target the leader.
             self._set_last_known_leader(None)
 
     async def transfer_leadership(self, target_node_id: int) -> None:

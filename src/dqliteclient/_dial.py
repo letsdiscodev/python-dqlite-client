@@ -182,14 +182,14 @@ async def open_connection(
     override. Operators wrapping in TLS or binding to non-
     ``host:port`` transports (Unix socket, abstract socket) should
     validate the input shape inside the custom dialer. The non-
-    ``host:port`` support is deliberate — see
-    ``done/ISSUE-1409`` (dial_func override surface) — so the helper
+    ``host:port`` support on the override is deliberate — the helper
     cannot unconditionally call ``parse_address`` without breaking
     those operators. The downstream :class:`DqliteConnection.__init__`
     re-validates via ``parse_address`` and rejects malformed
     addresses before any wire RPC, but the user's dialer has already
-    executed by that point. See also ``wont-fix/ISSUE-96``
-    (TLS-via-dial_func).
+    executed by that point. TLS likewise lives in the user's
+    ``dial_func``: dqlite has no built-in TLS support, mirroring the
+    Go/C client surface.
     """
     if dial_func is not None:
         return await dial_func(address)
