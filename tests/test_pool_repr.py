@@ -1,8 +1,7 @@
 """ConnectionPool must have an informative __repr__.
 
-ISSUE-14 added reprs to Connection / Cursor / DqliteConnection; the
-pool class was overlooked and fell back to
-``<ConnectionPool object at 0x...>``. The repr surfaces
+The pool class shares the repr discipline applied to Connection /
+Cursor / DqliteConnection. The repr surfaces
 ``size`` / ``min_size`` / ``max_size`` / ``open|closed`` and a
 capped address list for debug logs and interactive exploration;
 no secrets (dqlite has no wire auth) are revealed.

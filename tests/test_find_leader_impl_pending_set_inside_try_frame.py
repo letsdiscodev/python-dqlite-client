@@ -16,8 +16,8 @@ The fix moves the task creation inside the try frame using a
 ``create_task`` keeps every preceding task in ``pending`` for the
 ``finally`` to cancel + gather.
 
-This test mirrors the ``done/ISSUE-243_pool-acquire-orphans-tasks-on-pre-try-cancel.md``
-hardening on the pool side.
+This test mirrors the pool-acquire orphan-cancellation hardening
+applied at ``ConnectionPool.acquire`` and ``ConnectionPool.initialize``.
 """
 
 from __future__ import annotations

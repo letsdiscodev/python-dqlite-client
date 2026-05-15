@@ -96,8 +96,8 @@ async def test_connect_propagates_notfound_lookup_stmt_as_operational_error(
     raw_message="no statement with the given id 7")`` (the
     ``LOOKUP_STMT`` arm of gateway.c) is a server-side state bug, NOT
     a transport flip. Must propagate as-is, not rewrap as
-    ``DqliteConnectionError``. Preserves the existing
-    ``InternalError`` PEP 249 mapping from done/ISSUE-862 / 954."""
+    ``DqliteConnectionError``. Preserves the existing PEP 249
+    ``InternalError`` mapping for ``SQLITE_NOTFOUND``."""
 
     async def _fake_open_connection(
         host: str, port: int, **_kwargs: object

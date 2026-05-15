@@ -789,10 +789,10 @@ class TestQueryLeaderRejectsUnreachableCombo:
     async def test_malformed_redirect_is_debug_logged(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Parity with ISSUE-219: the point-of-detection DEBUG breadcrumb
-        must include the queried address AND the bad (node_id, address)
-        pair so an operator can correlate the discovery stall in logs
-        alone, not only via the surfaced ProtocolError.
+        """The point-of-detection DEBUG breadcrumb must include the
+        queried address AND the bad (node_id, address) pair so an
+        operator can correlate the discovery stall in logs alone,
+        not only via the surfaced ProtocolError.
         """
         import logging
 

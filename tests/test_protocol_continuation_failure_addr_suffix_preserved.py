@@ -18,8 +18,10 @@ combined string to the constructor. A peer that emits a
 portion; the ``" to host:port"`` suffix is truncated off the visible
 display.
 
-This re-introduces the symptom that ISSUE-1063 (already in done/)
-originally fixed at the non-continuation sites.
+This is the continuation-frame twin of the non-continuation
+failure-message handling — both raise sites must call
+``self._failure_text(...)`` so the address suffix survives
+truncation.
 """
 
 from __future__ import annotations

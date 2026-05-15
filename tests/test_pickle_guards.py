@@ -15,8 +15,9 @@ Without explicit ``__reduce__`` raises:
 - ``DqliteProtocol`` raises an opaque error from wrapped
   StreamReader / StreamWriter.
 
-Mirror the ISSUE-791 pattern: every class raises a
-driver-level ``TypeError`` naming the specific class.
+Each class raises a driver-level ``TypeError`` naming the specific
+class, so the operator gets a precise diagnostic instead of a
+generic pickling failure.
 """
 
 from __future__ import annotations

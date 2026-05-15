@@ -980,8 +980,8 @@ class TestDqliteConnection:
         """close() must reset the loop binding so a subsequent connect()
         on a different event loop is not rejected by _check_in_use with
         "bound to a different event loop". Symmetric with the dbapi-async
-        adapter's loop reset on close (done/ISSUE-159) and the existing
-        failed-connect path's clear in connect()'s finally block."""
+        adapter's loop reset on close and the existing failed-connect
+        path's clear in connect()'s finally block."""
         conn, _, _ = connected_connection
         assert conn._bound_loop_ref is not None
         await conn.close()

@@ -5,8 +5,6 @@ awaiting ``wait_closed()`` is best-effort cleanup, not
 correctness-critical. An unresponsive peer must not be able to stall
 ``engine.dispose()`` or SIGTERM shutdown by refusing to acknowledge
 the FIN.
-
-Peer of ISSUE-295.
 """
 
 from __future__ import annotations

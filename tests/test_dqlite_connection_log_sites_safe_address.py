@@ -13,9 +13,9 @@ Background:
   the parallel ``logger.*`` sites used the raw ``self._address``.
 - ``parse_address`` rejects whitespace / CRLF today, so the production
   exposure is theoretical — but the discipline is the established
-  pattern for cross-layer log-site sanitisation (sibling siblings
-  ``done/ISSUE-F1`` / ``done/ISSUE-F2`` / ``done/client-dqlite-
-  connection-self-address-not-sanitised-in-exception-fstrings.md``).
+  pattern for cross-layer log-site sanitisation (every layer that
+  surfaces a peer-supplied address into a log record routes it
+  through ``sanitize_for_log``).
 
 We don't need to actually drive the connection through every cited
 log call — the discipline can be pinned mechanically by source

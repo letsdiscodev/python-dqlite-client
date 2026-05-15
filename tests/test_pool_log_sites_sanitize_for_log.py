@@ -2,13 +2,13 @@
 ROLLBACK-failure exception text through ``sanitize_for_log`` before
 display.
 
-The cluster layer's ``done/ISSUE-F1`` / ``done/ISSUE-F2`` discipline
-established that any peer-supplied or peer-derived text must pass
-through ``sanitize_for_log`` (the LF-escaping wrapper around
-``sanitize_server_text``) before reaching ``logger.*``. The pool
-layer's four log sites at ``pool.py`` (``_socket_looks_dead`` drop,
-``_is_no_tx_rollback_error`` debug, leader-class ROLLBACK failure,
-generic ROLLBACK-failure WARNING) had been missed.
+The cluster layer's log-site discipline: any peer-supplied or
+peer-derived text must pass through ``sanitize_for_log`` (the
+LF-escaping wrapper around ``sanitize_server_text``) before reaching
+``logger.*``. The pool layer's four log sites at ``pool.py``
+(``_socket_looks_dead`` drop, ``_is_no_tx_rollback_error`` debug,
+leader-class ROLLBACK failure, generic ROLLBACK-failure WARNING)
+follow the same rule.
 
 The WARNING at the generic-failure site is the highest-exposure: it
 ``%r``-formats the exception (which can echo server-supplied
@@ -136,13 +136,12 @@ def test_pool_imports_sanitize_for_log_from_wire() -> None:
 
 def test_pool_initialize_warning_sanitizes_failure_str() -> None:
     """``pool.initialize`` re-emits each per-create failure via a
-    WARNING that interpolates ``str(exc)`` through ``sanitize_for_log``
-    (previously ``repr(exc)``; the repr-then-sanitise pipeline was safe
-    but double-encoded the same characters the wire-layer sanitiser
-    was designed to handle — see
-    ``done/pool-initialize-warning-uses-repr-not-sanitized-display.md``).
-    The class-name context that ``repr()`` provided is preserved via a
-    separate ``type(exc).__name__`` format arg."""
+    WARNING that interpolates ``str(exc)`` through ``sanitize_for_log``.
+    A ``repr(exc)``-then-sanitise pipeline would be safe but would
+    double-encode the same characters the wire-layer sanitiser was
+    designed to handle. The class-name context that ``repr()`` would
+    provide is preserved via a separate ``type(exc).__name__`` format
+    arg."""
     source = _POOL_PY.read_text()
     needle = '"pool.initialize: create_connection %d/%d failed: %s: %s"'
     idx = source.find(needle)

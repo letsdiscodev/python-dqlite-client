@@ -9,8 +9,6 @@ to return a won-but-abandoned connection to the queue via
 reference, leaking a live reader task + socket and quietly shrinking
 pool capacity. The fix closes the connection explicitly and
 decrements ``_size`` so the pool shrinks cleanly.
-
-Peer of ISSUE-300.
 """
 
 from __future__ import annotations

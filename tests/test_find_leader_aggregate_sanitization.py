@@ -11,10 +11,10 @@ server diagnostics still render. The sanitiser replaces
 CR, U+2028, U+2029, and other control / bidi / invisible
 characters with ``?``.
 
-Cycle 22 added the sanitisation but no test pins the
-contract. A refactor that consolidates the three error
-lines into a helper and forgets one of the sanitise calls
-would silently re-introduce the log-injection vector.
+The sanitisation must be present at every per-attempt error
+formatter. A refactor that consolidates the three error lines into
+a helper and forgets one of the sanitise calls would silently
+re-introduce the log-injection vector.
 
 Three sites (one per error branch):
 

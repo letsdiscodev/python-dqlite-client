@@ -2,14 +2,14 @@
 ``ConnectionPool.acquire`` raise ``InterfaceError`` when called
 after fork (creator pid != current pid).
 
-ISSUE-844 introduced these guards; ISSUE-942 pinned the close()
-fork branch only. The initialize / acquire arms were uncovered —
-a regression that drops either guard would let a forked child
-silently share the parent's TCP fds with corrupted reads / mixed
-request-response framing.
+The fork guards on ``close`` are pinned by a sibling test; this
+file covers the ``initialize`` and ``acquire`` arms so a regression
+that drops either guard would let a forked child silently share the
+parent's TCP fds with corrupted reads / mixed request-response
+framing.
 
-Use the same monkeypatch pattern as ISSUE-1093 / ISSUE-966 — no
-real fork() needed.
+Uses ``monkeypatch.setattr`` to spoof ``os.getpid()`` so the test
+exercises the post-fork branch without a real ``fork()``.
 """
 
 import os

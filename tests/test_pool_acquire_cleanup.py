@@ -1,14 +1,14 @@
 """Narrow the except-BaseException cleanup in ``ConnectionPool.acquire``.
 
-ISSUE-198: the broken-connection branch of the ``acquire()`` except
-clause used to wrap ``_drain_idle``, ``conn.close()``, and the
-shielded reservation-release each in ``contextlib.suppress(BaseException)``.
-Under a nested-cancel scenario (caller cancels us once, then a parent
-TaskGroup or ``asyncio.timeout()`` fires a second cancel mid-cleanup),
-the suppression silently dropped the second cancel — and silently
-abandoned half-done cleanup work along with it. Programming errors
-raised in cleanup (e.g., ``AttributeError`` from a missing attr)
-likewise vanished into the void.
+The broken-connection branch of the ``acquire()`` except clause
+must not wrap ``_drain_idle``, ``conn.close()``, and the shielded
+reservation-release each in ``contextlib.suppress(BaseException)``.
+Under a nested-cancel scenario (caller cancels us once, then a
+parent TaskGroup or ``asyncio.timeout()`` fires a second cancel
+mid-cleanup), broad suppression silently drops the second cancel —
+and silently abandons half-done cleanup work along with it.
+Programming errors raised in cleanup (e.g., ``AttributeError`` from
+a missing attr) would likewise vanish into the void.
 
 These tests pin the narrowed semantics:
 

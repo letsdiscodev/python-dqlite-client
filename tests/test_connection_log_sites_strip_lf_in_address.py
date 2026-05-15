@@ -4,9 +4,9 @@ server-supplied address via the ``_log_safe_address`` property
 (routes through ``sanitize_server_text`` which preserves LF/Tab
 for exception-message readability).
 
-Mirrors the cluster.py log-site discipline established by
-``done/client-cluster-log-sites-use-display-sanitize-not-log-sanitize.md``.
-CWE-117 log injection defense-in-depth.
+Mirrors the cluster.py log-site discipline: log records use
+``sanitize_for_log``, exception messages use
+``_sanitize_display_text``. CWE-117 log-injection defence in depth.
 """
 
 from __future__ import annotations

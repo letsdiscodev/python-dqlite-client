@@ -18,8 +18,7 @@ the ``gather_returned``-flag-driven recovery loop never walked the
 partial list, and the orphan tasks' exceptions were unobserved.
 
 Mirrors the cluster-side hardening at ``_find_leader_impl`` and the
-pool-acquire hardening in
-``done/ISSUE-243_pool-acquire-orphans-tasks-on-pre-try-cancel.md``.
+pool-acquire orphan-cancellation discipline.
 """
 
 from __future__ import annotations

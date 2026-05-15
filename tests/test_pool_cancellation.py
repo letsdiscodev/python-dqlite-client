@@ -232,7 +232,9 @@ class TestInitializeCancelDuringGatherDoesNotLeakCompletedConns:
             "finally must walk gather's child tasks (not just the post-gather "
             "successes list) to reach completed-but-unqueued conns."
         )
-        # _size must also be drained (the existing ISSUE-240 fix).
+        # _size must also be drained — without it the pool drifts
+        # toward max_size on repeated cancel-during-gather and
+        # eventually deadlocks.
         assert pool._size == 0
 
 

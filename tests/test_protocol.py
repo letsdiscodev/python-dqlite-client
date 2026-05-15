@@ -692,7 +692,7 @@ class TestDqliteProtocol:
 
         message = str(exc_info.value)
         assert message.startswith("wire decode failed:"), (
-            f"Cycle 22 prefix is load-bearing for SA's is_disconnect "
+            f"prefix is load-bearing for SA's is_disconnect "
             f"substring matcher. Got message: {message!r}"
         )
         assert "db_id 99" in message

@@ -1,13 +1,10 @@
 """Pin: ``DqliteConnection.__aexit__`` must not let a non-cancel
 close-time exception supplant a body exception.
 
-The CancelledError arm was hardened by ISSUE-1475: a cancel landing
-during the shielded close no longer masks an in-flight body exception.
-The non-cancel arm previously did not get the same treatment — an
-``OSError`` / ``InterfaceError`` raised from ``close()`` would
-propagate out of ``__aexit__`` with the body exception merely chained
-via ``__context__``, flipping the *primary* exception class as seen by
-``except``-by-class consumers.
+The cancel arm and the non-cancel arm follow the same discipline: a
+close-time ``CancelledError`` / ``OSError`` / ``InterfaceError`` must
+not supplant an in-flight body exception, because that flips the
+*primary* exception class as seen by ``except``-by-class consumers.
 
 This test pins the symmetric fix: the body's ``ValueError("body")``
 propagates to the caller, and the close-time ``OSError("close")`` is

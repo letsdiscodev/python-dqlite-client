@@ -2,9 +2,9 @@
 
 Operators correlating production logs across the dbapi and client
 layers need to disambiguate "body exception" from "rollback failure"
-when both surface during a transaction. The dbapi layer's ``__exit__``
-already logs at DEBUG (ISSUE-305 / ISSUE-469 done); the client-layer
-``transaction()`` was the missing peer.
+when both surface during a transaction. The dbapi layer's
+``__exit__`` already logs at DEBUG; the client-layer
+``transaction()`` follows the same discipline.
 
 Pin two records (one per branch):
 - ROLLBACK failed for a non-cancellation reason: substring

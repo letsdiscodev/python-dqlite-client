@@ -2,15 +2,14 @@
 conservative ``_has_untracked_savepoint`` flag so pool reset's
 safety ROLLBACK fires.
 
-Round 2's ``done/savepoint-multi-statement-execute-tracker-desync.md``
-fixed the success path: ``_update_tx_flags_from_sql`` splits on
-top-level ``;`` and recurses, so ``BEGIN; SAVEPOINT a;`` correctly
-tracks both verbs. The partial-failure converse — where an early
-statement (BEGIN, SAVEPOINT) commits server-side state before a
-later statement (INSERT) fails — was unaddressed: the success-only
-``_update_tx_flags_from_sql`` call in ``execute()`` is skipped on
-raise, leaving the local view out of sync with the server's open
-transaction.
+The success path is handled by ``_update_tx_flags_from_sql``:
+it splits on top-level ``;`` and recurses, so ``BEGIN; SAVEPOINT a;``
+correctly tracks both verbs. The partial-failure converse — where
+an early statement (BEGIN, SAVEPOINT) commits server-side state
+before a later statement (INSERT) fails — needs separate handling:
+the success-only ``_update_tx_flags_from_sql`` call in ``execute()``
+is skipped on raise, leaving the local view out of sync with the
+server's open transaction.
 
 The fix is the conservative ``_has_untracked_savepoint`` flag:
 on EXEC failure, if the SQL contains ``;`` AND any tx-control verb

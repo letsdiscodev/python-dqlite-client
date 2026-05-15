@@ -6,8 +6,8 @@ the parent's loop. A child that forks mid-sweep and calls
 ``find_leader`` would observe an inherited task and fall through to
 ``await asyncio.shield(<parent-loop task>)`` — undefined behaviour.
 
-Cycle 20 added pid guards to ``DqliteConnection`` and
-``ConnectionPool``; this extends the same pattern to ``ClusterClient``.
+``DqliteConnection`` and ``ConnectionPool`` have the same pid-guard
+pattern; this test extends it to ``ClusterClient``.
 """
 
 from __future__ import annotations

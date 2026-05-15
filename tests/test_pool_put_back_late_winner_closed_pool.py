@@ -20,8 +20,9 @@ Race scenario the fix closes:
    in the closed pool's queue; ``_drain_complete`` was already True, so
    no one drains again. ``ResourceWarning: unclosed socket`` at GC.
 
-Mirrors ``done/client-pool-close-no-recheck-before-put-nowait-leaks-conn.md``
-which fixed the analogous shape in ``_release``.
+Mirrors the analogous closed-pool re-check in ``_release`` —
+``put_nowait`` into a closed queue parks the conn for no one to
+drain.
 """
 
 from __future__ import annotations
