@@ -232,9 +232,17 @@ def _observe_drain_exception(t: asyncio.Task[None]) -> None:
     "I've observed this" signal so the warning never fires. Mirrors
     the ``_clear_slot`` discipline used by the single-flight
     find-leader slot map.
+
+    Suppress narrowed to ``Exception`` so a ``KeyboardInterrupt`` /
+    ``SystemExit`` raised by a signal handler at the exact bytecode
+    boundary inside ``t.exception()`` still propagates and drives
+    the loop shutdown. Matches the project-wide narrow-suppress
+    discipline established at the ``_close_impl`` /
+    ``cluster-close-after-shielded`` / ``pool-release-shielded`` /
+    ``aio-terminate`` siblings.
     """
     if not t.cancelled():
-        with contextlib.suppress(BaseException):
+        with contextlib.suppress(Exception):
             t.exception()
 
 
@@ -675,11 +683,14 @@ class ClusterClient:
                 # an outer ``asyncio.timeout`` fired during a leader
                 # discovery cascade). ``task.exception()`` is the
                 # canonical "I've observed this" signal — non-raising
-                # on a done-not-cancelled task. ``BaseException``
-                # suppression keeps exceptions in done-callbacks from
-                # turning into "Exception in callback" log noise.
+                # on a done-not-cancelled task. Narrow the suppress
+                # to ``Exception`` so a ``KeyboardInterrupt`` /
+                # ``SystemExit`` raised by a signal handler at a
+                # bytecode boundary inside the callback still
+                # propagates and drives loop shutdown — matches the
+                # project-wide narrow-suppress discipline.
                 if not t.cancelled():
-                    with contextlib.suppress(BaseException):
+                    with contextlib.suppress(Exception):
                         t.exception()
 
             # Register the done-callback BEFORE inserting into the
