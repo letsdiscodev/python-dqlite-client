@@ -770,10 +770,10 @@ class ClusterClient:
                         # path is single-RTT followed by a single
                         # verify-RTT — sequential, not nested. The
                         # ``_verify_redirect`` doc-default of
-                        # ``dial_timeout`` only makes sense for the
-                        # parallel-sweep call site at ``_probe_one``
-                        # which is nested inside an outer
-                        # ``attempt_timeout`` envelope. Using
+                        # ``dial_timeout`` reflects the parallel-sweep
+                        # call site at ``_probe_one``, which runs
+                        # SIBLING (not nested) to the initial probe
+                        # after the semaphore release. Using
                         # ``dial_timeout`` here would drop healthy-but-
                         # loaded redirect targets when operators size
                         # ``dial_timeout < attempt_timeout``.
@@ -1449,16 +1449,24 @@ class ClusterClient:
         must report ITSELF as leader, otherwise we discard the hint.
 
         ``timeout`` selects the per-call wait_for envelope. Defaults
-        to ``self._dial_timeout`` for the sweep-nested call sites in
-        ``_probe_one`` (the verify is nested inside an outer
-        ``attempt_timeout``-bounded probe; using ``attempt_timeout``
-        again would let the worst case be 2 ×
-        ``attempt_timeout``). The cached-leader fast-path call site
-        is sequential, not nested, so it passes
-        ``self._attempt_timeout`` explicitly — using
-        ``dial_timeout`` there would drop healthy-but-loaded
-        redirect targets when operators size
-        ``dial_timeout < attempt_timeout``.
+        to ``self._dial_timeout`` for the sweep call site in
+        ``_probe_one``.
+
+        Budget composition (post-semaphore-release restructure): the
+        ``_probe_one`` semaphore is released after the initial
+        ``_query_leader`` returns and BEFORE this verify dials —
+        so the verify runs SIBLING, not NESTED, to the initial probe's
+        ``wait_for(attempt_timeout)``. The per-probe wall-clock budget
+        is therefore ``attempt_timeout + dial_timeout``, not
+        ``attempt_timeout`` as the original code structured it.
+        Operators sizing ``attempt_timeout`` for a fast control-plane
+        should budget this composition explicitly. The verify is
+        still bounded by the outer ``find_leader`` ``self._timeout``
+        envelope; only the per-probe accounting drifted from the
+        original "nested" framing. The cached-leader fast-path call
+        site is also sequential to its own initial probe and passes
+        ``self._attempt_timeout`` explicitly because that path has
+        no semaphore in play.
         """
         effective_timeout = self._dial_timeout if timeout is None else timeout
         try:
