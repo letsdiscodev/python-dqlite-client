@@ -64,12 +64,30 @@ __all__ = [
 ]
 
 # Best-effort tunables for the per-socket keepalive interval. These
-# match the defaults Go's ``net.Dialer`` uses when KeepAlive is set to
-# 15s (its 1.13+ default). We pick more conservative values to avoid
-# disturbing healthy idle-but-NAT-friendly connections: 30s idle before
-# the first probe, 10s between probes, 3 probes before declaring dead
-# (= ~60s detection horizon for a black-holed peer). These values are
-# applied only on platforms that expose the corresponding ``TCP_*``
+# do NOT match go-dqlite's ``net.Dialer{KeepAlive: 15s}`` defaults —
+# Go sets both ``TCP_KEEPIDLE`` and ``TCP_KEEPINTVL`` to 15s and
+# leaves ``TCP_KEEPCNT`` at the kernel default (9 on stock Linux per
+# ``net.ipv4.tcp_keepalive_probes``), yielding a 15s first-probe
+# horizon and ~150s worst-case detection budget. The Python values
+# below pick a more conservative trade-off:
+#
+#   * 30s idle before the first probe (2× Go's 15s) — friendlier to
+#     long-lived NAT mappings that drop idle entries after 30-60s.
+#   * 10s between subsequent probes (vs Go's 15s) — faster retry
+#     cadence once an idle peer is suspected.
+#   * 3 probes before the kernel surfaces dead socket (vs Go's
+#     ~9) — bounded probe budget.
+#
+# Net horizon: 30s + 10s × 3 = ~60s worst-case for a black-holed
+# peer. This is ~2× SLOWER than Go for first-probe detection in the
+# typical "dqlite cluster sees a peer restart" scenario, but ~2.5×
+# FASTER than Go's worst-case 150s when every probe is lost.
+# Operators tuning for cross-language deployments where peer-death
+# latency must match Go should set ``_TCP_KEEPIDLE_S = 15``,
+# ``_TCP_KEEPINTVL_S = 15``, ``_TCP_KEEPCNT = 9`` (or remove the
+# Python-side override and inherit kernel defaults).
+#
+# Applied only on platforms that expose the corresponding ``TCP_*``
 # socket options; the unconditional SO_KEEPALIVE=1 still applies
 # everywhere.
 _TCP_KEEPIDLE_S: Final[int] = 30
