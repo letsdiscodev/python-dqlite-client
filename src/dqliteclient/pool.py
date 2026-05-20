@@ -1590,8 +1590,36 @@ class ConnectionPool:
             # be silently absorbed and the writer would leak.
             conn._pool_released = False
             try:
-                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                    await asyncio.shield(conn.close())
+                try:
+                    with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
+                        await asyncio.shield(conn.close())
+                except RuntimeError:
+                    # "Event loop is closed" during racing
+                    # ``engine.dispose()``, or cross-loop
+                    # ``asyncio.Lock`` from a stale-conn-across-
+                    # ``asyncio.run`` boundary. Mirrors the
+                    # broken-conn arm below — the close was best-
+                    # effort, the downstream ``_drain_idle`` /
+                    # ``_create_connection`` cleanup must still
+                    # run so the dead-conn reservation slot is
+                    # released. Without this catch, the
+                    # RuntimeError supplants the cleanup and
+                    # ``_size`` permanently inflates by one.
+                    logger.debug(
+                        "pool.acquire: dead-conn close raised RuntimeError "
+                        "(loop-shutdown race); proceeding with cleanup",
+                        exc_info=True,
+                    )
+                except BaseException:
+                    # KeyboardInterrupt / SystemExit / a programmer
+                    # bug: propagate, but release the reservation
+                    # first so ``_size`` stays consistent. Cancel
+                    # via ``asyncio.shield`` so an outer cancel
+                    # delivered during the release doesn't strand
+                    # the reservation either.
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(self._release_reservation())
+                    raise
             finally:
                 # Restore the flag for contract symmetry with
                 # ``_drain_idle``: any stale-reference second close()
