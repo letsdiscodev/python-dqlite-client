@@ -242,6 +242,18 @@ def _validate_and_normalise_nodes(nodes: Sequence[NodeInfo]) -> tuple[NodeInfo, 
     6. Return frozen ``NodeInfo`` tuples with the stripped address so
        downstream lookups by address match.
     """
+    # Length-cap before per-entry validation so a pathological 1 M-entry
+    # input from app-side misuse cannot block the event loop on
+    # parse_address loops under the asyncio.Lock held by
+    # YamlNodeStore.set_nodes. Matches the wire-side cap
+    # _MAX_NODE_COUNT applied to ServersResponse.
+    from dqlitewire.messages.responses import _MAX_NODE_COUNT as _WIRE_MAX_NODES
+
+    if len(nodes) > _WIRE_MAX_NODES:
+        raise ValueError(
+            f"too many nodes: got {len(nodes)}, max {_WIRE_MAX_NODES} "
+            f"(matches wire-side ServersResponse cap)"
+        )
     seen: set[tuple[str, int]] = set()
     unique: list[NodeInfo] = []
     # Local import to avoid the cluster import cycle (cluster imports
@@ -283,6 +295,13 @@ _YAML_ROLE_STRING_ALIASES: Final[dict[str, NodeRole]] = {
     "standby": NodeRole.STANDBY,
     "spare": NodeRole.SPARE,
 }
+
+# Cap the size of the YAML node-store file accepted by _load_from_disk.
+# A legitimate dqlite node store is a handful of entries (a few KB);
+# 1 MiB is generous bounding while preventing a corrupt / co-tenant
+# overwrite from forcing a multi-MB eager read at construction (which
+# runs synchronously on the event-loop thread).
+_MAX_YAML_NODE_STORE_BYTES: Final[int] = 1 << 20
 
 
 class YamlNodeStore(NodeStore):
@@ -377,6 +396,23 @@ class YamlNodeStore(NodeStore):
         #   3. Corrupt YAML -> ClusterError with file path.
         if not self._path.exists():
             return ()
+        # Stat-precheck the file size before reading: a pathologically
+        # large file (corrupt YAML / co-tenant write / accidental
+        # overwrite) would otherwise be fully loaded into memory by
+        # ``read_text`` before yaml.safe_load even sees it. 1 MiB is
+        # generous for any legitimate dqlite node store (a real store
+        # is a few KB) while bounding the worst-case eager-load cost
+        # at construction time (this runs synchronously on the
+        # event-loop thread before any to_thread dispatch).
+        try:
+            stat = self._path.stat()
+        except OSError as e:
+            raise ClusterError(f"YamlNodeStore: cannot stat {self._path}: {e}") from e
+        if stat.st_size > _MAX_YAML_NODE_STORE_BYTES:
+            raise ClusterError(
+                f"YamlNodeStore: {self._path} exceeds maximum size "
+                f"({stat.st_size} > {_MAX_YAML_NODE_STORE_BYTES} bytes)"
+            )
         try:
             text = self._path.read_text(encoding="utf-8")
         except OSError as e:
