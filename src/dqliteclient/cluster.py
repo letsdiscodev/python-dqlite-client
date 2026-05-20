@@ -2461,12 +2461,13 @@ def default_safe_redirect_policy(
        strict SSRF defense should pair this policy with a custom
        resolver / split-horizon DNS / a hostname-rejecting policy
        (``allowlist_policy`` is the simplest path).
-    2. **IPv6 tunnel encapsulations.** ``::ffff:<ipv4>`` is unwrapped
-       (so a v4-mapped metadata IP is correctly blocked), but 6to4
-       (``2002::/16``) and Teredo (``2001::/32``) wrappings of
-       SSRF-class IPv4 targets are not unwrapped today and will
-       pass the link-local / loopback checks. Operators with
-       dual-stack networks should use ``allowlist_policy`` instead.
+    2. **IPv6 tunnel encapsulations.** ``::ffff:<ipv4>``, 6to4
+       (``2002::/16``), and Teredo (``2001::/32``) wrappings of
+       SSRF-class IPv4 targets are all unwrapped before classifying,
+       so a metadata IP smuggled inside any of these envelopes is
+       blocked. Other IPv6 tunnel modes (ISATAP, NAT64 ``64:ff9b::/96``)
+       are not unwrapped; operators on networks using those should
+       prefer :func:`allowlist_policy`.
     """
     import ipaddress
 
@@ -2483,6 +2484,22 @@ def default_safe_redirect_policy(
             ip = ipaddress.ip_address(host)
         except ValueError:
             return True  # hostname; rely on DNS / allowlist for finer control
+        # Unwrap IPv6 encapsulations of IPv4 addresses so a 6to4 /
+        # Teredo / IPv4-mapped wrapping of a metadata IP classifies
+        # as the embedded v4 rather than as the wrapper (which is
+        # neither link-local nor private by itself).
+        if isinstance(ip, ipaddress.IPv6Address):
+            if ip.ipv4_mapped is not None:
+                ip = ip.ipv4_mapped
+            elif ip.sixtofour is not None:
+                # ``2002::/16`` per RFC 3056.
+                ip = ip.sixtofour
+            elif ip.teredo is not None:
+                # ``2001::/32`` per RFC 4380. ``ip.teredo`` returns
+                # ``(server_v4, client_v4)``; the client field is the
+                # tunneled-to address we want to classify.
+                _server_v4, client_v4 = ip.teredo
+                ip = client_v4
         # Link-local: reject unconditionally (no operator override)
         # because the only realistic use case is an exfiltration
         # target like the metadata endpoint.
