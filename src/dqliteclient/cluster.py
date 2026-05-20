@@ -1733,6 +1733,17 @@ class ClusterClient:
                 # leader address and attempt number. The retry
                 # classifier below is unchanged — these codes remain
                 # non-retryable; only the breadcrumb is gained.
+                # Invalidate the leader cache so the NEXT retry's
+                # ``find_leader`` runs a fresh sweep rather than a
+                # cached fast-path probe against the leader we just
+                # failed to handshake / open_database against.
+                # Mirrors Go's ``connector.go::Connect`` which clears
+                # the leader tracker on per-attempt failure. Gated on
+                # ``leader is not None`` — if ``find_leader`` itself
+                # failed, it already cleared the cache internally and
+                # a second invalidation would be redundant.
+                if leader is not None:
+                    self._set_last_known_leader(None)
                 logger.debug(
                     "ClusterClient.connect attempt %d/%d failed (leader=%r): %s",
                     attempt,

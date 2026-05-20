@@ -1609,6 +1609,21 @@ class ConnectionPool:
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.shield(self._release_reservation())
                 raise
+            # Invalidate the cluster's leader cache: the dead-conn
+            # predicate just established that this leader is suspect
+            # enough to flush every other idle conn from the queue, so
+            # the next ``find_leader`` sweep should run fresh rather
+            # than fast-path probe the stale leader. Without this, the
+            # immediate ``_create_connection`` below pays one stale-
+            # leader RTT per dead-conn discovery, multiplying the
+            # leader-flip recovery time linearly in the queue depth.
+            # Mirrors the symmetric ``try_connect`` retry-arm
+            # invalidation in ``cluster.py``. ``getattr`` tolerates
+            # ``__new__``-built test fixtures that bypass ``__init__``
+            # and skip cluster wiring.
+            cluster = getattr(self, "_cluster", None)
+            if cluster is not None:
+                cluster._set_last_known_leader(None)
             # The dead conn's reservation is re-used for the fresh
             # connection; no counter adjustment needed. (The earlier
             # ``-= 1; += 1`` under the lock was a no-op — kept only
