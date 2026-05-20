@@ -1016,9 +1016,13 @@ class ConnectionPool:
         double-release at any site lands the canonical ERROR log.
 
         Logs at ERROR if ``self._size < n`` (would underflow); refuses
-        the decrement to keep accounting non-negative. Skipping the
-        state-change signal on the refusal path is intentional — the
-        refusal isn't a transition waiters need to react to.
+        the decrement to keep accounting non-negative. The refusal
+        path also signals state-change (defensively) so any waiter
+        parked on ``_closed_event`` re-evaluates against the most
+        current ``_size`` rather than waiting for a transition that a
+        prior double-release may have lost. The wake is a no-op
+        transition for waiters whose condition is unchanged; the cost
+        is one spurious re-check.
 
         Validation:
 
@@ -1049,6 +1053,12 @@ class ConnectionPool:
                 self._size,
                 n,
             )
+            # Defensive: wake any parked acquirer so it re-evaluates
+            # against the current ``_size``. The double-release that
+            # surfaced as underflow may have lost a prior signal; the
+            # wake bounds the worst-case wait without changing the
+            # accounting contract.
+            self._signal_state_change()
             return False
         self._size -= n
         return True
