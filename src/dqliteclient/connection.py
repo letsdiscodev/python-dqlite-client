@@ -2055,7 +2055,24 @@ class DqliteConnection:
                 # Strong-ref on self so the task is not GC'd before
                 # close() awaits it.
                 try:
-                    self._pending_drain = loop.create_task(_bounded_drain())
+                    new_task = loop.create_task(_bounded_drain())
+                    # Attach the drain-observer to the FRESH task too,
+                    # symmetric with the cancel-and-detach idiom on
+                    # ``prior`` above. ``close()`` usually consumes the
+                    # task's exception via its re-snapshot loop, but
+                    # if ``close()`` is never called (e.g. user dropped
+                    # the conn after an ``_invalidate``-only path or
+                    # the dbapi layer's ``force_close_transport``
+                    # nulls the connection reference), the observer
+                    # consumes any ``BaseException``-class escape from
+                    # ``_bounded_drain``'s ``suppress(Exception)``
+                    # (programmer-bug paths inside the suppress
+                    # contract) so asyncio's task finaliser does not
+                    # emit "Task exception was never retrieved".
+                    from dqliteclient.cluster import _observe_drain_exception
+
+                    new_task.add_done_callback(_observe_drain_exception)
+                    self._pending_drain = new_task
                 except RuntimeError as schedule_err:
                     # ``loop.create_task`` raises
                     # RuntimeError("Event loop is closed") if the
