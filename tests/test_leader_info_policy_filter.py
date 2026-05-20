@@ -28,23 +28,53 @@ def _build_cluster_with_responder(
     responder_address: str = "leader:9001",
     *,
     redirect_policy=None,
+    verified_node_id: int | None = None,
+    verified_address: str | None = None,
 ) -> ClusterClient:
     """Cluster whose ``find_leader`` returns ``leader:9001`` and whose
-    admin protocol's ``get_leader()`` returns the configured tuple."""
+    admin protocol's ``get_leader()`` returns the configured tuple.
+
+    When the responder reports a flipped address (``responder_address``
+    != ``"leader:9001"``), ``leader_info`` re-probes via
+    ``_verify_redirect`` and then re-asks ``get_leader`` on the
+    verified target. ``verified_node_id`` / ``verified_address``
+    drive the verified responder's get_leader return; by default the
+    re-probe returns the responder_address unchanged."""
     cluster = ClusterClient(
         MemoryNodeStore(["leader:9001"]),
         timeout=2.0,
         redirect_policy=redirect_policy,
     )
     cluster.find_leader = AsyncMock(return_value="leader:9001")
+    # Mock the re-probe to succeed against the responder's address —
+    # this is the "verified" target. Returning a non-None mirrors the
+    # production path where the hint self-confirmed.
+    cluster._verify_redirect = AsyncMock(return_value=responder_address)
 
     fake_proto = MagicMock()
     fake_proto.get_leader = AsyncMock(return_value=(responder_node_id, responder_address))
 
-    fake_admin_cm = MagicMock()
-    fake_admin_cm.__aenter__ = AsyncMock(return_value=fake_proto)
-    fake_admin_cm.__aexit__ = AsyncMock(return_value=None)
-    cluster.open_admin_connection = MagicMock(return_value=fake_admin_cm)
+    verified_proto = MagicMock()
+    verified_proto.get_leader = AsyncMock(
+        return_value=(
+            verified_node_id if verified_node_id is not None else responder_node_id,
+            verified_address if verified_address is not None else responder_address,
+        )
+    )
+
+    def admin_cm(target: str) -> MagicMock:
+        cm = MagicMock()
+        # The first call (to leader_addr) returns fake_proto; the
+        # second call (to the verified target after the re-probe)
+        # returns verified_proto.
+        if target == responder_address and responder_address != "leader:9001":
+            cm.__aenter__ = AsyncMock(return_value=verified_proto)
+        else:
+            cm.__aenter__ = AsyncMock(return_value=fake_proto)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        return cm
+
+    cluster.open_admin_connection = MagicMock(side_effect=admin_cm)
 
     return cluster
 

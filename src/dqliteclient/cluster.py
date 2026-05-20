@@ -1936,21 +1936,69 @@ class ClusterClient:
             leader_addr = await self.find_leader(policy=policy)
             async with self.open_admin_connection(leader_addr) as protocol:
                 node_id, address = await protocol.get_leader()
-                if node_id == 0 or not address:
+                if node_id == 0 and not address:
                     # Mid-election: the leader we just connected to
                     # no longer self-identifies as leader. Surface
                     # ``None`` rather than confabulating an answer.
                     return None
-                # Re-validate the responder's reported address
-                # against the redirect policy when leadership flipped
-                # between find_leader and this follow-up get_leader
-                # (a hostile follower could otherwise tunnel an
-                # attacker-controlled address through this admin
-                # path). Skip the check when the responder confirmed
-                # itself — the same address that find_leader already
-                # approved through its own ``_check_redirect`` arm.
+                if (node_id == 0) != (not address):
+                    # Malformed: exactly one of the two is empty. The
+                    # upstream ``raft_leader`` call in
+                    # ``dqlite-upstream/src/gateway.c`` is atomic —
+                    # both fields are set together or neither is.
+                    # Asymmetric with sibling ``_query_leader`` which
+                    # already raises ``ProtocolError`` for the same
+                    # shape; bring this admin path into discipline so
+                    # a hostile follower's ``(0, attacker-addr)`` or
+                    # ``(7, "")`` cannot ride past the policy gate
+                    # below as a silent ``None``.
+                    raise ProtocolError(
+                        f"leader_info: malformed (node_id, address) — "
+                        f"got id={node_id!r} addr={_sanitize_display_text(address)!r}; "
+                        f"expected both or neither (raft_leader atomicity)"
+                    )
                 if not _addr_equiv(address, leader_addr):
+                    # Leadership flipped between find_leader and this
+                    # follow-up get_leader: the responder hands back
+                    # a different address. Re-validate against the
+                    # redirect policy (a hostile follower could
+                    # otherwise tunnel an attacker-controlled address
+                    # through this admin path) AND re-probe the hinted
+                    # target to confirm it self-identifies as leader —
+                    # mirrors the sweep arms' ``_verify_redirect``
+                    # discipline (see ``_probe_one`` and the cached
+                    # fast-path arm). Without the re-probe, a stale-
+                    # hint follower could feed back a node that no
+                    # longer holds leadership and the caller would
+                    # use the stale id (e.g. to feed
+                    # ``transfer_leadership``).
                     self._check_redirect(address, policy=policy)
+                    verified = await self._verify_redirect(
+                        address,
+                        trust_server_heartbeat=False,
+                    )
+                    if verified is None:
+                        # Stale hint that did not re-confirm. Surface
+                        # ``None`` — "no leader known" — rather than
+                        # the suspect address.
+                        return None
+                    # The verified target may report its own
+                    # ``node_id`` differently than the original hint
+                    # implied; re-fetch from the verified responder
+                    # so the returned ``LeaderInfo`` is internally
+                    # consistent.
+                    async with self.open_admin_connection(verified) as p2:
+                        vnode_id, vaddress = await p2.get_leader()
+                    if vnode_id == 0 and not vaddress:
+                        return None
+                    if (vnode_id == 0) != (not vaddress):
+                        raise ProtocolError(
+                            f"leader_info: malformed (node_id, address) on "
+                            f"verified hint — got id={vnode_id!r} "
+                            f"addr={_sanitize_display_text(vaddress)!r}; "
+                            f"expected both or neither"
+                        )
+                    return LeaderInfo(node_id=vnode_id, address=vaddress)
                 return LeaderInfo(node_id=node_id, address=address)
         finally:
             # Mirror the membership-RPC discipline: a leader

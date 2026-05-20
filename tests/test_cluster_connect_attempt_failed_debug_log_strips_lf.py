@@ -34,7 +34,7 @@ async def test_connect_attempt_failed_debug_log_strips_lf_in_exception(
     poisoned_message = "leader-msg\nFORGED log row"
     cluster = ClusterClient(MemoryNodeStore([addr_with_lf]))
 
-    async def _exploding_find_leader(*, trust_server_heartbeat: bool = False) -> str:
+    async def _exploding_find_leader(*, trust_server_heartbeat: bool = False, policy=None) -> str:
         raise DqliteConnectionError(poisoned_message)
 
     monkeypatch.setattr(cluster, "find_leader", _exploding_find_leader)

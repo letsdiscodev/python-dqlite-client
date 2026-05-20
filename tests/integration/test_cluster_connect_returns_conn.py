@@ -36,7 +36,10 @@ class TestClusterConnectReturnsConn:
         container-internal-address bug)."""
 
         async def _patched_find_leader(
-            self: ClusterClient, *, trust_server_heartbeat: bool = False
+            self: ClusterClient,
+            *,
+            trust_server_heartbeat: bool = False,
+            policy: object = None,
         ) -> str:
             return cluster_address
 

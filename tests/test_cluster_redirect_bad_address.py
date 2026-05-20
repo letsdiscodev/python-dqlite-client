@@ -35,7 +35,7 @@ async def test_server_redirect_to_invalid_address_raises_cluster_policy_error() 
     store = MemoryNodeStore(["localhost:9001"])
     client = ClusterClient(store, timeout=0.1)
 
-    async def _fake_find_leader(*, trust_server_heartbeat: bool = False) -> str:
+    async def _fake_find_leader(*, trust_server_heartbeat: bool = False, policy=None) -> str:
         # Hostile address with embedded control character — fails
         # _canonicalize_host's "no whitespace/CR/LF" check (since it
         # also fails the hostname-label regex).
@@ -54,7 +54,7 @@ async def test_server_redirect_to_non_ascii_address_raises_cluster_policy_error(
     store = MemoryNodeStore(["localhost:9001"])
     client = ClusterClient(store, timeout=0.1)
 
-    async def _fake_find_leader(*, trust_server_heartbeat: bool = False) -> str:
+    async def _fake_find_leader(*, trust_server_heartbeat: bool = False, policy=None) -> str:
         return "résumé.example.com:9001"
 
     with (
@@ -72,7 +72,7 @@ async def test_server_redirect_to_oversized_hostname_raises_cluster_policy_error
 
     oversize = "a" * 260 + ".example.com:9001"
 
-    async def _fake_find_leader(*, trust_server_heartbeat: bool = False) -> str:
+    async def _fake_find_leader(*, trust_server_heartbeat: bool = False, policy=None) -> str:
         return oversize
 
     with (
