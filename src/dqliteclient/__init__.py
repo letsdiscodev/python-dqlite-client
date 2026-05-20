@@ -12,7 +12,7 @@ raises ``ImportError`` at import time.
 import asyncio
 import contextlib
 import logging
-from collections.abc import Sequence
+from collections.abc import Sequence as _Sequence
 from typing import Final as _Final
 
 from dqliteclient._dial import DialFunc
@@ -203,7 +203,7 @@ async def connect(
 
 
 async def create_pool(
-    addresses: Sequence[str] | None = None,
+    addresses: _Sequence[str] | None = None,
     *,
     database: str = "default",
     min_size: int = 1,
