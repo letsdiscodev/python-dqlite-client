@@ -621,10 +621,30 @@ class ClusterClient:
         so the next caller runs a fresh probe.
 
         Single-flight caveat re ``policy``: the slot key includes the
-        policy callable, so two concurrent callers passing distinct
-        policy callables will NOT share a task — diversity defeats the
-        collapse. Callers reusing the same module-level policy
-        constant (or ``None``) continue to share normally.
+        policy callable identity (Python's ``==`` on bare functions /
+        lambdas falls back to ``is``). Two concurrent callers passing
+        distinct policy callables — even semantically-identical
+        callables, e.g. two ``lambda a: True`` instances — hash to
+        different slot keys and run independent sweeps. The collapse
+        works when:
+
+        * Both pass ``None`` (resolves to ``self._redirect_policy`` —
+          a single identity at construction time). This is the
+          common case for production callers.
+        * Both reuse the same module-level policy constant.
+        * Both pass a hashable callable that compares equal (e.g. a
+          frozen class instance with custom ``__eq__`` / ``__hash__``).
+
+        **The slot does NOT collapse when each caller constructs a
+        fresh inline lambda / partial / closure for their probe.**
+        SA-engine acquisition loops and dbapi cursor open paths that
+        wire a per-call policy this way pay N independent sweeps under
+        leader flip — the opposite of the single-flight intent. To get
+        single-flight in audit-mode scenarios, prefer constructing the
+        ``ClusterClient`` with ``redirect_policy=<your policy>`` and
+        let callers pass ``policy=None``; the slot then collapses
+        normally. The ``policy=`` per-call kwarg is an opt-OUT path
+        for callers that genuinely need isolation per audit pass.
 
         Single-flight staleness window: the in-flight task snapshots
         the node store once at the top of its sweep
