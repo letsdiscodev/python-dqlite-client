@@ -1144,7 +1144,7 @@ class DqliteProtocol:
         opt-in had no effect.
 
         Write-path ``_send`` continues to use ``self._timeout``
-        directly (line ~652) — that's intentional: only the read
+        directly — that's intentional: only the read
         side gets the heartbeat widening.
 
         Note on multi-phase RPCs: ``timeout`` bounds each phase

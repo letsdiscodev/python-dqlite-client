@@ -1357,9 +1357,10 @@ class DqliteConnection:
     async def _connect_impl(self) -> None:
         # If a prior ``_invalidate`` scheduled a bounded drain task,
         # retire it here before the slot gets reused. Leaving the
-        # previous task in place would let a second invalidate at
-        # line ~483 overwrite the slot without cancelling or awaiting
-        # it, breaking the "strong ref so close() can await it"
+        # previous task in place would let a second
+        # ``self._pending_drain = ...`` assignment in ``_invalidate``
+        # overwrite the slot without cancelling or awaiting it,
+        # breaking the "strong ref so close() can await it"
         # discipline documented on that assignment.
         pending = self._pending_drain
         if pending is not None:
@@ -2910,8 +2911,10 @@ class DqliteConnection:
                 # so the connection is healthy and reusable. Invalidate
                 # only when the server-side state is genuinely
                 # ambiguous (transport / cancellation / non-rollback
-                # codes). Mirrors the rollback-arm discrimination
-                # below at lines 2284-2298 (already-fixed sibling).
+                # codes). Mirrors the ``elif _primary_sqlite_code(
+                # e.code) in _TX_AUTO_ROLLBACK_PRIMARY_CODES``
+                # discrimination in the rollback arm above
+                # (already-fixed sibling).
                 deterministic_rollback = (
                     isinstance(exc, OperationalError)
                     and exc.code is not None
@@ -2998,7 +3001,8 @@ class DqliteConnection:
                         # Pass the rollback failure as the cause so the
                         # next "Not connected" diagnostic chains to it
                         # via __cause__. Mirrors the commit-attempted
-                        # arm above (line ~1545) which already passes
+                        # ``self._invalidate(exc)`` arm in
+                        # ``commit()`` which already passes
                         # ``exc``. The body exception still propagates
                         # via ``raise`` below — this only affects the
                         # diagnostic visible on a SUBSEQUENT call to
