@@ -173,8 +173,6 @@ async def test_dropped_policy_warn_fires_when_both_states_set(
     # cluster module so _find_leader_impl picks up the wrapper.
     from unittest.mock import patch
 
-    import dqliteclient.cluster as _cluster_mod
-
     with patch("dqliteclient.cluster.asyncio.wait", _wait_for_all_then_order):
         leader = await asyncio.wait_for(cluster.find_leader(), timeout=2.0)
     assert leader == "winner:9001"
@@ -257,8 +255,6 @@ async def test_dropped_policy_warn_sanitises_crlf_tainted_address(
     cluster._verify_redirect = AsyncMock(side_effect=_verify_redirect)
 
     from unittest.mock import patch
-
-    import dqliteclient.cluster as _cluster_mod
 
     caplog.set_level(logging.WARNING, logger="dqliteclient.cluster")
     with patch("dqliteclient.cluster.asyncio.wait", _wait_for_all_then_order):
