@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
 
-from dqliteclient.exceptions import ClusterError
+from dqliteclient import connection as _conn_mod
+from dqliteclient.exceptions import ClusterError, InterfaceError
 from dqlitewire import NodeRole
 
 __all__ = ["MemoryNodeStore", "NodeInfo", "NodeStore", "YamlNodeStore"]
@@ -189,9 +190,28 @@ class MemoryNodeStore(NodeStore):
         # Mirrors ``YamlNodeStore.__init__`` which has always done
         # eager init.
         self._set_nodes_lock: asyncio.Lock = asyncio.Lock()
+        # Fork-after-init guard. The lock is loop-agnostic on the
+        # supported Python versions, but a multi-threaded parent
+        # forking with one thread inside ``set_nodes`` would leave
+        # the child with a permanently-held lock (first child
+        # ``acquire()`` blocks forever). Surface the canonical
+        # ``InterfaceError`` instead of either hanging or raising
+        # an opaque asyncio diagnostic. Symmetric with
+        # :class:`ClusterClient` / :class:`DqliteConnection` /
+        # :class:`ConnectionPool`.
+        self._creator_pid = os.getpid()
+
+    def _check_pid(self) -> None:
+        if _conn_mod._current_pid != self._creator_pid:
+            raise InterfaceError(
+                f"MemoryNodeStore used after fork; reconstruct from "
+                f"configuration in the target process. (created in "
+                f"pid {self._creator_pid}, current pid {_conn_mod.get_current_pid()})"
+            )
 
     async def get_nodes(self) -> Sequence[NodeInfo]:
         """Get list of known nodes."""
+        self._check_pid()
         return self._nodes
 
     async def set_nodes(self, nodes: Sequence[NodeInfo]) -> None:
@@ -208,6 +228,7 @@ class MemoryNodeStore(NodeStore):
         ``set_nodes`` invocations race-free on the final tuple
         assignment so neither caller's update is silently lost.
         """
+        self._check_pid()
         async with self._set_nodes_lock:
             await self._set_nodes_locked(nodes)
 
@@ -382,6 +403,20 @@ class YamlNodeStore(NodeStore):
         # construction (operator-facing) rather than at first
         # ``get_nodes`` (deep inside ``find_leader``).
         self._nodes: tuple[NodeInfo, ...] = self._load_from_disk()
+        # Fork-after-init guard. The on-disk state survives fork
+        # as plain data, but the asyncio.Lock and the in-memory
+        # tuple are parent-process state. The child must
+        # reconstruct from the configuration in the target process
+        # so it re-reads the YAML file and binds its own lock.
+        self._creator_pid = os.getpid()
+
+    def _check_pid(self) -> None:
+        if _conn_mod._current_pid != self._creator_pid:
+            raise InterfaceError(
+                f"YamlNodeStore used after fork; reconstruct from "
+                f"configuration in the target process. (created in "
+                f"pid {self._creator_pid}, current pid {_conn_mod.get_current_pid()})"
+            )
 
     @property
     def path(self) -> Path:
@@ -513,6 +548,7 @@ class YamlNodeStore(NodeStore):
             raise ClusterError(f"YamlNodeStore: {self._path}: {e}") from e
 
     async def get_nodes(self) -> Sequence[NodeInfo]:
+        self._check_pid()
         return self._nodes
 
     async def _write_and_publish(
@@ -606,6 +642,7 @@ class YamlNodeStore(NodeStore):
                     os.unlink(fd_path)
 
     async def set_nodes(self, nodes: Sequence[NodeInfo]) -> None:
+        self._check_pid()
         # Serialise concurrent writes — file rename is atomic but two
         # writers racing the load -> serialise -> write sequence
         # would lose one update. asyncio.Lock keeps the in-process

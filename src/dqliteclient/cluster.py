@@ -475,6 +475,26 @@ class ClusterClient:
         # pid guards.
         self._creator_pid = os.getpid()
 
+    def _check_pid(self) -> None:
+        """Raise ``InterfaceError`` if called in a forked child.
+
+        Every public admin RPC routes through here so the per-address
+        escape hatches (``describe(address=...)``,
+        ``set_weight(address=...)``, ``open_admin_connection``) carry
+        the same fork-after-init discipline as the leader-routed
+        siblings. Bypassing this gate would leave the instance
+        "alive enough" to describe a specific node but "dead" for
+        leader-routed calls, surfacing as confusing
+        ``InterfaceError`` from one method and successful
+        operation from the next.
+        """
+        if _conn_mod._current_pid != self._creator_pid:
+            raise InterfaceError(
+                f"ClusterClient used after fork; reconstruct from "
+                f"configuration in the target process. (created in "
+                f"pid {self._creator_pid}, current pid {_conn_mod.get_current_pid()})"
+            )
+
     @classmethod
     def from_addresses(
         cls,
@@ -657,16 +677,7 @@ class ClusterClient:
         (re-poll the node store between probes) costs an extra await
         per probe to close a window most callers do not exercise.
         """
-        if _conn_mod._current_pid != self._creator_pid:
-            # Fork-after-init: the slot map holds parent-loop tasks
-            # that the child cannot drive. Surface a clear
-            # InterfaceError instead of letting a sibling task land
-            # at ``await asyncio.shield(<parent-task>)``.
-            raise InterfaceError(
-                f"ClusterClient used after fork; reconstruct from "
-                f"configuration in the target process. (created in "
-                f"pid {self._creator_pid}, current pid {_conn_mod.get_current_pid()})"
-            )
+        self._check_pid()
         # Resolve ``policy=None`` to ``self._redirect_policy`` BEFORE
         # building the slot key. Otherwise callers passing ``None`` and
         # callers passing ``self._redirect_policy`` explicitly hash to
@@ -2289,6 +2300,13 @@ class ClusterClient:
         # unrelated to the call). Only the ``address is None`` arm
         # routes through the leader, so only that arm participates
         # in the membership-RPC invalidation discipline.
+        #
+        # The fork-after-init guard fires here so the per-address
+        # path carries the same discipline as the leader-routed
+        # sibling (``find_leader`` already guards). Bypassing this
+        # gate would leave the instance "alive enough" to describe
+        # a specific node but "dead" for leader-routed calls.
+        self._check_pid()
         leader_targeted = address is None
         target = address if address is not None else await self.find_leader()
         try:
@@ -2337,6 +2355,11 @@ class ClusterClient:
         if weight < 0:
             raise ValueError(f"weight must be >= 0, got {weight}")
 
+        # Same per-address fork guard as :meth:`describe`. The
+        # leader-routed arm picks up ``find_leader``'s pid check,
+        # but the explicit-address arm would otherwise silently
+        # succeed in a forked child.
+        self._check_pid()
         leader_targeted = address is None
         target = address if address is not None else await self.find_leader()
         try:
@@ -2462,6 +2485,13 @@ class ClusterClient:
         # still bounds the TCP-establish phase; the protocol's
         # ``self._timeout`` still bounds per-RPC reads on the yielded
         # protocol.
+        #
+        # Fork-after-init guard: the operator may have configured a
+        # ``dial_func`` that captures parent-loop-bound state
+        # (e.g. an ``aiohttp.ClientSession``). Reject post-fork
+        # BEFORE invoking the operator's callable so the diagnostic
+        # site is the dqlite call, not the operator's library.
+        self._check_pid()
         protocol: DqliteProtocol | None = None
         writer = None
         try:
