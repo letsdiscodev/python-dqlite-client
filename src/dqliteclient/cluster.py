@@ -824,11 +824,16 @@ class ClusterClient:
                 OperationalError,
                 OSError,
                 TimeoutError,
+                ValueError,
             ) as e:
                 # Fast-path miss: probe failed. Clear the cache and
                 # fall through to the full sweep. Log at DEBUG so
                 # operators tailing logs see the cache invalidation
                 # without spamming default-verbosity output.
+                # ``ValueError`` is included to translate
+                # ``parse_address`` rejection when a third-party
+                # ``NodeStore`` returns malformed entries (matches the
+                # parallel-sweep ``_probe_one`` precedent below).
                 logger.debug(
                     "find_leader: fast-path probe of cached leader %s failed (%s); "
                     "clearing cache and falling through to full sweep",
@@ -1093,6 +1098,14 @@ class ClusterClient:
             self._set_last_known_leader(winning_address)
             return winning_address
         if policy_error is not None:
+            # Invalidate any cached leader before raising: a prior sweep
+            # may have cached an address that today only redirects to a
+            # policy-rejected target. Without this, the next call hits
+            # the fast path against the same cache entry, wastes a
+            # round-trip, and re-raises the same ClusterPolicyError.
+            # Mirrors the fast-path arm's ``_set_last_known_leader(None)``
+            # discipline above.
+            self._set_last_known_leader(None)
             # Even on policy rejection, surface the accumulated per-node
             # transport history so an operator can distinguish "policy
             # rejected the leader on an otherwise-healthy cluster" from
