@@ -1473,6 +1473,7 @@ class ClusterClient:
         close_timeout: float = 0.5,
         max_attempts: int | None = None,
         max_elapsed_seconds: float | None = None,
+        policy: RedirectPolicy | None = None,
     ) -> DqliteConnection:
         """Connect to the cluster leader.
 
@@ -1516,6 +1517,18 @@ class ClusterClient:
                 round-trip is slower, or decrease to tighten
                 SIGTERM-shutdown budgets. See
                 ``DqliteConnection.__init__`` for full rationale.
+            policy: Optional per-call ``RedirectPolicy`` override that
+                applies to this connect attempt only. Mirrors the
+                ``policy=`` kwarg on :meth:`find_leader`,
+                :meth:`cluster_info`, and :meth:`leader_info`.
+                ``None`` (default) falls back to the instance-level
+                ``redirect_policy`` configured at construction. Use
+                when an audit-mode caller wants to tighten the
+                policy for a single connect without mutating
+                instance state. Note: ``find_leader``'s single-flight
+                slot key includes the callable identity, so passing a
+                per-call ``policy`` defeats the in-flight collapse
+                for that call.
         """
         # Reject ``bool`` before the < 1 check so ``True``/``False``
         # don't silently coerce to 1/0. Mirrors the discipline in
@@ -1559,6 +1572,7 @@ class ClusterClient:
             try:
                 leader = await self.find_leader(
                     trust_server_heartbeat=trust_server_heartbeat,
+                    policy=policy,
                 )
                 try:
                     conn = DqliteConnection(
