@@ -59,6 +59,33 @@ async def test_release_reservations_locked_underflow_refused(
 
 
 @pytest.mark.asyncio
+async def test_release_reservations_locked_underflow_signals_state_change() -> None:
+    """Pin: the underflow-refusal arm also calls
+    ``_signal_state_change()`` so any parked acquirer re-evaluates
+    against the current ``_size`` rather than waiting for the next
+    legitimate release. Underflow is symptomatic of an earlier double-
+    release that may have lost a wake signal; the defensive wake
+    bounds the worst-case acquirer wait when a double-release
+    surfaces in production.
+
+    Without the wake, an acquirer parked behind the lost signal
+    waits indefinitely (or until another release lands), even though
+    the current ``_size`` may be below capacity.
+    """
+    from unittest.mock import MagicMock
+
+    pool = ConnectionPool(["localhost:9001"])
+    spy = MagicMock(wraps=pool._signal_state_change)
+    pool._signal_state_change = spy  # type: ignore[method-assign]
+
+    async with pool._lock:
+        pool._size = 2
+        ok = pool._release_reservations_locked(5)
+    assert ok is False
+    spy.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_release_reservations_locked_rejects_zero_and_negative_n() -> None:
     """The helper requires ``n >= 1``. ``n=0`` is a no-op decrement
     that would spuriously wake every parked acquirer; ``n<0`` would
