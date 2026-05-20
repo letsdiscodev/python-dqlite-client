@@ -14,7 +14,7 @@ from typing import Any, Final, NoReturn, Self
 
 from dqliteclient import connection as _conn_mod
 from dqliteclient._dial import DialFunc
-from dqliteclient.cluster import ClusterClient
+from dqliteclient.cluster import ClusterClient, RedirectPolicy
 from dqliteclient.connection import (
     _TRANSACTION_ROLLBACK_SQL,
     CLOSE_TIMEOUT_FLOOR_RATIONALE,
@@ -253,6 +253,8 @@ class ConnectionPool:
         max_attempts: int | None = None,
         max_elapsed_seconds: float | None = None,
         dial_func: DialFunc | None = None,
+        concurrent_leader_conns: int | None = None,
+        redirect_policy: RedirectPolicy | None = None,
     ) -> None:
         """Initialize connection pool.
 
@@ -414,6 +416,21 @@ class ConnectionPool:
                 "dial_func cannot be combined with cluster=; "
                 "configure dial_func on the externally-owned ClusterClient"
             )
+        # Same mutual-exclusion rationale as ``dial_func``: an
+        # externally-owned cluster carries its own concurrent_leader_conns
+        # / redirect_policy configuration. Supplying these alongside
+        # ``cluster=`` would silently desync the pool's claimed
+        # configuration from the cluster's actual behaviour.
+        if cluster is not None and concurrent_leader_conns is not None:
+            raise ValueError(
+                "concurrent_leader_conns cannot be combined with cluster=; "
+                "configure concurrent_leader_conns on the externally-owned ClusterClient"
+            )
+        if cluster is not None and redirect_policy is not None:
+            raise ValueError(
+                "redirect_policy cannot be combined with cluster=; "
+                "configure redirect_policy on the externally-owned ClusterClient"
+            )
 
         self._addresses = addresses or []
         self._database = database
@@ -436,8 +453,7 @@ class ConnectionPool:
             # not override its dial/attempt timeouts.
             self._cluster = cluster
         elif node_store is not None:
-            self._cluster = ClusterClient(
-                node_store,
+            cluster_kwargs: dict[str, object] = dict(
                 timeout=timeout,
                 dial_timeout=dial_timeout,
                 attempt_timeout=attempt_timeout,
@@ -446,9 +462,13 @@ class ConnectionPool:
                 trust_server_heartbeat=trust_server_heartbeat,
                 dial_func=dial_func,
             )
+            if concurrent_leader_conns is not None:
+                cluster_kwargs["concurrent_leader_conns"] = concurrent_leader_conns
+            if redirect_policy is not None:
+                cluster_kwargs["redirect_policy"] = redirect_policy
+            self._cluster = ClusterClient(node_store, **cluster_kwargs)  # type: ignore[arg-type]
         else:
-            self._cluster = ClusterClient.from_addresses(
-                self._addresses,
+            cluster_kwargs = dict(
                 timeout=timeout,
                 dial_timeout=dial_timeout,
                 attempt_timeout=attempt_timeout,
@@ -457,6 +477,11 @@ class ConnectionPool:
                 trust_server_heartbeat=trust_server_heartbeat,
                 dial_func=dial_func,
             )
+            if concurrent_leader_conns is not None:
+                cluster_kwargs["concurrent_leader_conns"] = concurrent_leader_conns
+            if redirect_policy is not None:
+                cluster_kwargs["redirect_policy"] = redirect_policy
+            self._cluster = ClusterClient.from_addresses(self._addresses, **cluster_kwargs)  # type: ignore[arg-type]
         self._pool: asyncio.Queue[DqliteConnection] = asyncio.Queue(maxsize=max_size)
         self._size = 0
         self._lock = asyncio.Lock()

@@ -220,6 +220,8 @@ async def create_pool(
     max_attempts: int | None = None,
     max_elapsed_seconds: float | None = None,
     dial_func: DialFunc | None = None,
+    concurrent_leader_conns: int | None = None,
+    redirect_policy: RedirectPolicy | None = None,
 ) -> ConnectionPool:
     """Create a connection pool with automatic leader detection.
 
@@ -295,6 +297,8 @@ async def create_pool(
         max_attempts=max_attempts,
         max_elapsed_seconds=max_elapsed_seconds,
         dial_func=dial_func,
+        concurrent_leader_conns=concurrent_leader_conns,
+        redirect_policy=redirect_policy,
     )
     await pool.initialize()
     return pool
