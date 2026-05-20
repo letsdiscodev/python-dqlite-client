@@ -1221,7 +1221,30 @@ class ConnectionPool:
                 # and leak the rest of the queue's transports +
                 # reservations. The per-iteration release below uses
                 # the same shield discipline.
-                await asyncio.shield(conn.close())
+                #
+                # Per-iteration upper bound: a single transport-class
+                # bug (kernel-level FIN delay, half-closed socket
+                # whose ``wait_closed`` never returns, mock-conn whose
+                # close hangs) would otherwise block the entire drain
+                # loop on the first bad connection. ``conn.close()``
+                # already enforces ``close_timeout`` internally, but
+                # the outer ``wait_for`` is the upper bound so that
+                # contract holds even if the inner timeout discipline
+                # has a bug. The headroom (+0.5s) absorbs the
+                # graceful-vs-force step inside ``_close_impl``
+                # without truncating it.
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(conn.close()),
+                        timeout=self._close_timeout + 0.5,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "pool: cleanup-after-cancel close() on %s "
+                        "exceeded close_timeout; abandoning to drain "
+                        "remaining queue",
+                        sanitize_for_log(str(getattr(conn, "_address", "?"))),
+                    )
             except Exception:
                 logger.debug(
                     "pool: cleanup-after-cancel close() on %s failed",
