@@ -1719,6 +1719,12 @@ class ClusterClient:
         per-call level. Mirrors :meth:`leader_info`'s precedence.
 
         Raises:
+            DqliteConnectionError: when the admin connection cannot be
+                established (transport timeout / OS error / handshake
+                failure). Rewrapped by :meth:`open_admin_connection`
+                from the underlying ``TimeoutError`` / ``OSError``.
+                Also reachable from :meth:`find_leader`'s cached
+                fast-path arm.
             ClusterError: when no leader is reachable across the
                 configured node store (same condition that
                 :meth:`find_leader` would surface).
@@ -2071,6 +2077,11 @@ class ClusterClient:
                 ``None`` means "describe the leader".
 
         Raises:
+            DqliteConnectionError: when the admin connection cannot be
+                established. Rewrapped by :meth:`open_admin_connection`
+                from the underlying ``TimeoutError`` / ``OSError``.
+                Also reachable from :meth:`find_leader`'s cached
+                fast-path arm when ``address`` is ``None``.
             ClusterError: when no leader is reachable (only fires
                 when ``address=None``).
             OperationalError: when the node rejects the request.
@@ -2112,6 +2123,11 @@ class ClusterClient:
 
         Raises:
             TypeError / ValueError: on invalid arguments.
+            DqliteConnectionError: when the admin connection cannot be
+                established. Rewrapped by :meth:`open_admin_connection`
+                from the underlying ``TimeoutError`` / ``OSError``.
+                Also reachable from :meth:`find_leader`'s cached
+                fast-path arm when ``address`` is ``None``.
             ClusterError: when ``address=None`` and no leader is reachable.
             OperationalError: when the node rejects.
             ProtocolError: on a wire-level shape mismatch.
@@ -2175,6 +2191,11 @@ class ClusterClient:
 
         Raises:
             TypeError: on invalid arguments.
+            DqliteConnectionError: when the admin connection cannot be
+                established. Rewrapped by :meth:`open_admin_connection`
+                from the underlying ``TimeoutError`` / ``OSError``.
+                Also reachable from :meth:`find_leader`'s cached
+                fast-path arm.
             ClusterError: when no leader is reachable.
             OperationalError: when the server rejects (e.g. unknown
                 database name).
