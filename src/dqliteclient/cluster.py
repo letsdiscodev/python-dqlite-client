@@ -1912,16 +1912,18 @@ class ClusterClient:
             # at the call site.
             raise ValueError(f"target_node_id must be >= 1, got {target_node_id}")
 
-        # Bypass the find_leader cache fast path: this is the one admin
-        # RPC whose success mechanism is to step the current leader
-        # down. After a recent transfer the cache points at a peer that
-        # has just stepped down (or is about to be asked to step down
-        # now); the cache-probe would burn one round-trip against the
-        # stepped-down peer before falling through to the full sweep.
-        # Discarding it pre-call shifts the cost to a single fresh
-        # sweep instead. The post-call ``finally:`` below still
-        # invalidates for the leader-flip-mid-RPC case.
-        self._set_last_known_leader(None)
+        # No pre-RPC cache invalidation: the find_leader fast-path
+        # already handles the "cache points at a stepped-down peer"
+        # case — the cached probe fails with a leader-flip code and
+        # the sweep runs in the next attempt, costing one extra probe
+        # RTT rather than a full sweep. Pre-invalidating would force a
+        # full N-node sweep on every transfer call, including the
+        # warm-cached no-op case (a transfer to the same node, or a
+        # transfer that the cluster rejects because the target is not
+        # a voter). The post-RPC ``finally:`` below still invalidates
+        # for the leader-step-down-during-RPC case. Mirrors
+        # go-dqlite's ``Client.Transfer`` which does not pre-
+        # invalidate the leader tracker.
         leader_addr = await self.find_leader()
         try:
             async with self.open_admin_connection(leader_addr) as protocol:

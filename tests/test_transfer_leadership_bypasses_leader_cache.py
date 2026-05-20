@@ -1,18 +1,20 @@
-"""``ClusterClient.transfer_leadership`` discards the cached leader
-address BEFORE calling ``find_leader`` so the cache fast path does not
-probe the very peer being asked to step down. After a recent successful
-transfer the cache points at the just-stepped-down ex-leader; without
-the pre-call invalidation, a chaos-monkey loop of transfers pays one
-wasted cache-probe RTT per iteration.
+"""``ClusterClient.transfer_leadership`` does NOT pre-invalidate the
+leader cache before calling ``find_leader``. The find_leader fast-
+path handles the "cache points at a stepped-down peer" case by
+falling through to the sweep on a leader-flip code — one extra probe
+RTT, not a full sweep.
 
-Sibling admin RPCs (cluster_info, leader_info, describe, set_weight,
-etc.) keep the cache fast path — they have no leader-step-down
-semantic that contradicts the cache.
+Pre-invalidating would force a full N-node sweep on every transfer
+call, including the warm-cached no-op case (transfer to the same
+node, or transfer the cluster rejects). Matches go-dqlite's
+``Client.Transfer`` which doesn't pre-invalidate the leader tracker.
+
+The post-RPC invalidation in the ``finally:`` still fires (covers
+the leader-step-down-mid-RPC case).
 """
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,11 +24,11 @@ from dqliteclient.node_store import MemoryNodeStore
 
 
 @pytest.mark.asyncio
-async def test_transfer_leadership_clears_leader_cache_before_find_leader() -> None:
+async def test_transfer_leadership_does_not_pre_invalidate_cache() -> None:
+    """The cache is preserved through the find_leader entry — the
+    fast-path handles staleness via fall-through-to-sweep."""
     cc = ClusterClient(MemoryNodeStore(["127.0.0.1:9001"]), timeout=2.0)
-    # Pre-seed the cache with a peer we want to verify gets discarded
-    # BEFORE ``find_leader`` runs.
-    cc._set_last_known_leader("stale.example.com:9001")
+    cc._set_last_known_leader("warm.example.com:9001")
     observed_cache_at_find_leader: list[str | None] = []
 
     async def fake_find_leader(*_a: object, **_kw: object) -> str:
@@ -44,41 +46,27 @@ async def test_transfer_leadership_clears_leader_cache_before_find_leader() -> N
 
     await cc.transfer_leadership(42)
 
-    assert observed_cache_at_find_leader == [None], (
-        f"transfer_leadership must invalidate the leader cache before "
-        f"calling find_leader; cache at find_leader call was "
-        f"{observed_cache_at_find_leader!r}"
+    assert observed_cache_at_find_leader == ["warm.example.com:9001"], (
+        f"transfer_leadership must NOT pre-invalidate the cache; the "
+        f"find_leader fast-path handles stepped-down peers via the "
+        f"sweep fallback. Got cache history: {observed_cache_at_find_leader!r}"
     )
 
 
 @pytest.mark.asyncio
 async def test_transfer_leadership_still_invalidates_cache_after_failure() -> None:
-    """The pre-call invalidation must not regress the existing
-    post-call invalidation that handles leader-flip-mid-RPC: a failure
-    inside ``open_admin_connection`` must still leave the cache empty
-    on the way out."""
+    """The post-RPC finally invalidation still fires: a failure inside
+    ``open_admin_connection`` must leave the cache empty on the way
+    out so the next call re-probes."""
     cc = ClusterClient(MemoryNodeStore(["127.0.0.1:9001"]), timeout=2.0)
-    cc._set_last_known_leader("stale.example.com:9001")
+    cc._set_last_known_leader("warm.example.com:9001")
 
     cc.find_leader = AsyncMock(return_value="127.0.0.1:9001")
 
-    # Mid-RPC failure: the admin RPC raises after the cache was already
-    # cleared pre-call. After the finally: the cache must still be None
-    # (re-clearing is a no-op for the success path).
     fake_admin_cm = MagicMock()
     fake_admin_cm.__aenter__ = AsyncMock(side_effect=ConnectionResetError("boom"))
     fake_admin_cm.__aexit__ = AsyncMock(return_value=None)
     cc.open_admin_connection = MagicMock(return_value=fake_admin_cm)
-
-    # Manually mutate the cache mid-flight to simulate a leader-flip
-    # racing with the transfer call.
-    async def find_leader_then_repoison(*_a: object, **_kw: object) -> str:
-        # A concurrent caller has already discovered a fresh leader
-        # while transfer_leadership is in flight.
-        cc._set_last_known_leader("freshly-discovered:9001")
-        return "127.0.0.1:9001"
-
-    cc.find_leader = find_leader_then_repoison
 
     with pytest.raises(ConnectionResetError):
         await cc.transfer_leadership(42)
@@ -87,21 +75,14 @@ async def test_transfer_leadership_still_invalidates_cache_after_failure() -> No
 
 
 @pytest.mark.asyncio
-async def test_transfer_leadership_loop_does_not_burn_cache_probes() -> None:
-    """Smoke test: a tight loop of transfer_leadership calls observes
-    ``None`` cache at every ``find_leader`` entry — confirming the cache
-    fast path is consistently skipped."""
+async def test_transfer_leadership_invalidates_cache_on_success() -> None:
+    """The post-RPC finally invalidation also fires on success: the
+    transfer succeeded, so the leader-just-stepped-down semantic
+    means the cached peer is suspect for the next call."""
     cc = ClusterClient(MemoryNodeStore(["127.0.0.1:9001"]), timeout=2.0)
-    observed: list[str | None] = []
+    cc._set_last_known_leader("warm.example.com:9001")
 
-    async def fake_find_leader(*_a: object, **_kw: object) -> str:
-        observed.append(cc._get_last_known_leader())
-        # Simulate a successful find_leader that re-populates the cache
-        # so the next iteration would otherwise see it set.
-        cc._set_last_known_leader("127.0.0.1:9001")
-        return "127.0.0.1:9001"
-
-    cc.find_leader = fake_find_leader
+    cc.find_leader = AsyncMock(return_value="127.0.0.1:9001")
 
     fake_proto = MagicMock()
     fake_proto.transfer = AsyncMock(return_value=None)
@@ -110,8 +91,9 @@ async def test_transfer_leadership_loop_does_not_burn_cache_probes() -> None:
     fake_admin_cm.__aexit__ = AsyncMock(return_value=None)
     cc.open_admin_connection = MagicMock(return_value=fake_admin_cm)
 
-    for _ in range(5):
-        await cc.transfer_leadership(42)
-        await asyncio.sleep(0)
+    await cc.transfer_leadership(42)
 
-    assert observed == [None] * 5
+    # Post-RPC invalidation discipline: the leader just stepped down,
+    # so the cache (which may have been updated by find_leader during
+    # the transfer's own sweep) is suspect for the next call.
+    assert cc._get_last_known_leader() is None
