@@ -107,3 +107,72 @@ async def test_flipped_address_verification_fails_returns_none() -> None:
     verify_mock = cluster._verify_redirect
     assert isinstance(verify_mock, AsyncMock)
     verify_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_leader_info_success_preserves_cache() -> None:
+    """``leader_info`` SUCCESS must NOT invalidate ``_last_known_leader``
+    — the responding leader has provably just answered the RPC, so
+    the cache stays warm. A regression that adds an unconditional
+    ``finally: self._set_last_known_leader(None)`` would re-introduce
+    the wasted-sweep defect."""
+    cluster = ClusterClient(MemoryNodeStore(["127.0.0.1:9001"]), timeout=2.0)
+    cluster._set_last_known_leader("warm:9001")
+    cluster.find_leader = AsyncMock(return_value="127.0.0.1:9001")
+    fake_proto = MagicMock()
+    fake_proto.get_leader = AsyncMock(return_value=(1, "127.0.0.1:9001"))
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=fake_proto)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    cluster.open_admin_connection = MagicMock(return_value=cm)
+
+    info = await cluster.leader_info()
+    assert info is not None
+    assert cluster._get_last_known_leader() == "warm:9001", (
+        "leader_info SUCCESS must preserve the cache"
+    )
+
+
+@pytest.mark.asyncio
+async def test_verified_target_returns_zero_empty_returns_none() -> None:
+    """Inner re-validation: a verified target reporting ``(0, "")``
+    surfaces as ``leader_info() is None`` — the verified peer
+    acknowledges "no leader known" and that survives through the
+    inner check unchanged."""
+    cluster = _make_cluster(
+        (7, "flipped:9001"),
+        verified_return="flipped:9001",
+        verified_get_leader=(0, ""),
+    )
+    info = await cluster.leader_info()
+    assert info is None
+
+
+@pytest.mark.asyncio
+async def test_verified_target_returns_zero_nonempty_raises_protocol_error() -> None:
+    """Inner re-validation pin: a verified target reporting
+    ``(0, "attacker:9001")`` is malformed (raft atomicity) and must
+    raise ``ProtocolError("malformed ... on verified hint")``. A
+    regression that drops the inner re-validation would let an
+    attacker-influenced stale hint feed back a malformed shape and
+    surface as ``None`` (silently treated as "no leader known")."""
+    cluster = _make_cluster(
+        (7, "flipped:9001"),
+        verified_return="flipped:9001",
+        verified_get_leader=(0, "attacker:9001"),
+    )
+    with pytest.raises(ProtocolError, match="malformed"):
+        await cluster.leader_info()
+
+
+@pytest.mark.asyncio
+async def test_verified_target_returns_nonzero_empty_raises_protocol_error() -> None:
+    """Other half of the inner atomicity invariant — a verified
+    target reporting ``(7, "")`` must also raise."""
+    cluster = _make_cluster(
+        (7, "flipped:9001"),
+        verified_return="flipped:9001",
+        verified_get_leader=(7, ""),
+    )
+    with pytest.raises(ProtocolError, match="malformed"):
+        await cluster.leader_info()
