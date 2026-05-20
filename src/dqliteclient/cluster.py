@@ -1091,6 +1091,24 @@ class ClusterClient:
         if unexpected_exc is not None:
             raise unexpected_exc
         if winning_address is not None:
+            if policy_error is not None:
+                # A sibling probe redirected to a policy-rejected
+                # target before the winning probe self-confirmed as
+                # leader. The probe-site DEBUG log at
+                # ``_check_redirect`` named the rejected address, but
+                # without a WARNING here a SIEM watching for
+                # security-adjacent signals only sees the DEBUG hit
+                # and misses the "the sweep won past it" context.
+                # Sanitize the policy_error text via
+                # ``sanitize_for_log`` (CWE-117 — a server-supplied
+                # address inside ``policy_error.args`` could otherwise
+                # split a log record).
+                logger.warning(
+                    "find_leader: dropped policy rejection during successful "
+                    "sweep — rejected redirect=%s, winning leader=%s",
+                    sanitize_for_log(str(policy_error)),
+                    sanitize_for_log(winning_address),
+                )
             # Populate the leader-tracker cache so the next
             # ``find_leader`` takes the fast path (one probe) instead
             # of running the full parallel sweep again. Mirrors
