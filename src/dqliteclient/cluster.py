@@ -2397,6 +2397,28 @@ def default_safe_redirect_policy(
     is allowed, ``False`` to reject. Malformed input returns
     ``False`` (a hostile server cannot crash the policy by sending
     garbage).
+
+    SSRF caveats
+    ------------
+    The policy is applied to the literal address string BEFORE name
+    resolution and BEFORE IPv6 tunnel unwrapping. Two specific
+    bypasses to be aware of:
+
+    1. **DNS hostnames pass through.** Any address whose host is a
+       hostname rather than an IP literal is accepted (the policy
+       cannot judge what the hostname will resolve to without an
+       additional resolver round-trip). A hostname that resolves
+       at dial time to ``169.254.169.254`` (or any other rejected
+       IP) is therefore **NOT** blocked. Deployments requiring
+       strict SSRF defense should pair this policy with a custom
+       resolver / split-horizon DNS / a hostname-rejecting policy
+       (``allowlist_policy`` is the simplest path).
+    2. **IPv6 tunnel encapsulations.** ``::ffff:<ipv4>`` is unwrapped
+       (so a v4-mapped metadata IP is correctly blocked), but 6to4
+       (``2002::/16``) and Teredo (``2001::/32``) wrappings of
+       SSRF-class IPv4 targets are not unwrapped today and will
+       pass the link-local / loopback checks. Operators with
+       dual-stack networks should use ``allowlist_policy`` instead.
     """
     import ipaddress
 
