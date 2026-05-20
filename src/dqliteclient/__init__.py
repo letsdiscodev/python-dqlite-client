@@ -229,7 +229,10 @@ async def create_pool(
         addresses: List of node addresses in "host:port" format. Ignored if
             ``cluster`` or ``node_store`` is provided.
         database: Database name to open
-        min_size: Minimum number of connections to maintain
+        min_size: Number of connections to pre-warm at
+            :meth:`ConnectionPool.initialize`. NOT a steady-state
+            floor — see :class:`ConnectionPool` for the post-cascade
+            refill semantics.
         max_size: Maximum number of connections
         timeout: Per-RPC-phase timeout in seconds (forwarded). Each
             phase of an operation gets the full budget independently;

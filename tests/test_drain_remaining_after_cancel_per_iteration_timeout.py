@@ -82,15 +82,21 @@ async def test_drain_remaining_after_cancel_per_iteration_timeout_abandons_and_c
 
 
 def test_drain_remaining_after_cancel_source_carries_per_iteration_timeout() -> None:
-    """Inspection pin: the ``asyncio.wait_for(..., timeout=
-    self._close_timeout + 0.5)`` shape must remain in the source. A
-    regression that drops the wait_for or the +0.5 headroom would
-    re-introduce the unbounded-block hazard / truncate the
-    graceful-vs-force step."""
+    """Inspection pin: the ``asyncio.wait_for`` envelope must remain
+    in the source and the timeout must be derived from
+    ``_DRAIN_PER_CONN_CAP_MULTIPLIER`` rather than a bare ``+ 0.5``
+    literal. A regression that drops the wait_for, reverts to the
+    magic literal, or short-circuits the cap would re-introduce
+    either the unbounded-block hazard or the truncate-graceful-
+    drain hazard the cap was sized to prevent."""
     import inspect
 
     src = inspect.getsource(ConnectionPool._drain_remaining_after_cancel)
     assert "asyncio.wait_for" in src
-    assert "self._close_timeout + 0.5" in src
+    assert "_DRAIN_PER_CONN_CAP_MULTIPLIER" in src
+    assert "self._close_timeout + 0.5" not in src, (
+        "magic ``+ 0.5`` literal must not return — the cap is derived "
+        "from ``_CLOSE_RESNAPSHOT_CAP + 1`` via ``_DRAIN_PER_CONN_CAP_MULTIPLIER``"
+    )
     assert "except TimeoutError" in src
     assert "abandoning to drain" in src

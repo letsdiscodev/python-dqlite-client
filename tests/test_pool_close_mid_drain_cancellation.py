@@ -56,6 +56,10 @@ async def test_drain_does_not_orphan_remaining_queued_connections() -> None:
     pool._lock = asyncio.Lock()
     pool._closed = False
     pool._closed_event = None
+    # ``_close_timeout`` is read by ``_drain_idle``'s per-iteration
+    # ``wait_for`` envelope. Each FakeConn's close takes 0.05s, so
+    # 1.0 × multiplier is generous headroom for the test's path.
+    pool._close_timeout = 1.0
 
     # Race the outer cancel against the drain. 0.12s lets the loop
     # start the second connection (each close is 0.05s), then the

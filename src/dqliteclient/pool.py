@@ -69,6 +69,18 @@ _POOL_CLEANUP_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
     InterfaceError,
 )
 
+# Per-connection drain cap multiplier. The inner
+# ``DqliteConnection._close_impl`` worst-case wall-clock is
+# ``(_CLOSE_RESNAPSHOT_CAP + 1) × close_timeout``: each re-snapshot
+# iteration awaits a bounded drain plus the final ``wait_closed``,
+# both bounded by ``close_timeout``. Derived from the connection
+# module's constant so a future bump to the cap (e.g. for higher
+# observed _invalidate races) propagates without manual edits. The
+# previous ``close_timeout + 0.5`` literal was an unnamed magic
+# number that fired too aggressively at ``close_timeout > 0.17`` and
+# was 50× the budget at the ``close_timeout = 0.01`` floor.
+_DRAIN_PER_CONN_CAP_MULTIPLIER: Final[int] = _conn_mod._CLOSE_RESNAPSHOT_CAP + 1
+
 logger = logging.getLogger(__name__)
 
 
@@ -262,7 +274,15 @@ class ConnectionPool:
             addresses: List of node addresses. Ignored if ``cluster`` or
                 ``node_store`` is provided; required otherwise.
             database: Database name
-            min_size: Minimum connections to maintain
+            min_size: Number of connections to pre-warm at
+                :meth:`initialize`. NOT a steady-state floor — after
+                a drain-idle cascade (leader flip / dead-conn
+                detection), the pool does not actively replenish
+                back up to ``min_size``. The next N acquires after
+                the cascade pay a fresh-connect RTT until natural
+                lazy creates refill the queue. asyncpg's pool and
+                go-dqlite's ``MinIdle`` actively refill; this pool
+                does not.
             max_size: Maximum connections allowed
             timeout: Per-RPC-phase timeout (forwarded to each pooled
                 ``DqliteConnection``). Each phase of an operation
@@ -319,14 +339,27 @@ class ConnectionPool:
                 heartbeat (up to a 300 s hard cap). Default False —
                 operator-configured ``timeout`` is authoritative and
                 the server cannot amplify it.
-            close_timeout: Budget (seconds) for the transport-drain
-                during ``close()``. After ``writer.close()`` the
-                local side of the socket is gone; ``wait_closed`` is
-                best-effort cleanup. The 0.5s default is sized for
-                LAN; increase for WAN deployments where FIN/ACK
-                round-trip is slower, or decrease to tighten
-                SIGTERM-shutdown budgets. See
+            close_timeout: Per-connection budget (seconds) for the
+                transport-drain during ``close()``. After
+                ``writer.close()`` the local side of the socket is
+                gone; ``wait_closed`` is best-effort cleanup. The
+                0.5s default is sized for LAN; increase for WAN
+                deployments where FIN/ACK round-trip is slower, or
+                decrease to tighten SIGTERM-shutdown budgets. See
                 ``DqliteConnection.__init__`` for full rationale.
+
+                **Sequential composition.** ``pool.close()`` drains
+                the idle queue serially; the total close wall-clock
+                can reach ``qsize() × close_timeout`` under a worst-
+                case FIN-stalled network. For SIGTERM-with-budget
+                deployments, size ``max_size × close_timeout`` to
+                fit within the orchestrator's grace period (e.g.
+                Kubernetes' ``terminationGracePeriodSeconds``) with
+                margin for the rest of shutdown work. Wrap
+                ``pool.close()`` in ``asyncio.timeout(...)`` to
+                enforce a hard upper bound; the remaining-after-
+                cancel sweep then runs each per-conn close with its
+                own bounded ceiling.
             max_attempts: Maximum leader-discovery attempts per
                 ``_create_connection`` (forwarded to
                 ``ClusterClient.connect``). ``None`` (default) uses the
@@ -1165,7 +1198,37 @@ class ConnectionPool:
                     # interpreter exit). The outer cancel still aborts the
                     # drain loop — but every connection that was STARTED on
                     # the close path finishes cleanly.
-                    await asyncio.shield(conn.close())
+                    #
+                    # Per-iteration upper bound mirrors the after-cancel
+                    # sweep below: a single transport-class bug
+                    # (kernel-level FIN delay, half-closed socket whose
+                    # ``wait_closed`` never returns, mock-conn whose close
+                    # hangs) would otherwise block the entire drain on the
+                    # first bad connection. ``conn.close()`` already
+                    # enforces ``close_timeout`` internally, but the outer
+                    # ``wait_for`` is the upper bound so that contract
+                    # holds even if the inner discipline has a regression
+                    # bug. Cap shape derived from the same
+                    # ``_DRAIN_PER_CONN_CAP_MULTIPLIER`` as the after-
+                    # cancel sweep so both drains stay in lockstep.
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(conn.close()),
+                            timeout=self._close_timeout * _DRAIN_PER_CONN_CAP_MULTIPLIER,
+                        )
+                    except TimeoutError:
+                        # The inner close-timeout discipline has a bug or
+                        # the transport is pathologically stuck. WARN
+                        # (rather than DEBUG) so operators see the
+                        # abandonment; the residual ``conn.close()`` task
+                        # keeps running under the shield and may complete
+                        # against a moved-on pool state — at worst a
+                        # ``ResourceWarning`` at GC, never silent corruption.
+                        logger.warning(
+                            "pool: close() on idle connection %s exceeded "
+                            "per-iteration drain cap; abandoning to continue queue",
+                            sanitize_for_log(str(getattr(conn, "_address", "?"))),
+                        )
                 except Exception:
                     # Transport-level failures (BrokenPipeError, OSError, our
                     # own DqliteConnectionError) are absorbed so drain can
@@ -1255,13 +1318,19 @@ class ConnectionPool:
                 # already enforces ``close_timeout`` internally, but
                 # the outer ``wait_for`` is the upper bound so that
                 # contract holds even if the inner timeout discipline
-                # has a bug. The headroom (+0.5s) absorbs the
-                # graceful-vs-force step inside ``_close_impl``
-                # without truncating it.
+                # has a bug. The cap is derived from the inner worst
+                # case: ``_close_impl`` has ``_CLOSE_RESNAPSHOT_CAP``
+                # iterations of bounded ``_pending_drain`` await plus
+                # a final ``wait_closed``, each bounded by
+                # ``close_timeout`` — total
+                # ``(_CLOSE_RESNAPSHOT_CAP + 1) × close_timeout``.
+                # Derived from a module-level constant rather than the
+                # earlier ``+ 0.5`` literal so a bump to the inner cap
+                # propagates without manual sync.
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(conn.close()),
-                        timeout=self._close_timeout + 0.5,
+                        timeout=self._close_timeout * _DRAIN_PER_CONN_CAP_MULTIPLIER,
                     )
                 except TimeoutError:
                     logger.warning(
@@ -2221,6 +2290,15 @@ class ConnectionPool:
         Idempotent and concurrent-caller-safe: a second caller (or a
         re-entry after completion) waits on the first caller's drain
         via ``_close_done`` rather than racing ``_drain_idle``.
+
+        **Wall-clock bound.** The idle queue is drained sequentially
+        (one ``conn.close()`` await per iteration); total wall-clock
+        is approximately ``qsize() × close_timeout`` plus a small
+        amount of bookkeeping. Wrap in ``asyncio.timeout(...)`` to
+        enforce a hard upper bound; the remaining-after-cancel sweep
+        then runs each per-conn close with its own bounded ceiling.
+        See the ``close_timeout`` parameter docstring for sizing
+        guidance against SIGTERM grace periods.
         """
         # Fork-after-init: the inherited connection FDs are shared with
         # the parent. Draining and writer.close() in the child would

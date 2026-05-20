@@ -43,6 +43,10 @@ async def test_per_connection_close_survives_outer_cancel() -> None:
     pool._lock = asyncio.Lock()
     pool._closed = False
     pool._closed_event = None
+    # Read by ``_drain_idle``'s per-iteration ``wait_for`` cap. 1.0s
+    # is generous against the 0.1s per-conn sleep in the fake's
+    # close.
+    pool._close_timeout = 1.0
 
     # Race an outer cancel against the drain.
     drain_task = asyncio.create_task(pool._drain_idle())

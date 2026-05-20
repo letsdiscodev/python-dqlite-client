@@ -97,6 +97,18 @@ def get_current_pid() -> int:
 if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_refresh_pid_cache)
 
+# Re-snapshot cap for ``_pending_drain`` retire arms in ``_connect_impl``
+# / ``_close_impl``. The number of iterations a racing ``_invalidate``
+# can publish a fresh task during ``await pending`` before the loop
+# breaks out and attaches the ``_observe_drain_exception`` callback.
+# Exposed at module scope so :mod:`dqliteclient.pool` can derive its
+# per-iteration drain cap from the same source — the worst-case inner
+# close path is ``(_CLOSE_RESNAPSHOT_CAP + 1) × close_timeout`` (each
+# re-snapshot iteration awaits a bounded drain plus the final
+# ``wait_closed``). Promoting from a local literal keeps both layers
+# in lockstep on changes.
+_CLOSE_RESNAPSHOT_CAP: Final[int] = 3
+
 # Bare ``BEGIN`` opens an implicit ``DEFERRED`` transaction per SQLite's
 # grammar default. dqlite's Raft FSM serializes transactions regardless
 # of the qualifier, so DEFERRED / IMMEDIATE / EXCLUSIVE collapse to the
