@@ -2259,7 +2259,17 @@ class DqliteConnection:
             # ``_invalidate(e)`` call. Pinned by
             # ``test_message_encode_returns_bytes`` in the wire suite
             # and by ``test_wire_encode_error_does_not_invalidate`` here.
-            raise DataError(str(e)) from e
+            #
+            # Carry the ``"wire encode failed: "`` prefix so the
+            # display surface matches ``_call_client``'s sibling
+            # ``_WireEncodeError`` arm at
+            # ``dqlitedbapi/cursor.py``. Without the prefix, an
+            # operator triaging a log line cannot tell whether the
+            # ``DataError`` originated at the wire encoder (bytes
+            # never reached the network) or from another caller-side
+            # rejection emitting the same message — a load-bearing
+            # forensic distinction the prior round established.
+            raise DataError(f"wire encode failed: {e}") from e
         except (DqliteConnectionError, ProtocolError) as e:
             self._invalidate(e)
             raise
