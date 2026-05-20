@@ -1628,7 +1628,13 @@ class ClusterClient:
                         )
                     raise
                 return conn
-            except (OSError, DqliteConnectionError, ClusterError, ValueError) as exc:
+            except (
+                OSError,
+                DqliteConnectionError,
+                ClusterError,
+                ValueError,
+                OperationalError,
+            ) as exc:
                 # Narrow catch: these are the transport- and cluster-level
                 # failures the retry loop re-attempts. Anything wider would
                 # silently log-and-re-raise programming bugs (TypeError,
@@ -1643,6 +1649,16 @@ class ClusterClient:
                 # — keeping the find-leader sweep's narrow
                 # ``except`` from leaking ``ValueError`` past PEP 249
                 # wrapping at higher layers.
+                # ``OperationalError`` is included for the DEBUG
+                # breadcrumb only: ``_connect_impl`` rewraps leader-
+                # flip OperationalError to DqliteConnectionError but
+                # propagates non-leader-flip codes (e.g. unknown
+                # database name from ``open_database``'s FailureResponse
+                # arm) unwrapped. Without this arm, those reach the
+                # caller with no per-attempt log line documenting the
+                # leader address and attempt number. The retry
+                # classifier below is unchanged — these codes remain
+                # non-retryable; only the breadcrumb is gained.
                 logger.debug(
                     "ClusterClient.connect attempt %d/%d failed (leader=%r): %s",
                     attempt,
