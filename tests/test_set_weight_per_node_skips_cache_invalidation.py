@@ -50,16 +50,18 @@ async def test_set_weight_per_node_does_not_invalidate_leader_cache() -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_weight_leader_targeted_still_invalidates_cache() -> None:
-    """Positive case: ``address=None`` (leader-targeted) keeps the
-    existing invalidation."""
+async def test_set_weight_leader_targeted_preserves_cache_on_success() -> None:
+    """``address=None`` (leader-targeted) keeps the cache warm on
+    SUCCESS — the responding leader has provably just answered the
+    RPC. The failure-path invalidation (separate test) covers the
+    leader-step-down case. Matches go-dqlite's ``Client.Weight``."""
     cached = "10.0.0.1:9001"
     cc = _make_cluster_with_seeded_cache(cached)
     cc.find_leader = AsyncMock(return_value="10.0.0.1:9001")
 
     await cc.set_weight(5)
 
-    assert cc._get_last_known_leader() is None
+    assert cc._get_last_known_leader() == cached
 
 
 @pytest.mark.asyncio

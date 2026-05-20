@@ -124,11 +124,16 @@ async def test_assign_role_invalidates_last_known_leader() -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_weight_invalidates_last_known_leader() -> None:
-    """Changing weight does not directly change quorum, but a
-    marginal cluster on the edge of an election can be tipped by
-    the weight shift. Invalidate the cache."""
+async def test_set_weight_preserves_last_known_leader_on_success() -> None:
+    """``set_weight`` is a read-mostly admin RPC: on SUCCESS the
+    responding leader has provably just answered the RPC, so the
+    leader cache stays warm. Matches go-dqlite's ``Client.Weight``
+    which does not touch the leader tracker on success. Failure-
+    path invalidation is exercised by the sibling test
+    ``test_set_weight_per_node_does_not_invalidate_on_failure`` and
+    by ``test_admin_rpcs_preserve_cache_on_success``."""
     cluster = _make_cluster_with_cached_leader()
+    cached = cluster._get_last_known_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
     fake_proto.weight = AsyncMock()
@@ -142,7 +147,7 @@ async def test_set_weight_invalidates_last_known_leader() -> None:
         for p in reversed(patches):
             p.stop()
 
-    assert cluster._get_last_known_leader() is None
+    assert cluster._get_last_known_leader() == cached
 
 
 @pytest.mark.asyncio

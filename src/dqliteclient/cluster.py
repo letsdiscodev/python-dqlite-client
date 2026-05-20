@@ -1833,40 +1833,42 @@ class ClusterClient:
             leader_addr = await self.find_leader(policy=policy)
             async with self.open_admin_connection(leader_addr) as protocol:
                 nodes = await protocol.cluster()
-            # Fall back to the instance-level policy when no per-call
-            # override; matches the precedence used by ``leader_info``
-            # and by ``find_leader``'s redirect arms.
-            effective_policy = policy if policy is not None else self._redirect_policy
-            if effective_policy is None:
-                return nodes
-            filtered: list[_WireNodeInfo] = []
-            for node in nodes:
-                if effective_policy(node.address):
-                    filtered.append(node)
-                else:
-                    logger.warning(
-                        "cluster_info: dropping node %s (id=%d, role=%s)"
-                        " — address rejected by policy",
-                        # ``sanitize_for_log`` escapes LF / Tab in
-                        # addition to control / bidi / invisible
-                        # chars; WARNING-level records reach SIEM /
-                        # journald / syslog shippers, so a server-
-                        # controlled address must not split into a
-                        # forged second line (CWE-117).
-                        sanitize_for_log(node.address),
-                        node.node_id,
-                        node.role.name,
-                    )
-            return filtered
-        finally:
-            # Membership-RPC discipline: a leader step-down mid-RPC
-            # surfaces as ``OperationalError(LEADER_ERROR_CODES)`` or
-            # ``DqliteConnectionError`` and would otherwise leave the
-            # last-known-leader cache pointing at the now-stale peer,
-            # wasting one fast-path RTT on the next ``find_leader``.
-            # Invalidate on both success and failure for symmetry
-            # across all admin RPCs that target the leader.
+        except (OperationalError, DqliteConnectionError, ProtocolError):
+            # Failure-path invalidation only: a leader step-down
+            # mid-RPC surfaces as one of these exception classes and
+            # would otherwise leave the last-known-leader cache
+            # pointing at a now-stale peer. On the SUCCESS path the
+            # responding leader has provably just answered the RPC
+            # — the cache stays warm so the next ``find_leader`` hits
+            # the fast path (one RTT) rather than running a full
+            # sweep (N RTTs). Mirrors go-dqlite's ``Client.Cluster``
+            # which does not touch the leader tracker on success.
             self._set_last_known_leader(None)
+            raise
+        # Fall back to the instance-level policy when no per-call
+        # override; matches the precedence used by ``leader_info``
+        # and by ``find_leader``'s redirect arms.
+        effective_policy = policy if policy is not None else self._redirect_policy
+        if effective_policy is None:
+            return nodes
+        filtered: list[_WireNodeInfo] = []
+        for node in nodes:
+            if effective_policy(node.address):
+                filtered.append(node)
+            else:
+                logger.warning(
+                    "cluster_info: dropping node %s (id=%d, role=%s) — address rejected by policy",
+                    # ``sanitize_for_log`` escapes LF / Tab in
+                    # addition to control / bidi / invisible
+                    # chars; WARNING-level records reach SIEM /
+                    # journald / syslog shippers, so a server-
+                    # controlled address must not split into a
+                    # forged second line (CWE-117).
+                    sanitize_for_log(node.address),
+                    node.node_id,
+                    node.role.name,
+                )
+        return filtered
 
     async def transfer_leadership(self, target_node_id: int) -> None:
         """Transfer leadership to ``target_node_id``.
@@ -2051,13 +2053,18 @@ class ClusterClient:
                         )
                     return LeaderInfo(node_id=vnode_id, address=vaddress)
                 return LeaderInfo(node_id=node_id, address=address)
-        finally:
-            # Mirror the membership-RPC discipline: a leader
-            # step-down mid-RPC would otherwise leave the cache
-            # pointing at the stale peer. Invalidate on both success
-            # and failure for symmetry across all admin RPCs that
-            # target the leader.
+        except (OperationalError, DqliteConnectionError, ProtocolError):
+            # Failure-path invalidation only: a leader step-down
+            # mid-RPC surfaces as one of these exception classes and
+            # would otherwise leave the cache pointing at a now-stale
+            # peer. On SUCCESS the responding leader has provably
+            # just answered the RPC — the cache stays warm so the
+            # next ``find_leader`` hits the fast path (one RTT)
+            # rather than running a full sweep. Mirrors go-dqlite's
+            # ``Client.Leader`` which does not touch the leader
+            # tracker on success.
             self._set_last_known_leader(None)
+            raise
 
     async def add_node(
         self,
@@ -2249,12 +2256,16 @@ class ClusterClient:
                     failure_domain=response.failure_domain,
                     weight=response.weight,
                 )
-        finally:
+        except (OperationalError, DqliteConnectionError, ProtocolError):
             if leader_targeted:
-                # Mirror the membership-RPC discipline: a leader
-                # step-down mid-RPC would otherwise leave the cache
-                # pointing at the stale peer.
+                # Failure-path invalidation only: a leader step-down
+                # mid-RPC surfaces as one of these exception classes.
+                # On SUCCESS the responding leader has provably just
+                # answered the RPC — the cache stays warm. Mirrors
+                # go-dqlite's ``Client.Describe`` which does not
+                # touch the leader tracker on success.
                 self._set_last_known_leader(None)
+            raise
 
     async def set_weight(self, weight: int, *, address: str | None = None) -> None:
         """Set a node's weight (leader-election preference).
@@ -2289,18 +2300,18 @@ class ClusterClient:
         try:
             async with self.open_admin_connection(target) as protocol:
                 await protocol.weight(weight)
-        finally:
+        except (OperationalError, DqliteConnectionError, ProtocolError):
             if leader_targeted:
-                # ``set_weight`` does not directly change quorum, but a
-                # marginal cluster on the edge of an election can be
-                # tipped by the weight shift. Invalidate on both success
-                # and failure so a leader-flip-induced failure doesn't
-                # leave the cache stale. Per-node form (``address!=None``)
-                # dials the target directly and never touches the leader
-                # cache, so the invalidation is skipped — mirrors the
-                # sibling ``describe`` discipline at
-                # ``leader_targeted = address is None``.
+                # Failure-path invalidation only: a leader step-down
+                # mid-RPC surfaces as one of these exception classes.
+                # On SUCCESS the responding leader has provably just
+                # answered the RPC — the cache stays warm. Per-node
+                # form (``address != None``) dials the target
+                # directly and never touches the leader cache.
+                # Mirrors go-dqlite's ``Client.Weight`` which does
+                # not touch the leader tracker on success.
                 self._set_last_known_leader(None)
+            raise
 
     async def dump(self, database: str) -> dict[str, bytes]:
         """Dump a database to ``{filename: bytes}``.
@@ -2355,12 +2366,17 @@ class ClusterClient:
             leader_addr = await self.find_leader()
             async with self.open_admin_connection(leader_addr) as protocol:
                 return await protocol.dump(database)
-        finally:
-            # Mirror the membership-RPC discipline: ``dump`` reads a
-            # long-lived socket, so a leader step-down mid-dump is
-            # plausible. Invalidate so a leader-flip-induced failure
-            # doesn't leave the cache pointing at the dead peer.
+        except (OperationalError, DqliteConnectionError, ProtocolError):
+            # Failure-path invalidation only: ``dump`` reads a
+            # long-lived socket, and a leader step-down mid-dump is
+            # plausible. The exception classes catch this case and
+            # invalidate so the next ``find_leader`` re-sweeps. On
+            # SUCCESS the responding leader has provably just
+            # answered the dump RPC — the cache stays warm. Mirrors
+            # go-dqlite's ``Client.Dump`` which does not touch the
+            # leader tracker on success.
             self._set_last_known_leader(None)
+            raise
 
     @contextlib.asynccontextmanager
     async def open_admin_connection(self, address: str) -> AsyncIterator[DqliteProtocol]:
