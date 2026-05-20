@@ -870,15 +870,21 @@ class ClusterClient:
         # then stable-sort by role so voters come before non-voters.
         # Standby/spare nodes can never become leader (their LEADER
         # response is always (0, "")), so probing them first wastes RTTs.
+        # Strict role-ascending order so STANDBY (1) probes before
+        # SPARE (2): standbys participate in heartbeats and are more
+        # likely to know the current leader, while spares participate
+        # in neither voting nor heartbeats and lag strictly more.
+        # Matches go-dqlite's ``connector.go::connectAttempt`` sort
+        # discipline (see Go's "standbys are more likely to know who
+        # the leader is than spares" rationale).
         #
-        # Deliberate divergence from go-dqlite: the Go connector iterates
-        # nodes in their stored order (deterministic) and relies on role
-        # to decide candidacy. We shuffle within role class to avoid
-        # stampeding a single node across parallel callers. Do not
-        # "fix" this toward Go's deterministic behavior without adding
-        # an explicit stampede-avoidance mechanism elsewhere.
+        # Within-role shuffle is preserved by the stable-sort
+        # discipline: ``_cluster_random.shuffle`` randomizes node
+        # order across parallel callers (stampede-avoidance), then
+        # ``sort`` rearranges only by role-bucket while keeping
+        # equal-role nodes in their shuffled positions.
         _cluster_random.shuffle(nodes)
-        nodes.sort(key=lambda n: 0 if n.role == NodeRole.VOTER else 1)
+        nodes.sort(key=lambda n: int(n.role))
 
         total_nodes = len(nodes)
         # Cap simultaneous in-flight probes at
