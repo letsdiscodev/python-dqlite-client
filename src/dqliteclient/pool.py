@@ -1695,7 +1695,7 @@ class ConnectionPool:
                         # orphan it.
                         if self._closed:
                             try:
-                                await conn.close()
+                                await asyncio.shield(conn.close())
                             except _POOL_CLEANUP_EXCEPTIONS:
                                 logger.debug(
                                     "pool: ignoring close() error during release",
@@ -1707,7 +1707,7 @@ class ConnectionPool:
                                 self._pool.put_nowait(conn)
                             except asyncio.QueueFull:
                                 try:
-                                    await conn.close()
+                                    await asyncio.shield(conn.close())
                                 except _POOL_CLEANUP_EXCEPTIONS:
                                     logger.debug(
                                         "pool: ignoring close() error during release",
@@ -1719,7 +1719,7 @@ class ConnectionPool:
                                 returned_to_queue = True
                     else:
                         try:
-                            await conn.close()
+                            await asyncio.shield(conn.close())
                         except _POOL_CLEANUP_EXCEPTIONS:
                             logger.debug(
                                 "pool: ignoring close() error during release",
@@ -1961,14 +1961,21 @@ class ConnectionPool:
         returned_to_queue = False
         try:
             if self._closed:
+                # Shield the close so an outer cancel mid-cleanup
+                # (e.g. ``asyncio.timeout`` around ``engine.dispose()``)
+                # cannot abort the close mid-``wait_closed`` and orphan
+                # the StreamReader task. ``_POOL_CLEANUP_EXCEPTIONS``
+                # does not include ``CancelledError``; the shield is
+                # the load-bearing guard. Symmetric with every other
+                # close site in this module.
                 with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                    await conn.close()
+                    await asyncio.shield(conn.close())
                 conn._pool_released = True
                 return
 
             if not await self._reset_connection(conn):
                 with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                    await conn.close()
+                    await asyncio.shield(conn.close())
                 conn._pool_released = True
                 return
 
@@ -1981,7 +1988,7 @@ class ConnectionPool:
             # symmetry fix.
             if self._closed:
                 with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                    await conn.close()
+                    await asyncio.shield(conn.close())
                 conn._pool_released = True
                 return
 
@@ -2005,7 +2012,7 @@ class ConnectionPool:
                 self._pool.put_nowait(conn)
             except asyncio.QueueFull:
                 with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                    await conn.close()
+                    await asyncio.shield(conn.close())
                 conn._pool_released = True
             else:
                 conn._pool_released = True
@@ -2039,7 +2046,7 @@ class ConnectionPool:
                 # the reader-task doesn't outlive the connection (no
                 # "Task was destroyed but it is pending" on shutdown).
                 pending = getattr(conn, "_pending_drain", None)
-                if pending is not None and not pending.done():
+                if pending is not None:
                     # Absorb the await-side CancelledError so a fresh
                     # outer cancel during release does not tear down
                     # the bounded drain (the shield itself protects
@@ -2056,6 +2063,21 @@ class ConnectionPool:
                     # drain bug isn't completely invisible — sibling
                     # discipline to ``_drain_idle``'s per-iteration
                     # ``logger.debug("close failed", exc_info=True)``.
+                    #
+                    # Drop the ``not pending.done()`` short-circuit:
+                    # if the drain task already finished (the recent
+                    # close-shield change makes this more likely — the
+                    # ``await asyncio.shield(conn.close())`` yields an
+                    # extra time, giving the drain time to complete
+                    # before we reach this finally), its
+                    # ``BaseException``-class exception would otherwise
+                    # remain unobserved on the task. Awaiting a done
+                    # task is cheap and propagates the exception
+                    # through the same except arms; the only
+                    # observable difference is that a done task with a
+                    # ``BaseException`` now correctly re-raises out of
+                    # this scope instead of triggering "Task exception
+                    # was never retrieved" at GC.
                     try:
                         await asyncio.shield(pending)
                     except asyncio.CancelledError:
