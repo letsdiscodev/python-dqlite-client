@@ -159,7 +159,7 @@ async def test_probe_one_safety_net_does_not_double_release_after_phase1() -> No
     class _CountingSemaphore(real_semaphore_cls):  # type: ignore[misc, valid-type]
         def release(self, *args: Any, **kwargs: Any) -> None:
             release_calls.append(1)
-            return super().release(*args, **kwargs)
+            super().release(*args, **kwargs)
 
     async def _redirect_response(_addr: str, **_kw: Any) -> str | None:
         # Hand back a DIFFERENT address so the redirect-verify path

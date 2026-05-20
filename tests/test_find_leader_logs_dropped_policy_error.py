@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -129,8 +130,8 @@ async def test_dropped_policy_warn_fires_when_both_states_set(
         """
 
     async def _wait_for_all_then_order(
-        fs: object, *args: object, **kwargs: object
-    ) -> tuple[_OrderedDone, set[asyncio.Task[object]]]:
+        fs: Any, *args: Any, **kwargs: Any
+    ) -> tuple[_OrderedDone, set[Any]]:
         # Override ``return_when=FIRST_COMPLETED`` with
         # ``ALL_COMPLETED`` so both probes resolve before we return.
         # The for-loop then sees both tasks in the same iteration,
@@ -140,9 +141,9 @@ async def test_dropped_policy_warn_fires_when_both_states_set(
         # catch.
         new_kwargs = dict(kwargs)
         new_kwargs["return_when"] = asyncio.ALL_COMPLETED
-        done_orig, pending_orig = await real_wait(fs, *args, **new_kwargs)  # type: ignore[arg-type]
+        done_orig, pending_orig = await real_wait(fs, *args, **new_kwargs)
         ordered = _OrderedDone()
-        rest: list[asyncio.Task[object]] = []
+        rest: list[Any] = []
         for t in done_orig:
             if not t.cancelled() and t.exception() is not None:
                 ordered.append(t)
@@ -164,8 +165,8 @@ async def test_dropped_policy_warn_fires_when_both_states_set(
 
     store = MemoryNodeStore(["rejector:9001", "winner:9001"])
     cluster = ClusterClient(store, timeout=10.0, redirect_policy=_policy)
-    cluster._query_leader = AsyncMock(side_effect=_query_leader)  # type: ignore[method-assign]
-    cluster._verify_redirect = AsyncMock(side_effect=_verify_redirect)  # type: ignore[method-assign]
+    cluster._query_leader = AsyncMock(side_effect=_query_leader)
+    cluster._verify_redirect = AsyncMock(side_effect=_verify_redirect)
 
     caplog.set_level(logging.WARNING, logger="dqliteclient.cluster")
     # ``asyncio.wait`` is module-level; patch the binding inside the
@@ -174,7 +175,7 @@ async def test_dropped_policy_warn_fires_when_both_states_set(
 
     import dqliteclient.cluster as _cluster_mod
 
-    with patch.object(_cluster_mod.asyncio, "wait", _wait_for_all_then_order):
+    with patch("dqliteclient.cluster.asyncio.wait", _wait_for_all_then_order):
         leader = await asyncio.wait_for(cluster.find_leader(), timeout=2.0)
     assert leader == "winner:9001"
 
@@ -224,13 +225,13 @@ async def test_dropped_policy_warn_sanitises_crlf_tainted_address(
         ``for task in done`` iteration — see the sibling test."""
 
     async def _wait_for_all_then_order(
-        fs: object, *args: object, **kwargs: object
-    ) -> tuple[_OrderedDone, set[asyncio.Task[object]]]:
+        fs: Any, *args: Any, **kwargs: Any
+    ) -> tuple[_OrderedDone, set[Any]]:
         new_kwargs = dict(kwargs)
         new_kwargs["return_when"] = asyncio.ALL_COMPLETED
-        done_orig, pending_orig = await real_wait(fs, *args, **new_kwargs)  # type: ignore[arg-type]
+        done_orig, pending_orig = await real_wait(fs, *args, **new_kwargs)
         ordered = _OrderedDone()
-        rest: list[asyncio.Task[object]] = []
+        rest: list[Any] = []
         for t in done_orig:
             if not t.cancelled() and t.exception() is not None:
                 ordered.append(t)
@@ -252,15 +253,15 @@ async def test_dropped_policy_warn_sanitises_crlf_tainted_address(
 
     store = MemoryNodeStore(["rejector:9001", "winner:9001"])
     cluster = ClusterClient(store, timeout=10.0, redirect_policy=_policy)
-    cluster._query_leader = AsyncMock(side_effect=_query_leader)  # type: ignore[method-assign]
-    cluster._verify_redirect = AsyncMock(side_effect=_verify_redirect)  # type: ignore[method-assign]
+    cluster._query_leader = AsyncMock(side_effect=_query_leader)
+    cluster._verify_redirect = AsyncMock(side_effect=_verify_redirect)
 
     from unittest.mock import patch
 
     import dqliteclient.cluster as _cluster_mod
 
     caplog.set_level(logging.WARNING, logger="dqliteclient.cluster")
-    with patch.object(_cluster_mod.asyncio, "wait", _wait_for_all_then_order):
+    with patch("dqliteclient.cluster.asyncio.wait", _wait_for_all_then_order):
         leader = await asyncio.wait_for(cluster.find_leader(), timeout=2.0)
     assert leader == "winner:9001"
 

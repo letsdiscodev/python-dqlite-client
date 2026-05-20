@@ -226,7 +226,7 @@ async def test_pool_dead_conn_drain_arm_clears_cluster_leader_cache() -> None:
     async def _make_fresh() -> Any:
         return fresh
 
-    pool._create_connection = AsyncMock(side_effect=_make_fresh)  # type: ignore[method-assign]
+    pool._create_connection = AsyncMock(side_effect=_make_fresh)
 
     async with pool.acquire() as conn:
         # The yielded conn is the freshly created one.
@@ -277,7 +277,7 @@ async def test_pool_dead_conn_drain_arm_tolerates_missing_cluster_attr() -> None
     async def _make_fresh() -> Any:
         return fresh
 
-    pool._create_connection = AsyncMock(side_effect=_make_fresh)  # type: ignore[method-assign]
+    pool._create_connection = AsyncMock(side_effect=_make_fresh)
 
     # If the dead-conn arm reached self._cluster directly (without
     # the getattr tolerance), this would raise AttributeError. The

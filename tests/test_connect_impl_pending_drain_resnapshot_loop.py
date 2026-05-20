@@ -95,7 +95,7 @@ def _seed_connect_conn(address: str = "127.0.0.1:9001") -> DqliteConnection:
     conn._dial_timeout = 1.0
     conn._attempt_timeout = 1.0
     conn._close_timeout = 0.5
-    conn._dial_func = _failing_dial  # type: ignore[assignment]
+    conn._dial_func = _failing_dial
     conn._max_total_rows = None
     conn._max_continuation_frames = None
     conn._trust_server_heartbeat = False
@@ -210,7 +210,7 @@ async def test_connect_impl_cap_exhausted_arm_warns_and_cancels_stuck(
     loop = asyncio.get_running_loop()
     conn = _seed_connect_conn()
 
-    fresh_tasks: list[asyncio.Task[None]] = []
+    fresh_tasks: list[Any] = []
     cancel_calls: list[int] = []
     done_callbacks: list[Any] = []
 

@@ -65,7 +65,7 @@ async def test_dead_conn_close_runtime_error_releases_reservation() -> None:
     async def _fail_create() -> object:
         raise RuntimeError("test: create_connection short-circuited")
 
-    pool._create_connection = AsyncMock(side_effect=_fail_create)  # type: ignore[method-assign]
+    pool._create_connection = AsyncMock(side_effect=_fail_create)
     # _drain_idle on an empty queue is a no-op.
 
     size_before = pool._size
