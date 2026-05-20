@@ -1071,7 +1071,7 @@ class ConnectionPool:
     def _get_closed_event(self) -> asyncio.Event:
         """Lazily create the closed Event bound to the running loop.
 
-        Every caller (``acquire`` at line ~434, ``_signal_state_change``
+        Every caller (``acquire`` and ``_signal_state_change``
         for the non-None-event path) is gated by an ``if self._closed:
         raise`` check above, so entering this method with
         ``self._closed == True`` is not a reachable production state.
@@ -1342,9 +1342,11 @@ class ConnectionPool:
                 # be yielded on a pool whose ``_closed`` flag is True
                 # — contract violation and a sneaky leak (user runs
                 # real queries against an invisibly-closed pool until
-                # they exit the ``async with`` block). The dead-conn-
-                # replacement arm at lines 1196-1210 has the
-                # symmetric discipline; this restores parity. Shield
+                # they exit the ``async with`` block). The dead-conn
+                # replacement branch in ``acquire`` (the
+                # ``_create_connection`` retry after
+                # ``_socket_looks_dead``) has the symmetric
+                # discipline; this restores parity. Shield
                 # both the close and the reservation release so an
                 # outer cancel cannot leak the freshly-built
                 # connection's transport or the reservation slot.
@@ -1415,8 +1417,9 @@ class ConnectionPool:
                 # orphan a connection (silently shrinking pool capacity).
                 if closed_task is not None and not closed_task.done():
                     closed_task.cancel()
-                    # Symmetric with the happy-path cleanup at line ~554:
-                    # await the cancelled task so the CancelledError
+                    # Symmetric with the happy-path cleanup below
+                    # (the post-wait ``closed_task`` cancel/await
+                    # pair): await the cancelled task so the CancelledError
                     # doesn't sit on the task object until GC, which
                     # would emit "Task exception was never retrieved"
                     # under rapid cancel churn and keep a reference to
@@ -2160,8 +2163,9 @@ class ConnectionPool:
             # ``BaseException`` (KeyboardInterrupt / SystemExit / a
             # synthetic bytecode-tight signal) lands between flag
             # publication and the first awaited line. Without this,
-            # a second caller in the early-return arm at lines
-            # 1815-1817 awaits ``_close_done`` forever.
+            # a second caller in the early-return arm above (the
+            # ``if self._closed: ... await self._close_done.wait()``
+            # branch) awaits ``_close_done`` forever.
             if self._finalizer is not None:
                 self._finalizer.detach()
                 self._finalizer = None
