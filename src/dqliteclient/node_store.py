@@ -320,9 +320,20 @@ class YamlNodeStore(NodeStore):
     file mode 0600 to match go-dqlite's ``renameio.WriteFile(...,
     0600)``. Same-directory rename is atomic on POSIX.
 
-    Format pinning: this implementation tracks go-dqlite ``d046c95``.
-    Any future upstream format change must be reflected here AND in
-    the interop test fixture.
+    Format pinning: this implementation tracks go-dqlite ``d046c95``
+    for the on-disk YAML layout (key names, ordering, file mode). Any
+    future upstream format change must be reflected here AND in the
+    interop test fixture.
+
+    Reader-side strictness is INTENTIONALLY stricter than go-dqlite:
+    where go-dqlite's ``yaml.Unmarshal`` defaults missing ``ID`` /
+    ``Address`` fields to zero / empty string, this loader rejects
+    them with ``ClusterError``. ``ID=0`` is the upstream "no node"
+    sentinel and ``Address=""`` is unusable, so silently accepting
+    degenerate entries would corrupt the in-memory store with rows
+    the downstream ``_validate_and_normalise_nodes`` would reject
+    anyway with a less specific error site. The parity claim above is
+    about the *write* shape, not reader tolerance.
 
     PyYAML is an optional dependency: install
     ``python-dqlite-client[yaml-store]`` to use this class. The base
