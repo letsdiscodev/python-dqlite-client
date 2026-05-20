@@ -76,7 +76,7 @@ async def test_release_reservations_locked_underflow_signals_state_change() -> N
 
     pool = ConnectionPool(["localhost:9001"])
     spy = MagicMock(wraps=pool._signal_state_change)
-    pool._signal_state_change = spy  # type: ignore[method-assign]
+    pool._signal_state_change = spy
 
     async with pool._lock:
         pool._size = 2
