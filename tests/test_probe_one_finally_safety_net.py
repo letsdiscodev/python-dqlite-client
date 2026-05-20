@@ -83,3 +83,107 @@ async def test_probe_one_unexpected_exception_propagates() -> None:
         pytest.raises(MemoryError, match="synthetic"),
     ):
         await asyncio.wait_for(cluster.find_leader(), timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_probe_one_safety_net_releases_slot_after_unexpected_exception() -> None:
+    """Behavioural pin for the outer-finally safety-net.
+
+    ``concurrent_leader_conns=1`` means a single slot governs every
+    probe in the sweep. If the safety-net failed to release after an
+    unexpected-class exception (``MemoryError`` here), the next
+    ``find_leader`` would deadlock on ``await semaphore.acquire()``
+    because the slot would never come back to the pool.
+
+    ``asyncio.wait_for(..., timeout=2.0)`` bounds the regression mode
+    so a failing test fails fast rather than hanging the suite.
+    """
+    cluster = ClusterClient(
+        MemoryNodeStore(["only:9001"]),
+        timeout=5.0,
+        concurrent_leader_conns=1,
+    )
+
+    call_count = 0
+
+    async def _bomb_first_then_succeed(_addr: str, **_kw: Any) -> str | None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First probe: trip the safety net via an unexpected
+            # exception class (outside the narrow catch tuple).
+            raise MemoryError("synthetic unexpected exception")
+        # Subsequent probes: return the address as its own leader so
+        # the sweep completes without a redirect-verify round trip.
+        return "only:9001"
+
+    with patch.object(cluster, "_query_leader", AsyncMock(side_effect=_bomb_first_then_succeed)):
+        with pytest.raises(MemoryError, match="synthetic"):
+            await asyncio.wait_for(cluster.find_leader(), timeout=2.0)
+
+        # Critical pin: if the safety-net leaked the only slot, the
+        # next call's ``await semaphore.acquire()`` would hang
+        # forever. ``wait_for`` surfaces a TimeoutError on regression.
+        leader = await asyncio.wait_for(cluster.find_leader(), timeout=2.0)
+        assert leader == "only:9001"
+
+
+@pytest.mark.asyncio
+async def test_probe_one_safety_net_does_not_double_release_after_phase1() -> None:
+    """Twin behavioural pin: after the explicit phase-1 release, the
+    ``sem_acquired = False`` reset must keep the outer finally from
+    firing a second release.
+
+    Drive a phase-2 unexpected exception by patching
+    ``_verify_redirect`` to raise ``MemoryError`` after
+    ``_query_leader`` returned a redirect target. The explicit
+    release ran (flag flipped to False); the outer finally must skip
+    its release branch. We instrument the semaphore via a wrapper
+    that counts ``release()`` calls — exactly one is allowed for the
+    explicit phase-1 release; a double-release would be two.
+
+    ``asyncio.Semaphore.release()`` does not raise on over-release —
+    it silently bumps the counter past the initial value (per
+    reviewer note). The pin is therefore "release was called exactly
+    once" rather than "ValueError raised".
+    """
+    cluster = ClusterClient(
+        MemoryNodeStore(["primary:9001"]),
+        timeout=5.0,
+        concurrent_leader_conns=1,
+    )
+
+    release_calls: list[int] = []
+    real_semaphore_cls = asyncio.Semaphore
+
+    class _CountingSemaphore(real_semaphore_cls):  # type: ignore[misc, valid-type]
+        def release(self, *args: Any, **kwargs: Any) -> None:
+            release_calls.append(1)
+            return super().release(*args, **kwargs)
+
+    async def _redirect_response(_addr: str, **_kw: Any) -> str | None:
+        # Hand back a DIFFERENT address so the redirect-verify path
+        # fires after the explicit phase-1 release.
+        return "redirect-target:9001"
+
+    async def _verify_explodes(_addr: str, **_kw: Any) -> str | None:
+        # ``MemoryError`` is OUTSIDE the narrow catch tuple inside
+        # ``_probe_one`` so it propagates through the outer finally.
+        raise MemoryError("synthetic phase-2 unexpected exception")
+
+    with (
+        patch.object(asyncio, "Semaphore", _CountingSemaphore),
+        patch.object(cluster, "_query_leader", AsyncMock(side_effect=_redirect_response)),
+        patch.object(cluster, "_verify_redirect", AsyncMock(side_effect=_verify_explodes)),
+        pytest.raises(MemoryError, match="synthetic phase-2"),
+    ):
+        await asyncio.wait_for(cluster.find_leader(), timeout=2.0)
+
+    # Phase 1 fired exactly one release; the outer finally must NOT
+    # have double-released. Regression dropping ``sem_acquired = False``
+    # after the explicit release would surface as 2.
+    assert release_calls == [1], (
+        f"Outer finally must skip release after explicit phase-1 "
+        f"release flipped sem_acquired to False; got {len(release_calls)} "
+        f"release() calls (expected exactly 1)"
+    )
