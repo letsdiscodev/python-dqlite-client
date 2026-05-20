@@ -86,7 +86,9 @@ async def test_flipped_address_reverified_via_verify_redirect() -> None:
     assert info is not None
     assert info.node_id == 7
     assert info.address == "flipped:9001"
-    cluster._verify_redirect.assert_awaited_once_with(
+    verify_mock = cluster._verify_redirect
+    assert isinstance(verify_mock, AsyncMock)
+    verify_mock.assert_awaited_once_with(
         "flipped:9001",
         trust_server_heartbeat=False,
     )
@@ -102,4 +104,6 @@ async def test_flipped_address_verification_fails_returns_none() -> None:
     )
     info = await cluster.leader_info()
     assert info is None
-    cluster._verify_redirect.assert_awaited_once()
+    verify_mock = cluster._verify_redirect
+    assert isinstance(verify_mock, AsyncMock)
+    verify_mock.assert_awaited_once()

@@ -904,7 +904,23 @@ class ClusterClient:
             # protocol failures or no-leader-known replies. Lets
             # ``ClusterPolicyError`` propagate so the gather loop can
             # cancel siblings and re-raise.
-            async with semaphore:
+            #
+            # Semaphore scope: the slot is held only across the
+            # initial ``_query_leader``. The shielded 100ms shutdown
+            # drain in ``_query_leader.finally`` AND the subsequent
+            # ``_verify_redirect`` re-probe run OUTSIDE the slot.
+            # Holding the slot across the re-probe would bottleneck
+            # on redirect-stampede + leader-flip:
+            # ``concurrent_leader_conns=10`` would serialize at 10
+            # slots × (attempt_timeout + verify + drain). Note that
+            # this means ``concurrent_leader_conns`` bounds initial
+            # probes only, not redirect re-verify dials — under a
+            # full-cluster redirect stampede the verify fan-out can
+            # briefly exceed the slot count.
+            sem_acquired = False
+            await semaphore.acquire()
+            sem_acquired = True
+            try:
                 try:
                     leader_address = await asyncio.wait_for(
                         self._query_leader(
@@ -957,6 +973,14 @@ class ClusterClient:
                         exc=e,
                     )
 
+                # Initial probe complete: release the semaphore slot
+                # before the redirect-verify / no-leader-known log
+                # work. The outer ``finally`` is a safety net for any
+                # exception path that hasn't already released.
+                if sem_acquired:
+                    semaphore.release()
+                    sem_acquired = False
+
                 if leader_address:
                     # Only leader_address values that did NOT come from
                     # node.address itself need authorizing — those are
@@ -975,7 +999,10 @@ class ClusterClient:
                         # ``connect()`` round-trip and produces a
                         # misleading error chain. Mirrors go-dqlite's
                         # ``connector.go::connectAttemptOne`` redirect
-                        # re-probe.
+                        # re-probe. The semaphore is intentionally
+                        # released before this dial so a redirect
+                        # stampede does not bottleneck on the
+                        # ``concurrent_leader_conns`` budget.
                         verified = await self._verify_redirect(
                             leader_address,
                             trust_server_heartbeat=trust_server_heartbeat,
@@ -1023,6 +1050,14 @@ class ClusterClient:
                     total_nodes,
                 )
                 return _ProbeMiss(message=f"{_safe_addr}: no leader known", exc=None)
+            finally:
+                # Safety-net release: if any exception fired before the
+                # explicit release above (e.g. _query_leader raised
+                # and the catch arms re-raised, or _check_redirect
+                # raised ClusterPolicyError), the slot must still
+                # come back to the pool.
+                if sem_acquired:
+                    semaphore.release()
 
         # Build ``pending`` INSIDE the try frame so a BaseException
         # (synthetic KeyboardInterrupt, outer cancel landing in the
