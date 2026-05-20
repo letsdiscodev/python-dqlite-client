@@ -65,6 +65,47 @@ async def test_release_finally_awaits_done_pending_drain_with_exception(
 
 
 @pytest.mark.asyncio
+async def test_release_finally_absorbs_pending_drain_cancellation() -> None:
+    """A ``CancelledError`` delivered at the
+    ``await asyncio.shield(pending)`` site (awaiter-side raise from
+    a cancelled drain task) must NOT tear down the rest of
+    ``_release``'s cleanup. The ``except asyncio.CancelledError:
+    pass`` arm is load-bearing for the close-during-cancel race
+    pinned at ISSUE-787 (pool-release-shielded-pending-drain).
+
+    Verify the cleanup tail (``_pool_released = True``) runs by
+    inspecting the conn's post-release state."""
+    pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
+    pool._size = 1
+
+    conn = DqliteConnection("localhost:9001")
+    conn._db_id = 1
+    conn._pool_released = False
+
+    async def _slow_drain() -> None:
+        await asyncio.sleep(60)
+
+    drain_task = asyncio.create_task(_slow_drain())
+    conn._pending_drain = drain_task
+
+    pool._reset_connection = AsyncMock(return_value=False)
+    conn.close = AsyncMock(return_value=None)
+
+    # Cancel the drain BEFORE _release runs. ``shield`` protects the
+    # inner task from outer cancel; the awaiter-side raise lands in
+    # the ``CancelledError`` suppress arm.
+    drain_task.cancel()
+
+    # Must complete without raising. The suppress arm covers the awaiter
+    # raise; the cleanup tail still executes.
+    await pool._release(conn)
+
+    assert conn._pool_released is True, (
+        "CancelledError absorbed; release must finish the cleanup tail"
+    )
+
+
+@pytest.mark.asyncio
 async def test_release_finally_done_pending_drain_with_baseexception_reraises() -> None:
     """A pending-drain task that completed with a
     ``BaseException``-class exception (``KeyboardInterrupt`` /
