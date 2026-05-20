@@ -1362,58 +1362,78 @@ class DqliteConnection:
         # overwrite the slot without cancelling or awaiting it,
         # breaking the "strong ref so close() can await it"
         # discipline documented on that assignment.
-        pending = self._pending_drain
-        if pending is not None:
-            if not pending.done():
-                # Snapshot ``cancelling()`` BEFORE calling
-                # ``pending.cancel()`` so a non-zero residual count
-                # left over from an upstream caller's prior consumed-
-                # but-not-uncancelled cancel does not unconditionally
-                # trigger the post-await re-raise. Compare the
-                # post-await counter against this snapshot — only a
-                # delta indicates a fresh outer cancel landed during
-                # ``await pending``. ``Task.cancelling()`` is
-                # cumulative and not function-scoped; the canonical
-                # way to detect "did MY await get cancelled" is the
-                # delta pattern that ``asyncio.timeout`` itself uses
-                # internally.
-                self_task = asyncio.current_task()
-                cancelling_before = self_task.cancelling() if self_task is not None else 0
-                pending.cancel()
-                # Awaiting a cancelled task raises ``CancelledError``;
-                # that is the cancel WE delivered and must be consumed
-                # here so connect() can proceed. But an outer
-                # ``task.cancel()`` may have also landed on the current
-                # task — distinguish via the cancelling-counter delta
-                # described above. We deliberately do NOT call
-                # ``Task.uncancel()`` here — that would consume the
-                # outer cancel, leaving ``connect()`` to silently open
-                # a TCP connection the parent intended to abort.
-                try:
-                    await pending
-                except asyncio.CancelledError:
-                    # Re-raise only if the cancelling counter
-                    # increased during ``await pending`` (a fresh
-                    # outer cancel landed); a stable counter means the
-                    # CancelledError came from our own
-                    # ``pending.cancel()`` and must be consumed.
-                    cancelling_after = self_task.cancelling() if self_task is not None else 0
-                    if cancelling_after > cancelling_before:
-                        raise
-                except Exception:
-                    # A prior drain that completed with a non-Cancel
-                    # exception (e.g. an _invalidate whose bounded
-                    # wait_closed surfaced a transport RuntimeError) is
-                    # swallowed so the reconnect can proceed. The new
-                    # connect attempt surfaces its own failure mode to
-                    # the caller. Widening to ``except BaseException``
-                    # would consume legitimate KeyboardInterrupt /
-                    # SystemExit / outer CancelledError; narrowing to
-                    # a specific subclass blocks reconnect on
-                    # otherwise-recoverable drain failures. Pinned by
-                    # tests/test_connect_impl_pending_drain_non_cancel_exception.py.
-                    pass
+        #
+        # Bounded re-snapshot loop (cap=3): a racing ``_invalidate``
+        # scheduled via ``call_soon_threadsafe`` from the dbapi-sync
+        # wrapper's timeout / KI arms can publish a FRESH
+        # ``_pending_drain`` task during ``await pending``. The
+        # single-shot ``self._pending_drain = None`` at the end of
+        # the original logic would null the fresh task, orphaning
+        # it on the loop. Mirrors ``_close_impl``'s identical loop
+        # discipline — see ``_close_impl`` for the cap-exhausted
+        # WARN + observer attachment.
+        resnapshot_cap = 3
+        for _attempt in range(resnapshot_cap):
+            pending = self._pending_drain
             self._pending_drain = None
+            if pending is None or pending.done():
+                break
+            # Snapshot ``cancelling()`` BEFORE calling
+            # ``pending.cancel()`` so a non-zero residual count left
+            # over from an upstream caller's prior consumed-but-not-
+            # uncancelled cancel does not unconditionally trigger the
+            # post-await re-raise. ``Task.cancelling()`` is
+            # cumulative and not function-scoped; only a delta
+            # indicates a fresh outer cancel landed during
+            # ``await pending``.
+            self_task = asyncio.current_task()
+            cancelling_before = self_task.cancelling() if self_task is not None else 0
+            pending.cancel()
+            try:
+                await pending
+            except asyncio.CancelledError:
+                # Re-raise only if the cancelling counter increased
+                # during ``await pending`` (a fresh outer cancel
+                # landed); a stable counter means the
+                # ``CancelledError`` came from our own
+                # ``pending.cancel()`` and must be consumed. We
+                # deliberately do NOT call ``Task.uncancel()`` — that
+                # would consume the outer cancel and silently open
+                # the TCP connection the parent intended to abort.
+                cancelling_after = self_task.cancelling() if self_task is not None else 0
+                if cancelling_after > cancelling_before:
+                    raise
+            except Exception:
+                # A prior drain that completed with a non-cancel
+                # exception (e.g. an ``_invalidate`` whose bounded
+                # wait_closed surfaced a transport ``RuntimeError``)
+                # is swallowed so the reconnect can proceed.
+                # Widening to ``BaseException`` would consume
+                # legitimate ``KeyboardInterrupt`` / ``SystemExit`` /
+                # outer ``CancelledError``.
+                pass
+        else:
+            # Cap exhausted: a racing ``_invalidate`` keeps publishing
+            # fresh ``_pending_drain`` tasks each iteration. Mirror
+            # ``_close_impl``'s cap-exhausted arm: attach the drain
+            # observer + cancel the stuck task + WARN log so the
+            # pathological feedback loop is visible in production.
+            stuck = self._pending_drain
+            if stuck is not None and not stuck.done():
+                if hasattr(stuck, "add_done_callback"):
+                    from dqliteclient.cluster import _observe_drain_exception
+
+                    stuck.add_done_callback(_observe_drain_exception)
+                stuck.cancel()
+            self._pending_drain = None
+            logger.warning(
+                "DqliteConnection._connect_impl: _pending_drain still set after "
+                "%d re-snapshot iterations; cancelling residual task to avoid "
+                "'Task was destroyed but it is pending' at GC. This indicates "
+                "a pathological _invalidate feedback loop on connection id=%s.",
+                resnapshot_cap,
+                id(self),
+            )
 
         self._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         # ``_in_use`` was claimed synchronously in ``connect()`` above
