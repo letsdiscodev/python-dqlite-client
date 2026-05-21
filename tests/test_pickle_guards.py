@@ -97,6 +97,31 @@ class TestClusterClientPickleGuard:
             copy.deepcopy(cluster)
 
 
+class TestMemoryNodeStorePickleGuard:
+    """``MemoryNodeStore`` holds an eager ``asyncio.Lock`` for the
+    ``set_nodes`` mutual-exclusion contract. Pickle / copy / deepcopy
+    would construct a FRESH ``Lock`` on the copy, so the original
+    and the duplicate would each pass through their own lock without
+    serialisation — the documented single-owner-per-store discipline
+    silently breaks. Symmetric with the seven sibling guards.
+    """
+
+    def test_pickle_raises(self) -> None:
+        ns = MemoryNodeStore(addresses=["a.example:9001"])
+        with pytest.raises(TypeError, match="MemoryNodeStore"):
+            pickle.dumps(ns)
+
+    def test_copy_copy_raises(self) -> None:
+        ns = MemoryNodeStore(addresses=["a.example:9001"])
+        with pytest.raises(TypeError, match="MemoryNodeStore"):
+            copy.copy(ns)
+
+    def test_copy_deepcopy_raises(self) -> None:
+        ns = MemoryNodeStore(addresses=["a.example:9001"])
+        with pytest.raises(TypeError, match="MemoryNodeStore"):
+            copy.deepcopy(ns)
+
+
 class TestDqliteProtocolPickleGuard:
     def test_pickle_raises(self) -> None:
         import asyncio

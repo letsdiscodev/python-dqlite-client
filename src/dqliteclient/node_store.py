@@ -10,7 +10,7 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Protocol, runtime_checkable
+from typing import Final, NoReturn, Protocol, runtime_checkable
 
 from dqliteclient import connection as _conn_mod
 from dqliteclient.exceptions import ClusterError, InterfaceError
@@ -208,6 +208,29 @@ class MemoryNodeStore(NodeStore):
                 f"configuration in the target process. (created in "
                 f"pid {self._creator_pid}, current pid {_conn_mod.get_current_pid()})"
             )
+
+    def __reduce__(self) -> NoReturn:
+        # ``MemoryNodeStore`` holds an ``asyncio.Lock`` instance that
+        # the documented single-owner-per-store ``set_nodes`` mutual-
+        # exclusion contract relies on. ``asyncio.Lock`` is pickleable
+        # on Python 3.10+ but pickle round-trips construct a FRESH
+        # ``Lock`` on the copy — the original and the duplicate now
+        # own DIFFERENT lock instances and two concurrent ``set_nodes``
+        # writers across the aliases each pass through their own lock
+        # without serialisation. The documented contract is silently
+        # broken. ``__reduce__`` covers ``pickle.dumps``, ``copy.copy``,
+        # and ``copy.deepcopy`` (the latter two route through
+        # ``__reduce_ex__(2)`` which delegates to ``__reduce__``).
+        # Symmetric with :class:`ClusterClient` / :class:`ConnectionPool`
+        # / :class:`DqliteConnection` / :class:`DqliteProtocol` and the
+        # wire-layer ``MessageEncoder`` / ``MessageDecoder`` /
+        # ``ReadBuffer`` / ``WriteBuffer`` guards.
+        raise TypeError(
+            f"cannot pickle {type(self).__name__!r} object — holds an "
+            f"asyncio.Lock under a single-owner-per-store discipline "
+            f"that does not survive deserialisation; reconstruct from "
+            f"the seed addresses in the target process instead."
+        )
 
     async def get_nodes(self) -> Sequence[NodeInfo]:
         """Get list of known nodes."""
