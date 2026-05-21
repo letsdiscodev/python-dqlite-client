@@ -265,6 +265,7 @@ class ConnectionPool:
         max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
         close_timeout: float = DEFAULT_CLOSE_TIMEOUT_SECONDS,
+        max_message_size: int | None = None,
         max_attempts: int | None = None,
         max_elapsed_seconds: float | None = None,
         dial_func: DialFunc | None = None,
@@ -496,6 +497,10 @@ class ConnectionPool:
         self._max_continuation_frames = validate_positive_int_or_none(
             max_continuation_frames, "max_continuation_frames"
         )
+        # ``max_message_size``: forwarded to every pooled DqliteConnection;
+        # None defers to the wire-layer default (64 MiB). Validation lives
+        # in DqliteConnection / the wire layer; we just thread it through.
+        self._max_message_size = max_message_size
         self._trust_server_heartbeat = trust_server_heartbeat
         self._close_timeout = close_timeout
         self._max_attempts = max_attempts
@@ -986,6 +991,7 @@ class ConnectionPool:
             close_timeout=self._close_timeout,
             max_attempts=self._max_attempts,
             max_elapsed_seconds=self._max_elapsed_seconds,
+            max_message_size=self._max_message_size,
         )
 
     async def _put_back_or_release_late_winner(self, conn: DqliteConnection) -> None:

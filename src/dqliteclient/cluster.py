@@ -1573,6 +1573,7 @@ class ClusterClient:
         max_attempts: int | None = None,
         max_elapsed_seconds: float | None = None,
         policy: RedirectPolicy | None = None,
+        max_message_size: int | None = None,
     ) -> DqliteConnection:
         """Connect to the cluster leader.
 
@@ -1685,6 +1686,7 @@ class ClusterClient:
                         trust_server_heartbeat=trust_server_heartbeat,
                         close_timeout=close_timeout,
                         dial_func=self._dial_func,
+                        max_message_size=max_message_size,
                     )
                 except ValueError as e:
                     # ``DqliteConnection.__init__`` validates the

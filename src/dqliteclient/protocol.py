@@ -20,6 +20,7 @@ from dqlitewire import (
     MessageEncoder,
     NodeInfo,
     NodeRole,
+    ReadBuffer,
 )
 from dqlitewire import ProtocolError as _WireProtocolError
 from dqlitewire import ServerFailure as _WireServerFailure
@@ -76,6 +77,15 @@ _READ_CHUNK_SIZE: Final[int] = 4096
 # ``__init__.py``.
 _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS: Final[float] = 300.0
 
+# Default cap on inbound message-frame size, re-exported from the wire
+# layer's ``ReadBuffer.DEFAULT_MAX_MESSAGE_SIZE`` (64 MiB). Promoted to
+# a module-level constant so the propagation through DqliteProtocol /
+# DqliteConnection / ConnectionPool sees a single source of truth, in
+# parity with ``_DEFAULT_MAX_TOTAL_ROWS`` / ``_DEFAULT_MAX_CONTINUATION_FRAMES``.
+# A wire-layer bump propagates automatically; a client-side hot-fix
+# can rebind this constant without touching the wire.
+DEFAULT_MAX_MESSAGE_SIZE: Final[int] = ReadBuffer.DEFAULT_MAX_MESSAGE_SIZE
+
 
 def _failure_message(message: str, addr_suffix: str) -> str:
     """Render the body of a FailureResponse-derived exception.
@@ -124,6 +134,7 @@ class DqliteProtocol:
         max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
         address: str | None = None,
+        max_message_size: int | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -131,12 +142,29 @@ class DqliteProtocol:
         # accepts ``None`` to disable a cap (its public contract);
         # passing through verbatim keeps the client-layer (this
         # class) and the wire-layer cap surfaces aligned without an
-        # encoded sentinel.
+        # encoded sentinel. ``max_message_size`` is the third wire
+        # governor (alongside max_total_rows / max_continuation_frames);
+        # None falls back to the wire-layer default (64 MiB) — see
+        # ``DEFAULT_MAX_MESSAGE_SIZE`` for the re-export rationale.
+        effective_max_message_size = (
+            max_message_size if max_message_size is not None else DEFAULT_MAX_MESSAGE_SIZE
+        )
+        if not isinstance(effective_max_message_size, int) or isinstance(
+            effective_max_message_size, bool
+        ):
+            raise TypeError(
+                f"max_message_size must be int or None, "
+                f"got {type(effective_max_message_size).__name__}"
+            )
+        if effective_max_message_size < 1:
+            raise ValueError(f"max_message_size must be >= 1, got {effective_max_message_size}")
         self._decoder = MessageDecoder(
             is_request=False,
             max_total_rows=max_total_rows,
             max_continuation_frames=max_continuation_frames,
+            max_message_size=effective_max_message_size,
         )
+        self._max_message_size = effective_max_message_size
         self._client_id = 0
         self._heartbeat_timeout = 0
         self._timeout = timeout

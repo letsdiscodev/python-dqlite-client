@@ -46,7 +46,7 @@ from dqliteclient.exceptions import (
 )
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore, YamlNodeStore
 from dqliteclient.pool import ConnectionPool
-from dqliteclient.protocol import validate_positive_int_or_none
+from dqliteclient.protocol import DEFAULT_MAX_MESSAGE_SIZE, validate_positive_int_or_none
 from dqliteclient.retry import retry_with_backoff
 from dqlitewire import (
     DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
@@ -69,6 +69,7 @@ __all__ = [
     "CLOSE_TIMEOUT_FLOOR",
     "CLOSE_TIMEOUT_FLOOR_RATIONALE",
     "DEFAULT_CLOSE_TIMEOUT_SECONDS",
+    "DEFAULT_MAX_MESSAGE_SIZE",
     "DEFAULT_TIMEOUT_SECONDS",
     "ClusterClient",
     "ClusterError",
@@ -114,6 +115,7 @@ async def connect(
     trust_server_heartbeat: bool = False,
     close_timeout: float = DEFAULT_CLOSE_TIMEOUT_SECONDS,
     dial_func: DialFunc | None = None,
+    max_message_size: int | None = None,
 ) -> DqliteConnection:
     """Connect to a dqlite node.
 
@@ -166,6 +168,7 @@ async def connect(
         trust_server_heartbeat=trust_server_heartbeat,
         close_timeout=close_timeout,
         dial_func=dial_func,
+        max_message_size=max_message_size,
     )
     try:
         await conn.connect()
@@ -228,6 +231,7 @@ async def create_pool(
     dial_func: DialFunc | None = None,
     concurrent_leader_conns: int | None = None,
     redirect_policy: RedirectPolicy | None = None,
+    max_message_size: int | None = None,
 ) -> ConnectionPool:
     """Create a connection pool with automatic leader detection.
 
@@ -308,6 +312,7 @@ async def create_pool(
         dial_func=dial_func,
         concurrent_leader_conns=concurrent_leader_conns,
         redirect_policy=redirect_policy,
+        max_message_size=max_message_size,
     )
     await pool.initialize()
     return pool

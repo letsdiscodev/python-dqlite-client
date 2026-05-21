@@ -1084,6 +1084,7 @@ class DqliteConnection:
         trust_server_heartbeat: bool = False,
         close_timeout: float = DEFAULT_CLOSE_TIMEOUT_SECONDS,
         dial_func: DialFunc | None = None,
+        max_message_size: int | None = None,
     ) -> None:
         """Initialize connection (does not connect yet).
 
@@ -1134,6 +1135,15 @@ class DqliteConnection:
                 bypassed — the caller's dialer owns all socket
                 options. ``None`` (the default) preserves existing
                 behaviour. Mirrors go-dqlite's ``WithDialFunc``.
+            max_message_size: Maximum allowed inbound frame size in
+                bytes. The wire-layer ``ReadBuffer`` enforces this
+                ceiling on incoming messages as defense against a
+                hostile server claiming an oversized body in the size
+                header. Defaults to the wire-layer
+                :data:`DEFAULT_MAX_MESSAGE_SIZE` (64 MiB) when
+                ``None``. Tighten for small-payload workloads (e.g.
+                key/value); loosen for large-Dump backups that
+                legitimately emit frames above 64 MiB.
         """
         validate_timeout(timeout)
         validate_timeout(
@@ -1166,6 +1176,10 @@ class DqliteConnection:
         self._max_continuation_frames = validate_positive_int_or_none(
             max_continuation_frames, "max_continuation_frames"
         )
+        # ``max_message_size``: None falls back to the wire-layer
+        # default (64 MiB). The wire layer validates the int value
+        # itself; we just forward.
+        self._max_message_size = max_message_size
         self._trust_server_heartbeat = trust_server_heartbeat
         self._protocol: DqliteProtocol | None = None
         self._db_id: int | None = None
@@ -1518,6 +1532,7 @@ class DqliteConnection:
                     max_continuation_frames=self._max_continuation_frames,
                     trust_server_heartbeat=self._trust_server_heartbeat,
                     address=self._address,
+                    max_message_size=self._max_message_size,
                 )
                 # Hand-off complete: the protocol now owns the writer.
                 # Null the local so the outer finally drain is a no-op
