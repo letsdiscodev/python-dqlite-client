@@ -302,12 +302,49 @@ class DqliteProtocol:
         lighter :meth:`negotiate_protocol_only` instead.
         """
         if client_id is None:
-            # Deliberate divergence from go-dqlite: Go leaves the default
-            # client_id; we randomize so each connection is distinguishable
-            # in server logs, traces, and per-client metrics. 63 bits
-            # avoids sign-extension pitfalls if an intermediate layer
-            # treats the id as int64. The ``or 1`` guards against the
-            # (astronomically unlikely) all-zero draw.
+            # Deliberate divergence from go-dqlite. Go declares
+            # ``Connector.clientID uint64`` (``connector.go:75-83``)
+            # default-zero and never assigns; every Go connection
+            # registers with ``id=0``. The server-side
+            # ``handle_client`` (``gateway.c:300-309``) stores
+            # ``g->client_id = request.id`` verbatim — used only
+            # for ``tracef`` records and per-connection
+            # ``handle_interrupt`` keying, neither of which requires
+            # a unique id per connection.
+            #
+            # Python randomises so each connection is distinguishable
+            # in server logs, traces, and per-client metrics — useful
+            # for operators tailing a busy server and filtering by
+            # connection id. 63 bits avoids sign-extension pitfalls
+            # if an intermediate layer treats the id as int64. The
+            # ``or 1`` guards against the astronomically unlikely
+            # all-zero draw — preserved deliberately so an
+            # operator's ``client_id != 0`` filter is reliable.
+            #
+            # Operational trade-offs:
+            #
+            # * Mixed-client clusters: an operator filtering server
+            #   logs by ``client_id`` sees Python connections with
+            #   random 63-bit ids while Go connections all show id 0;
+            #   the same filter cannot apply uniformly across both
+            #   client implementations.
+            # * No cross-reconnect correlation: a Python client that
+            #   loses connection and reconnects gets a FRESH random
+            #   id, so server-side per-client metrics see one
+            #   connection per attempt rather than one client with
+            #   several attempts. Go's id=0 doesn't solve this either,
+            #   but the current Python design forecloses a future
+            #   operator-supplied stable id without an API change.
+            # * ``secrets.randbits`` (CSPRNG-backed via
+            #   ``getrandom(2)`` on Linux) is the choice over the
+            #   faster ``random.getrandbits`` because the
+            #   ``random._inst`` PRNG state is process-global and
+            #   not fork-aware (see ``retry._retry_random`` and
+            #   ``cluster._cluster_random`` for the same reasoning
+            #   at sibling sites). The per-handshake cost is
+            #   sub-microsecond and negligible against handshake
+            #   RTT; the fork-safety property is the load-bearing
+            #   reason for this choice.
             client_id = secrets.randbits(63) or 1
         # Send protocol version + client registration together
         request = ClientRequest(client_id=client_id)
@@ -1183,15 +1220,41 @@ class DqliteProtocol:
         order of ``2 × timeout`` (send + read+drain), and a fresh
         ``connect → query`` flow can stack ``handshake`` +
         ``open_database`` + ``query_sql`` for proportionally more.
-        Callers needing an absolute end-to-end bound should wrap the
-        outer call in ``asyncio.timeout`` / ``asyncio.wait_for``.
+        Concrete worst-case quantification: a continuation-paginated
+        result with N frames pays N × ``timeout`` because each
+        continuation frame consumes its own per-read deadline (no
+        cumulative budget bounds the read sequence). With
+        ``timeout=10s`` and a 10-frame continuation, end-to-end
+        wall-clock can reach ~120 s (send + read + 10 × continuation
+        read) while every individual phase stayed within the
+        operator's configured budget. Callers needing an absolute
+        end-to-end bound should wrap the outer call in
+        ``asyncio.timeout`` / ``asyncio.wait_for``.
+
+        Server-heartbeat amplification: when
+        ``trust_server_heartbeat=True`` widens ``_read_timeout`` up
+        to the 300 s hard cap, the PER-PHASE budget grows; the
+        end-to-end multiplier compounds. A 5-phase RPC with the
+        server advertising the cap can stack 5 × 300 s = 1500 s of
+        read time even when the operator set ``timeout=10``. The
+        cap is per-phase, not cumulative — opting into the widening
+        is opting out of the operator's per-RPC SLO at the
+        cumulative level. Operators whose ``timeout`` is a
+        latency-SLO boundary should NOT opt in (the default is
+        ``False``).
 
         Note: this differs from go-dqlite, which uses an absolute
-        per-call deadline (``conn.SetDeadline(ctx.Deadline())``). The
-        per-phase shape here is a deliberate Python-side choice — the
-        asyncio.wait_for wraps individual sends and reads independently
-        — and is documented at :class:`DqliteConnection` for caller
-        guidance.
+        per-call deadline (``conn.SetDeadline(ctx.Deadline())`` at
+        ``connector.go:312-333`` — applied to BOTH the
+        ``conn.Write`` and any subsequent ``conn.Read`` until
+        cleared). The per-phase shape here is a deliberate
+        Python-side choice — the asyncio.wait_for wraps individual
+        sends and reads independently — and is documented at
+        :class:`DqliteConnection` for caller guidance. The
+        :class:`DqliteConnection` and :class:`ConnectionPool`
+        docstrings echo the worst-case multiplier so operators
+        sizing ``timeout`` for SLO-bound queries see the same shape
+        at every entry point.
         """
         return asyncio.get_running_loop().time() + self._read_timeout
 

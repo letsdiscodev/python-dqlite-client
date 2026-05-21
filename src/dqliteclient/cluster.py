@@ -678,6 +678,19 @@ class ClusterClient:
         single-flight collapse is a deliberate trade-off: the alternative
         (re-poll the node store between probes) costs an extra await
         per probe to close a window most callers do not exercise.
+
+        Address-only return: go-dqlite's connector adopts the probe
+        socket on success and returns the open ``*Protocol``;
+        Python's ``find_leader`` returns just an address string,
+        and high-level callers (:meth:`connect`,
+        :meth:`ConnectionPool._create_connection`,
+        :meth:`open_admin_connection`) re-dial. The cost is one
+        extra TCP three-way + handshake RTT per success path on
+        the leader — the leader pays N round-trips for N
+        concurrent acquirers if no single-flight collapse applies,
+        and one round-trip for N collapsed acquirers if it does.
+        Operators sizing ``attempt_timeout`` on high-RTT WAN
+        deployments should budget for the extra round trip.
         """
         self._check_pid()
         # Resolve ``policy=None`` to ``self._redirect_policy`` BEFORE
@@ -1607,6 +1620,43 @@ class ClusterClient:
         attempted leader address and the error, so operators can
         enable debug logging to diagnose cluster churn instead of
         seeing only the final exception.
+
+        Comparison to go-dqlite
+        -----------------------
+
+        Two structural divergences from go-dqlite's
+        ``Connector.Connect`` (``/internal/protocol/connector.go``)
+        operators porting code should know about:
+
+        1. Cancel-propagation discipline. go-dqlite checks
+           ``ctx.Done()`` only at the TOP of each retry iteration
+           (``attempt > 1``), so the FIRST attempt always runs even
+           if the context was already cancelled when ``Connect``
+           was invoked. Python's asyncio cancel propagates through
+           every ``await`` checkpoint, so an outer
+           ``asyncio.timeout(0)`` wrapping ``cluster.connect()``
+           lands the cancel BEFORE the first attempt. The first
+           attempt never runs; the caller sees a bare
+           ``TimeoutError`` with no per-attempt log breadcrumb.
+           This is the CORRECT shape for the Python ecosystem
+           (asyncio's structured-concurrency cancel contract is the
+           source of truth); callers porting from Go that rely on
+           "one attempt is always made" semantics must adapt.
+
+        2. Discovery vs. connection: double-dial cost. go-dqlite's
+           ``connectAttemptOne`` adopts the probe socket on success
+           (``case address:`` arm at ``connector.go:392-409`` sends
+           ``EncodeClient`` on the OPEN socket). Python's design
+           returns an address from ``_query_leader`` and re-dials
+           in ``_connect_impl`` — every successful
+           ``ClusterClient.connect()`` pays one extra TCP three-way
+           + handshake RTT to the leader. The single-flight slot
+           amortises the probe sweep across N concurrent
+           ``connect()`` callers, so the cost grows linearly with
+           ``max_size`` for pool warm-up but not per-acquire when
+           probes overlap. Operators sizing ``attempt_timeout`` on
+           high-RTT WAN deployments should budget for the extra
+           round trip.
 
         Args:
             close_timeout: Budget (seconds) for the transport-drain
