@@ -393,11 +393,13 @@ class ClusterClient:
                 advertised heartbeat timeout (in seconds) widens the
                 per-connection ``_read_timeout`` after handshake — up
                 to a 300s cap. Default ``False`` (server's heartbeat
-                value is read but has no effect — same as go-dqlite,
-                whose heartbeat is TODO/disabled). Opt-in only when
-                the cluster is operator-controlled and a longer
-                read-timeout is needed for slow consensus-write
-                round-trips.
+                value is read but has no effect — go-dqlite advertises
+                the timeout but its client does not adjust read
+                deadlines on it either; the dqlite C server's
+                heartbeat is independent of the client's read
+                timeout). Opt-in only when the cluster is
+                operator-controlled and a longer read-timeout is
+                needed for slow consensus-write round-trips.
         """
         validate_timeout(timeout)
         if dial_timeout is not None:
