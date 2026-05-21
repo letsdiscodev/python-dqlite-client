@@ -2152,11 +2152,10 @@ class DqliteConnection:
             # (a) survives a future CPython release that grows a second
             # RuntimeError shape from ``get_running_loop`` (e.g. "loop
             # is closing"), keeping the discriminator visible to
-            # operator diagnostics, and (b) aligns this arm with project
-            # discipline (see done/ISSUE-207 / ISSUE-212): every ``from
-            # None`` requires inline rationale or an upgrade to a
-            # captured cause. Upgrading is the project-consistent
-            # default.
+            # operator diagnostics, and (b) aligns this arm with the
+            # rule that every ``raise ... from None`` requires inline
+            # rationale or an upgrade to a captured cause. Upgrading
+            # is the project-consistent default.
             raise InterfaceError(
                 "DqliteConnection must be used from within an async context."
             ) from e
