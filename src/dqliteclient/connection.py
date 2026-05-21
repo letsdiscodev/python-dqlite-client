@@ -1,4 +1,19 @@
-"""High-level connection interface for dqlite."""
+"""High-level connection interface for dqlite.
+
+Hosts the public ``validate_timeout`` and ``parse_address``
+validators in addition to :class:`DqliteConnection`. The split with
+:mod:`dqliteclient.protocol` (which hosts
+``validate_positive_int_or_none``) is historical: each validator
+lives in the module of its first caller. ``validate_timeout`` gates
+:class:`DqliteConnection`'s timeout kwargs; ``parse_address`` gates
+its address kwarg; ``validate_positive_int_or_none`` originated
+inline in :class:`dqliteclient.protocol.DqliteProtocol`'s
+``max_total_rows`` / ``max_continuation_frames`` kwargs and was
+promoted in place. All three are re-exported via
+:mod:`dqliteclient` and form the package's public validator
+surface; the asymmetric module homes are an artefact, not a
+contract.
+"""
 
 import asyncio
 import contextlib

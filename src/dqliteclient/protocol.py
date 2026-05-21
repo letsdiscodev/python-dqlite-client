@@ -1,4 +1,15 @@
-"""Low-level protocol handler for dqlite."""
+"""Low-level protocol handler for dqlite.
+
+Also hosts the public ``validate_positive_int_or_none`` validator
+because that helper originated inline inside
+:class:`DqliteProtocol`'s ``max_total_rows`` /
+``max_continuation_frames`` kwargs and was promoted in place. The
+sibling public validators ``validate_timeout`` and ``parse_address``
+live in :mod:`dqliteclient.connection` for the same first-caller
+reason. All three are re-exported via :mod:`dqliteclient`; the
+asymmetric module homes are an artefact of where each validator was
+first needed, not a contract.
+"""
 
 import asyncio
 import logging
