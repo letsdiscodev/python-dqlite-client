@@ -5,6 +5,7 @@ import contextlib
 import logging
 import math
 import os
+import sys
 import warnings
 import weakref
 from collections.abc import AsyncIterator, Sequence
@@ -839,6 +840,19 @@ class ConnectionPool:
                         unqueued_survivors.pop(0)
                     logger.debug("pool.initialize: %d connections ready", self._min_size)
                 finally:
+                    # Capture the in-flight exception (if any) at the
+                    # top of the finally so a later ``raise
+                    # outer_cancel`` inside this arm can chain it
+                    # explicitly via ``__cause__``. Python sets
+                    # ``__context__`` to the in-flight exception
+                    # automatically (PEP 3134 implicit chaining), but
+                    # SA's ``walk_cause_chain`` (and every other
+                    # cause-following classifier) follows ``__cause__``
+                    # exclusively. Without this capture, a try-body
+                    # ``DqliteConnectionError`` / ``OperationalError``
+                    # gets buried on ``__context__`` and is invisible
+                    # to is_disconnect classification at the SA layer.
+                    in_flight: BaseException | None = sys.exc_info()[1]
                     # Any exit path with uncommitted reservations —
                     # failed gather, raise from _pool.put, outer
                     # CancelledError mid put-loop — must return the
@@ -912,6 +926,19 @@ class ConnectionPool:
                             # Close before re-raising so the caller's
                             # outer cancel doesn't orphan the survivors.
                             await self._initialize_close_unqueued(unqueued_survivors)
+                            # Explicitly chain the try-body in-flight
+                            # exception via ``__cause__`` so SA's
+                            # ``walk_cause_chain`` can reach it. Guard
+                            # against ``raise X from X`` self-cycles
+                            # (legal but produces awkward rendering) —
+                            # if the in-flight is the outer cancel
+                            # itself, fall back to implicit context
+                            # propagation. ``in_flight is None`` covers
+                            # the clean-finally-after-success path,
+                            # which never enters this arm anyway
+                            # (outer_cancel only set on gather raise).
+                            if in_flight is not None and in_flight is not outer_cancel:
+                                raise outer_cancel from in_flight
                             raise outer_cancel
                     await self._initialize_close_unqueued(unqueued_survivors)
             # Do not mark initialized if close() landed during the
