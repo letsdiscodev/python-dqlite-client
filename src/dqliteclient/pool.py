@@ -293,6 +293,23 @@ class ConnectionPool:
                 ``asyncio.timeout(...)`` to enforce a wall-clock
                 deadline. Acts as the default for ``dial_timeout``
                 and ``attempt_timeout`` when those are ``None``.
+
+                Also bounds the per-acquire wall-clock: ``acquire``
+                composes the queue-wait phase with a fresh-dial
+                phase whose clamp is the remaining deadline. When
+                the clamp fires mid-attempt, the underlying
+                ``ClusterClient.connect`` is cancelled inside an
+                ``asyncio.timeout`` scope and the leader-cache
+                state is path-dependent — the cancel may land on
+                an await checkpoint inside the per-attempt arm
+                (cache untouched) or on the success path before
+                the cache write (cache untouched) or on a transport
+                fault (cache cleared by the transport arm).
+                Operators sizing ``pool.timeout < cluster.attempt_timeout``
+                should expect occasional cache-cleared follow-ups
+                paying an extra full-sweep RTT; tighten
+                ``attempt_timeout`` to make the clamp rarely fire
+                mid-attempt.
             dial_timeout: Per-dial TCP-establish budget. Forwarded to
                 the auto-built :class:`ClusterClient` and to every
                 pooled :class:`DqliteConnection`. Defaults to
@@ -1418,10 +1435,49 @@ class ConnectionPool:
                     # replacement arm below applies the same clamp.
                     create_remaining = deadline - loop.time()
                     if create_remaining <= 0:
-                        raise TimeoutError
-                    async with asyncio.timeout(create_remaining):
-                        conn = await self._create_connection()
-            except BaseException as exc:
+                        # Pre-clamp deadline already past: surface as
+                        # the public DqliteConnectionError with an
+                        # actionable cause text so the chain carries
+                        # the same diagnostic regardless of which
+                        # phase exhausted the budget.
+                        idle = self._pool.qsize()
+                        checked_out = self._size - idle
+                        raise DqliteConnectionError(
+                            f"Timed out creating a fresh connection from the pool "
+                            f"(pool_id={id(self)}, max_size={self._max_size}, "
+                            f"checked_out={checked_out}, idle={idle}, "
+                            f"timeout={self._timeout}s)."
+                        ) from TimeoutError(
+                            f"acquire deadline already exceeded by "
+                            f"{loop.time() - deadline:.3f}s before "
+                            f"_create_connection ran"
+                        )
+                    try:
+                        async with asyncio.timeout(create_remaining):
+                            conn = await self._create_connection()
+                    except TimeoutError as exc:
+                        # Translate the clamp's bare TimeoutError into
+                        # the public DqliteConnectionError AT the clamp
+                        # scope (rather than in the broader except
+                        # BaseException arm below) so the cause chain
+                        # carries actionable text instead of an empty
+                        # asyncio.timeout-internal TimeoutError. The
+                        # wrapper message names the fresh-dial phase
+                        # and the pool's current size/idle counts so
+                        # operators can correlate with capacity-
+                        # planning metrics. NB: the leader-cache state
+                        # under clamp-fires-mid-attempt is path-
+                        # dependent — see the ``timeout`` docstring on
+                        # ConnectionPool for the variance discussion.
+                        idle = self._pool.qsize()
+                        checked_out = self._size - idle
+                        raise DqliteConnectionError(
+                            f"Timed out creating a fresh connection from the pool "
+                            f"(pool_id={id(self)}, max_size={self._max_size}, "
+                            f"checked_out={checked_out}, idle={idle}, "
+                            f"timeout={self._timeout}s)."
+                        ) from exc
+            except BaseException:
                 # Shield the release so an outer cancel re-arming
                 # on the await checkpoint does not bypass the
                 # decrement; without the shield, each
@@ -1430,30 +1486,13 @@ class ConnectionPool:
                 # checked-out connections. ``if reserved:`` guards
                 # against double-release on the pre-grant
                 # ``_closed`` raise (which never reaches the
-                # increment).
+                # increment). The clamp's TimeoutError translation
+                # is handled INSIDE the clamp scope above (so the
+                # cause chain carries actionable text); this arm
+                # now only re-raises and releases the reservation.
                 if reserved:
                     with contextlib.suppress(asyncio.CancelledError):
                         await asyncio.shield(self._release_reservation())
-                if isinstance(exc, TimeoutError):
-                    # The clamp fired before ``_create_connection``
-                    # produced a usable conn (``TimeoutError`` is only
-                    # raised inside the ``async with asyncio.timeout(
-                    # create_remaining):`` scope, which is itself gated
-                    # by ``if reserved:`` above; the pre-grant
-                    # ``_closed`` raise is ``DqliteConnectionError``).
-                    # Surface as the project's user-facing class with an
-                    # actionable message naming the fresh-dial phase,
-                    # mirroring the queue-wait timeout shape below so
-                    # operators see a consistent diagnostic regardless
-                    # of which phase exhausted the budget.
-                    idle = self._pool.qsize()
-                    checked_out = self._size - idle
-                    raise DqliteConnectionError(
-                        f"Timed out creating a fresh connection from the pool "
-                        f"(pool_id={id(self)}, max_size={self._max_size}, "
-                        f"checked_out={checked_out}, idle={idle}, "
-                        f"timeout={self._timeout}s)."
-                    ) from exc
                 raise
             if reserved:
                 # mypy: ``conn`` is assigned inside the ``if reserved:``
