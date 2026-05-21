@@ -52,6 +52,22 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    # Promote deprecations to errors so the suite catches stdlib
+    # deprecation surface under the CPython version the workspace
+    # already runs CI on (3.13/3.14). Also lets the package's own
+    # MemoryNodeStore(initial_addresses=...) deprecation emission
+    # actually fail CI when callers still pass the deprecated kwarg.
+    # Whitelist genuine third-party noise with explicit
+    # ``ignore:<pattern>:DeprecationWarning:<module>`` entries below.
+    "error::DeprecationWarning",
+    "error::PendingDeprecationWarning",
+    # In-tree deprecation: re-allow it so the suite's own pin tests
+    # for the deprecation message keep passing. Callers in production
+    # code MUST not pass the deprecated kwarg; the in-tree pin tests
+    # explicitly call it to confirm the warning is emitted.
+    "ignore::DeprecationWarning:dqliteclient.node_store",
+]
 
 [tool.mypy]
 strict = true
