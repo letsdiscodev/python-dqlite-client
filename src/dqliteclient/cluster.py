@@ -785,13 +785,19 @@ class ClusterClient:
         cached = self._get_last_known_leader()
         if cached is not None:
             try:
-                cached_leader = await asyncio.wait_for(
-                    self._query_leader(
+                # Use ``asyncio.timeout`` (cancel-scope semantics)
+                # rather than ``asyncio.wait_for`` (which discards
+                # the inner-task result on outer-cancel — the
+                # canonical leak shape for this class of bug).
+                # Mirrors the discipline at ``_query_leader``'s
+                # outer-dial scope, ``open_admin_connection``, and
+                # ``_connect_impl`` — see those sites for the same
+                # rationale.
+                async with asyncio.timeout(self._attempt_timeout):
+                    cached_leader = await self._query_leader(
                         cached,
                         trust_server_heartbeat=trust_server_heartbeat,
-                    ),
-                    timeout=self._attempt_timeout,
-                )
+                    )
                 if cached_leader:
                     if not _addr_equiv(cached_leader, cached):
                         # Cached node redirected us elsewhere.
@@ -1851,6 +1857,14 @@ class ClusterClient:
         freshest one available. A stale follower could otherwise
         report a configuration that is one Raft log entry behind.
 
+        Costs one extra ``get_leader`` round-trip (on the already-open
+        admin connection) to re-confirm leadership before reading the
+        cluster configuration. This protects callers feeding the
+        result into ``node_store.set_nodes(...)`` from a mid-RPC
+        leader-flip race where the responder is no longer leader and
+        the actual current leader sits outside the policy allowlist;
+        mirrors the same arm in :meth:`leader_info`.
+
         ``policy`` is an optional :data:`RedirectPolicy` callable
         applied to every returned address. Nodes whose address fails
         the policy are excluded from the returned list and a
@@ -1885,7 +1899,50 @@ class ClusterClient:
         try:
             leader_addr = await self.find_leader(policy=policy)
             async with self.open_admin_connection(leader_addr) as protocol:
-                nodes = await protocol.cluster()
+                # Re-confirm leadership BEFORE reading the cluster
+                # config: between ``find_leader`` returning and this
+                # round-trip landing, leadership can flip — the
+                # responder we dialled may now be a follower while a
+                # different node (possibly one not in the operator's
+                # ``redirect_policy`` allowlist) holds leadership.
+                # Without the re-confirm the policy filter on the
+                # returned nodes is correct but the RESPONDER the
+                # cluster RPC was sent to may itself be policy-
+                # rejected, and the returned config may even strip
+                # the actual current leader from the view (leading
+                # operators piping ``cluster_info`` into
+                # ``node_store.set_nodes(...)`` to break future
+                # ``find_leader`` calls). Mirrors the leader-flip
+                # re-verify arm in ``leader_info``.
+                node_id, address = await protocol.get_leader()
+                if not _addr_equiv(address, leader_addr) and not (node_id == 0 and not address):
+                    # Leadership flipped: the responder hands back a
+                    # different address. Re-validate against the
+                    # redirect policy AND re-probe the hinted target
+                    # before reading the cluster configuration from
+                    # it. The cost is one extra RTT on the leader-flip
+                    # path; the no-flip happy path adds only the
+                    # ``get_leader`` round-trip to the same already-
+                    # open connection.
+                    self._check_redirect(address, policy=policy)
+                    verified = await self._verify_redirect(
+                        address,
+                        trust_server_heartbeat=False,
+                    )
+                    if verified is None:
+                        # Stale hint that did not re-confirm.
+                        # Surface as a ClusterError rather than
+                        # silently returning the original (now
+                        # stale) responder's view.
+                        self._set_last_known_leader(None)
+                        raise ClusterError(
+                            "cluster_info: leadership flipped mid-RPC "
+                            "and the responder's hint did not re-confirm"
+                        )
+                    async with self.open_admin_connection(verified) as p2:
+                        nodes = await p2.cluster()
+                else:
+                    nodes = await protocol.cluster()
         except (OperationalError, DqliteConnectionError, ProtocolError):
             # Failure-path invalidation only: a leader step-down
             # mid-RPC surfaces as one of these exception classes and

@@ -136,6 +136,8 @@ async def test_cluster_info_warning_strips_lf_in_dropped_node_address(
 
     protocol = MagicMock()
     protocol.cluster = AsyncMock(return_value=[poisoned])
+    # Re-confirm leadership round-trip on the no-flip happy path.
+    protocol.get_leader = AsyncMock(return_value=(1, "127.0.0.1:9001"))
 
     @contextlib.asynccontextmanager
     async def fake_open_admin_connection(*_args: object, **_kwargs: object):

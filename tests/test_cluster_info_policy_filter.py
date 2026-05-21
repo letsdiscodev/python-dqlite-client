@@ -32,6 +32,10 @@ def cluster_with_returned_nodes():
 
     fake_proto = MagicMock()
     fake_proto.cluster = AsyncMock(return_value=nodes)
+    # Re-confirm leadership round-trip: same address as ``leader_addr``
+    # selects the no-flip happy path. The mid-flip arm is exercised by
+    # the dedicated leader-flip tests.
+    fake_proto.get_leader = AsyncMock(return_value=(1, "leader:9001"))
 
     fake_admin_cm = MagicMock()
     fake_admin_cm.__aenter__ = AsyncMock(return_value=fake_proto)
@@ -93,6 +97,7 @@ async def test_instance_redirect_policy_used_when_no_per_call_policy() -> None:
     ]
     fake_proto = MagicMock()
     fake_proto.cluster = AsyncMock(return_value=nodes)
+    fake_proto.get_leader = AsyncMock(return_value=(1, "leader:9001"))
     fake_admin_cm = MagicMock()
     fake_admin_cm.__aenter__ = AsyncMock(return_value=fake_proto)
     fake_admin_cm.__aexit__ = AsyncMock(return_value=None)
@@ -124,6 +129,7 @@ async def test_per_call_policy_overrides_instance_policy() -> None:
     nodes = [NodeInfo(node_id=1, address="leader:9001", role=NodeRole.VOTER)]
     fake_proto = MagicMock()
     fake_proto.cluster = AsyncMock(return_value=nodes)
+    fake_proto.get_leader = AsyncMock(return_value=(1, "leader:9001"))
     fake_admin_cm = MagicMock()
     fake_admin_cm.__aenter__ = AsyncMock(return_value=fake_proto)
     fake_admin_cm.__aexit__ = AsyncMock(return_value=None)

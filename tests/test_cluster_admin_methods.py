@@ -70,6 +70,8 @@ async def test_cluster_info_returns_node_list_from_leader() -> None:
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
     fake_proto.cluster = AsyncMock(return_value=nodes)
+    # Re-confirm leadership round-trip on the no-flip happy path.
+    fake_proto.get_leader = AsyncMock(return_value=(1, "node1:9001"))
 
     fake_open, _ = _patch_admin_connection(fake_proto)
 
@@ -107,6 +109,7 @@ async def test_cluster_info_propagates_operational_error_from_leader() -> None:
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
     fake_proto.cluster = AsyncMock(side_effect=OperationalError("shutting down", 1))
+    fake_proto.get_leader = AsyncMock(return_value=(1, "node1:9001"))
 
     fake_open, _ = _patch_admin_connection(fake_proto)
 
@@ -217,6 +220,7 @@ async def test_admin_connection_closes_writer_on_normal_exit() -> None:
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
     fake_proto.cluster = AsyncMock(return_value=[])
+    fake_proto.get_leader = AsyncMock(return_value=(1, "node1:9001"))
 
     fake_open, writer = _patch_admin_connection(fake_proto)
 

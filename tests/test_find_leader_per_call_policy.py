@@ -85,6 +85,8 @@ def test_per_call_policy_propagates_through_cluster_info() -> None:
 
     fake_proto = MagicMock()
     fake_proto.cluster = AsyncMock(return_value=[])
+    # Re-confirm leadership round-trip on the no-flip happy path.
+    fake_proto.get_leader = AsyncMock(return_value=(1, "10.0.0.1:9001"))
     fake_admin_cm = MagicMock()
     fake_admin_cm.__aenter__ = AsyncMock(return_value=fake_proto)
     fake_admin_cm.__aexit__ = AsyncMock(return_value=None)

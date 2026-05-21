@@ -232,6 +232,9 @@ async def test_cluster_info_invalidates_cache_on_failure() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    # Re-confirm leadership round-trip succeeds; the failure surfaces
+    # from the subsequent ``cluster()`` call (the wire RPC).
+    fake_proto.get_leader = AsyncMock(return_value=(1, "node1:9001"))
     fake_proto.cluster = AsyncMock(
         side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
     )
