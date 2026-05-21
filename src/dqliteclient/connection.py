@@ -2128,10 +2128,23 @@ class DqliteConnection:
             )
         try:
             current_loop = asyncio.get_running_loop()
-        except RuntimeError:
+        except RuntimeError as e:
+            # Preserve the captured RuntimeError on ``__cause__`` rather
+            # than ``from None``-suppressing it. Today the captured text
+            # is asyncio's canonical "no running event loop" sentinel
+            # — short, ASCII, non-sensitive — and adds little beyond the
+            # new InterfaceError message. But pinning the chain explicitly
+            # (a) survives a future CPython release that grows a second
+            # RuntimeError shape from ``get_running_loop`` (e.g. "loop
+            # is closing"), keeping the discriminator visible to
+            # operator diagnostics, and (b) aligns this arm with project
+            # discipline (see done/ISSUE-207 / ISSUE-212): every ``from
+            # None`` requires inline rationale or an upgrade to a
+            # captured cause. Upgrading is the project-consistent
+            # default.
             raise InterfaceError(
                 "DqliteConnection must be used from within an async context."
-            ) from None
+            ) from e
         bound_loop = self._bound_loop_ref() if self._bound_loop_ref is not None else None
         if self._bound_loop_ref is None:
             # Lazily bind on first use so the guard is always active, even
