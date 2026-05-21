@@ -1335,9 +1335,24 @@ class DqliteConnection:
         return self._closed
 
     def __repr__(self) -> str:
+        # Route ``self._address`` through ``sanitize_for_log`` before
+        # the ``%r`` interpolation. Python's ``repr()`` of a ``str``
+        # escapes LF / CR / Tab / NUL / ASCII C0 controls but NOT
+        # U+2028 LINE SEPARATOR / U+2029 PARAGRAPH SEPARATOR / bidi
+        # / zero-width / BOM — journald treats U+2028 as a record
+        # separator, so a peer-supplied address (smuggled past
+        # ``parse_address``'s strict gate via a future custom
+        # ``dial_func`` or leader-tracker refactor) splits the log
+        # line when a downstream ``logger.X("%r", conn)`` or
+        # ``logger.X("%r", task)`` (asyncio Task repr, SA pool repr
+        # with ``echo_pool=True``) interpolates this repr.
+        # Centralising sanitisation here covers third-party ``%r``
+        # consumers without per-call-site wrapping. CWE-117
+        # defence-in-depth; ASCII host:port survives unchanged.
         state = "connected" if self._protocol is not None else "disconnected"
+        safe_addr = sanitize_for_log(str(self._address))
         return (
-            f"<DqliteConnection address={self._address!r} "
+            f"<DqliteConnection address={safe_addr!r} "
             f"database={self._database!r} {state} at 0x{id(self):x}>"
         )
 
@@ -1600,8 +1615,27 @@ class DqliteConnection:
                         # ``LOOKUP_DB`` emits "no database opened" when
                         # ``g->leader == NULL`` post-demotion); see
                         # the parallel arm in ``_run_protocol``.
+                        #
+                        # Route ``e.message`` through
+                        # ``_sanitize_display_text`` (the
+                        # ``sanitize_server_text`` alias) so a
+                        # peer-supplied LEADER_ERROR_CODES message
+                        # carrying U+2028 / U+2029 / bidi / ZW /
+                        # control chars cannot survive into
+                        # ``str(DqliteConnectionError)`` and through
+                        # to SA's ``is_disconnect`` substring scan or
+                        # ``engine.echo=True`` log rendering. The
+                        # sanitiser preserves LF / Tab (the
+                        # display-vs-log contract documented at
+                        # ``_safe_address``); the SA-side log helper
+                        # is responsible for the final
+                        # ``sanitize_for_log`` hop. ``raw_message``
+                        # stays unchanged so substring-matchers see
+                        # the verbatim server text. CWE-117 defence-
+                        # in-depth.
                         raise DqliteConnectionError(
-                            f"Node {self._safe_address} is no longer leader: {e.message}",
+                            f"Node {self._safe_address} is no longer leader: "
+                            f"{_sanitize_display_text(e.message)}",
                             code=e.code,
                             raw_message=e.raw_message,
                         ) from e
@@ -1631,9 +1665,18 @@ class DqliteConnection:
                     # synthetic WIRE_DECODE_FAILED_PREFIX during handshake
                     # prefix. Mirrors the sibling LEADER_ERROR_CODES
                     # rewrap above which threads both fields.
+                    # Route ``str(e)`` through
+                    # ``_sanitize_display_text`` so a peer-supplied
+                    # ProtocolError message carrying U+2028 / bidi /
+                    # ZW survives the display contract but does not
+                    # smuggle journald-record-splitting characters
+                    # into ``str(DqliteConnectionError)``. The LF /
+                    # Tab preservation contract is intact. Mirrors
+                    # the LEADER_ERROR_CODES rewrap above; CWE-117
+                    # defence-in-depth.
                     raise DqliteConnectionError(
                         f"{WIRE_DECODE_FAILED_PREFIX} during handshake to "
-                        f"{self._safe_address}: {e}",
+                        f"{self._safe_address}: {_sanitize_display_text(str(e))}",
                         code=getattr(e, "code", None),
                         raw_message=getattr(e, "raw_message", None) or str(e),
                     ) from e
