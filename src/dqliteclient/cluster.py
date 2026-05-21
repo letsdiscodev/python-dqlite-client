@@ -991,13 +991,19 @@ class ClusterClient:
             sem_acquired = True
             try:
                 try:
-                    leader_address = await asyncio.wait_for(
-                        self._query_leader(
+                    # ``async with asyncio.timeout(...)`` (cancel-scope
+                    # semantics) rather than ``asyncio.wait_for`` (which
+                    # cancels the inner task and discards a result that
+                    # arrived on the same scheduling slice as the outer
+                    # cancel). Mirrors the fast-path arm above and the
+                    # other cancel-scope sibling sites
+                    # (``_query_leader`` outer-dial,
+                    # ``open_admin_connection``, ``_connect_impl``).
+                    async with asyncio.timeout(self._attempt_timeout):
+                        leader_address = await self._query_leader(
                             node.address,
                             trust_server_heartbeat=trust_server_heartbeat,
-                        ),
-                        timeout=self._attempt_timeout,
-                    )
+                        )
                 except TimeoutError as e:
                     _safe_addr = _sanitize_display_text(node.address)
                     logger.debug(
@@ -1539,10 +1545,16 @@ class ClusterClient:
         """
         effective_timeout = self._dial_timeout if timeout is None else timeout
         try:
-            reported = await asyncio.wait_for(
-                self._query_leader(hint_address, trust_server_heartbeat=trust_server_heartbeat),
-                timeout=effective_timeout,
-            )
+            # ``async with asyncio.timeout(...)`` (cancel-scope
+            # semantics) rather than ``asyncio.wait_for`` (which would
+            # discard the verified-address result on outer-cancel and
+            # defeat the very cache the fast-path arm populates).
+            # Mirrors the fast-path's own discipline above and the
+            # other cancel-scope sibling sites.
+            async with asyncio.timeout(effective_timeout):
+                reported = await self._query_leader(
+                    hint_address, trust_server_heartbeat=trust_server_heartbeat
+                )
         except (
             DqliteConnectionError,
             ProtocolError,

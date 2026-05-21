@@ -59,8 +59,8 @@ async def test_verify_redirect_default_is_dial_timeout() -> None:
     back to ``self._dial_timeout`` so existing parallel-sweep call
     sites keep their nesting-cost halving.
 
-    Observe the timeout via a monkeypatched ``asyncio.wait_for`` that
-    captures the ``timeout`` kwarg. The earlier shape of this test
+    Observe the timeout via a monkeypatched ``asyncio.timeout`` that
+    captures the duration argument. The earlier shape of this test
     asserted only that ``_query_leader`` was called once — a
     regression that swapped the default to ``attempt_timeout`` would
     keep the call-count unchanged and silently pass.
@@ -77,18 +77,18 @@ async def test_verify_redirect_default_is_dial_timeout() -> None:
 
     from dqliteclient import cluster as cluster_module
 
-    real_wait_for = cluster_module.asyncio.wait_for  # type: ignore[attr-defined]
+    real_timeout = cluster_module.asyncio.timeout  # type: ignore[attr-defined]
 
-    async def _wait_for_capture(coro: Any, *, timeout: float | None) -> Any:
-        captured_timeouts.append(timeout)
-        return await real_wait_for(coro, timeout=timeout)
+    def _timeout_capture(delay: float | None) -> Any:
+        captured_timeouts.append(delay)
+        return real_timeout(delay)
 
-    with patch.object(cluster_module.asyncio, "wait_for", new=_wait_for_capture):  # type: ignore[attr-defined]
+    with patch.object(cluster_module.asyncio, "timeout", new=_timeout_capture):  # type: ignore[attr-defined]
         result = await cluster._verify_redirect("leader:9001")
     assert result == "leader:9001"
     # Default timeout=None → effective_timeout = self._dial_timeout (1.5).
-    # The capture pins the actual envelope passed to wait_for, not just
-    # the call-count.
+    # The capture pins the actual envelope passed to asyncio.timeout,
+    # not just the call-count.
     assert captured_timeouts == [1.5], (
         f"_verify_redirect default must resolve to self._dial_timeout (1.5); "
         f"captured={captured_timeouts}"

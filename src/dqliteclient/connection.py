@@ -1668,8 +1668,38 @@ class DqliteConnection:
             # path.
             if writer is not None:
                 writer.close()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(writer.wait_closed(), timeout=self._close_timeout)
+                # Shielded bounded drain. ``writer.close()`` already
+                # sent FIN and released the local socket FD, but the
+                # StreamReader task feeding the writer's reader pair
+                # must be awaited to completion or it shows up as
+                # "Task was destroyed but it is pending" at GC. The
+                # prior shape ``contextlib.suppress(Exception):
+                # await asyncio.wait_for(...)`` absorbed transport
+                # noise but ``asyncio.CancelledError`` (a
+                # BaseException subclass) propagated past the suppress
+                # — an outer cancel landing inside the finally
+                # orphaned the reader task. Wrap in
+                # ``asyncio.shield`` so the inner drain runs to
+                # completion even when the outer task is cancelled;
+                # the cancel still reaches the parent frame (shield
+                # only protects the inner future, not the awaiter).
+                # The narrower ``(OSError, TimeoutError)`` suppress
+                # surfaces unexpected non-transport raises (mock
+                # ``AssertionError``, custom ``dial_func`` raising)
+                # instead of hiding them. Mirrors the project-canonical
+                # shape at ``ClusterClient._query_leader``'s finally
+                # arm and ``open_admin_connection``'s drain.
+                inner_drain: asyncio.Task[None] = asyncio.ensure_future(
+                    asyncio.wait_for(writer.wait_closed(), timeout=self._close_timeout)
+                )
+                # Local import to avoid an import cycle at module
+                # load — ``dqliteclient.cluster`` imports
+                # ``dqliteclient.connection``.
+                from dqliteclient.cluster import _observe_drain_exception
+
+                inner_drain.add_done_callback(_observe_drain_exception)
+                with contextlib.suppress(OSError, TimeoutError):
+                    await asyncio.shield(inner_drain)
 
     async def close(self) -> None:
         """Close the connection.
@@ -1797,16 +1827,48 @@ class DqliteConnection:
             self._pending_drain = None
             if pending is None or pending.done():
                 break
-            # Narrow suppress to ``(Exception, asyncio.CancelledError)``
-            # so KeyboardInterrupt and SystemExit propagate. Connect's
-            # pending-retire path uses parallel narrow catches
-            # (``except asyncio.CancelledError`` + ``except Exception``).
-            # asyncio cancellation gets re-delivered at the next await
-            # boundary (Python 3.11+ ``Task.cancelling()`` re-arm
-            # contract), but signal-driven KI/SE are one-shot and
-            # would be lost forever if absorbed here.
-            with contextlib.suppress(Exception, asyncio.CancelledError):
+            # Cancelling-delta dance (simplified vs ``_connect_impl``'s
+            # sibling): ``_close_impl`` does NOT call ``pending.cancel()``
+            # here — we just await a task that was created by a prior
+            # ``_invalidate``. So OUR ``Task.cancelling()`` counter only
+            # increments if a FRESH outer cancel lands during the
+            # ``await pending``; a stable counter means the
+            # ``CancelledError`` came from a third party (the pending
+            # task itself was cancelled by another path) and must be
+            # consumed so the cleanup continues.
+            #
+            # The prior shape used ``contextlib.suppress(Exception,
+            # asyncio.CancelledError)`` which absorbed ANY cancel,
+            # including a fresh outer ``task.cancel()`` from a
+            # TaskGroup sibling or manual cancel/await idiom — the
+            # cancel signal was silently swallowed and the caller's
+            # ``except CancelledError`` arm never fired. Mirrors the
+            # discipline at ``_connect_impl``'s pending-retire path.
+            #
+            # We deliberately do NOT call ``Task.uncancel()`` on the
+            # consume path: that would consume the outer cancel and
+            # the parent ``asyncio.timeout``'s deadline check (via
+            # ``__aexit__``'s cancelling-counter read) would miss it.
+            self_task = asyncio.current_task()
+            cancelling_before = self_task.cancelling() if self_task is not None else 0
+            try:
                 await pending
+            except asyncio.CancelledError:
+                cancelling_after = self_task.cancelling() if self_task is not None else 0
+                if cancelling_after > cancelling_before:
+                    # Fresh outer cancel landed during ``await pending``
+                    # — propagate so structured-concurrency parents
+                    # (TaskGroup, manual cancel/await) observe it.
+                    raise
+                # Pending was cancelled by a third party; observe and
+                # continue the resnapshot loop.
+            except Exception:
+                # Transport-class drain noise (e.g. ``_invalidate``'s
+                # bounded ``wait_closed`` surfacing a transport
+                # ``RuntimeError``) is swallowed so the close can
+                # finish. Widening to ``BaseException`` would consume
+                # legitimate ``KeyboardInterrupt`` / ``SystemExit``.
+                pass
         else:
             # Cap exhausted: a racing ``_invalidate`` keeps creating
             # fresh ``_pending_drain`` tasks each iteration. The
