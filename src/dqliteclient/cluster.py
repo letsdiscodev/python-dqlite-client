@@ -691,6 +691,24 @@ class ClusterClient:
         and one round-trip for N collapsed acquirers if it does.
         Operators sizing ``attempt_timeout`` on high-RTT WAN
         deployments should budget for the extra round trip.
+
+        Raises:
+            InterfaceError: when ``ClusterClient`` is used after fork
+                (created in a different process). Raised by the
+                ``_check_pid`` fork guard before any transport
+                activity; reconstruct the client in the target
+                process to recover.
+            ClusterError: when no node in the configured node store
+                responds with a leader address (every peer either
+                refused the connection, timed out, or self-reported
+                no leader).
+            DqliteConnectionError: when the cached fast-path arm
+                attempts a single-RTT probe and the cached peer
+                cannot be reached (rewrapped from
+                ``TimeoutError`` / ``OSError`` /
+                ``ProtocolError``).
+            ClusterPolicyError: when a redirect target is rejected
+                by ``policy`` / ``self._redirect_policy``.
         """
         self._check_pid()
         # Resolve ``policy=None`` to ``self._redirect_policy`` BEFORE
@@ -1949,6 +1967,11 @@ class ClusterClient:
         per-call level. Mirrors :meth:`leader_info`'s precedence.
 
         Raises:
+            InterfaceError: when ``ClusterClient`` is used after fork
+                (created in a different process). Raised by the
+                ``_check_pid`` fork guard inside :meth:`find_leader`
+                before any transport activity; reconstruct the client
+                in the target process to recover.
             DqliteConnectionError: when the admin connection cannot be
                 established (transport timeout / OS error / handshake
                 failure). Rewrapped by :meth:`open_admin_connection`
@@ -2072,6 +2095,11 @@ class ClusterClient:
                 :class:`OperationalError`.
 
         Raises:
+            InterfaceError: when ``ClusterClient`` is used after fork
+                (created in a different process). Raised by the
+                ``_check_pid`` fork guard inside :meth:`find_leader`
+                before any transport activity; reconstruct the client
+                in the target process to recover.
             ClusterError: when no leader is reachable.
             OperationalError: when the server rejects the transfer
                 (e.g. target is not a voter, target unreachable,
@@ -2149,6 +2177,11 @@ class ClusterClient:
         callable to disable filtering at the per-call level.
 
         Raises:
+            InterfaceError: when ``ClusterClient`` is used after fork
+                (created in a different process). Raised by the
+                ``_check_pid`` fork guard inside :meth:`find_leader`
+                before any transport activity; reconstruct the client
+                in the target process to recover.
             ClusterError: when no node in the store responds.
             ClusterPolicyError: when the responder's reported address
                 differs from the address we connected to AND fails
@@ -2289,6 +2322,11 @@ class ClusterClient:
                 :class:`NodeRole.SPARE` (no follow-up assign needed).
 
         Raises:
+            InterfaceError: when ``ClusterClient`` is used after fork
+                (created in a different process). Raised by the
+                ``_check_pid`` fork guard inside :meth:`find_leader`
+                before any transport activity; reconstruct the client
+                in the target process to recover.
             TypeError / ValueError: on invalid arguments
                 (validated client-side before the round-trip).
             ClusterError: when no leader is reachable.
@@ -2343,6 +2381,11 @@ class ClusterClient:
         ahead of a controlled :meth:`remove_node`.
 
         Raises:
+            InterfaceError: when ``ClusterClient`` is used after fork
+                (created in a different process). Raised by the
+                ``_check_pid`` fork guard inside :meth:`find_leader`
+                before any transport activity; reconstruct the client
+                in the target process to recover.
             TypeError / ValueError: on invalid arguments.
             ClusterError: when no leader is reachable.
             OperationalError: when the server rejects (e.g. id not
@@ -2373,6 +2416,11 @@ class ClusterClient:
         server otherwise rejects with a not-leader-style error.
 
         Raises:
+            InterfaceError: when ``ClusterClient`` is used after fork
+                (created in a different process). Raised by the
+                ``_check_pid`` fork guard inside :meth:`find_leader`
+                before any transport activity; reconstruct the client
+                in the target process to recover.
             TypeError / ValueError: on invalid arguments.
             ClusterError: when no leader is reachable.
             OperationalError: when the server rejects.
@@ -2407,6 +2455,11 @@ class ClusterClient:
                 ``None`` means "describe the leader".
 
         Raises:
+            InterfaceError: when ``ClusterClient`` is used after fork
+                (created in a different process). Raised by the
+                ``_check_pid`` fork guard before any transport
+                activity; reconstruct the client in the target
+                process to recover.
             DqliteConnectionError: when the admin connection cannot be
                 established. Rewrapped by :meth:`open_admin_connection`
                 from the underlying ``TimeoutError`` / ``OSError``.
@@ -2463,6 +2516,11 @@ class ClusterClient:
                 ``None`` targets the leader.
 
         Raises:
+            InterfaceError: when ``ClusterClient`` is used after fork
+                (created in a different process). Raised by the
+                ``_check_pid`` fork guard before any transport
+                activity; reconstruct the client in the target
+                process to recover.
             TypeError / ValueError: on invalid arguments.
             DqliteConnectionError: when the admin connection cannot be
                 established. Rewrapped by :meth:`open_admin_connection`
@@ -2536,6 +2594,11 @@ class ClusterClient:
                 dump.
 
         Raises:
+            InterfaceError: when ``ClusterClient`` is used after fork
+                (created in a different process). Raised by the
+                ``_check_pid`` fork guard inside :meth:`find_leader`
+                before any transport activity; reconstruct the client
+                in the target process to recover.
             TypeError: on invalid arguments.
             DqliteConnectionError: when the admin connection cannot be
                 established. Rewrapped by :meth:`open_admin_connection`
@@ -2595,6 +2658,18 @@ class ClusterClient:
 
         Yields:
             A handshaken :class:`DqliteProtocol` ready for admin RPCs.
+
+        Raises:
+            InterfaceError: when ``ClusterClient`` is used after fork
+                (created in a different process). Raised by the
+                ``_check_pid`` fork guard before any transport
+                activity; reconstruct the client in the target
+                process to recover.
+            DqliteConnectionError: when the dial or handshake fails
+                (rewrapped from the underlying ``TimeoutError`` /
+                ``OSError``).
+            OperationalError: when the node rejects the handshake.
+            ProtocolError: on a wire-level shape mismatch.
         """
         # Wrap the entire dial+handshake in ``attempt_timeout`` to
         # mirror the SQL path (``connection.py:_connect_impl``) and
