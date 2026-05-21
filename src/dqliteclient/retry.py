@@ -6,9 +6,24 @@ import random
 from collections.abc import Awaitable, Callable
 from typing import Final
 
-from dqliteclient.exceptions import ClusterError, DqliteConnectionError
+from dqliteclient.exceptions import ClusterError, ClusterPolicyError, DqliteConnectionError
 
 __all__ = ["retry_with_backoff"]
+
+# OS-entropy randomness for the jitter draw, mirroring the
+# ``_cluster_random`` discipline at ``cluster.py:159-165``. The
+# module-global ``random._inst`` (used by bare ``random.uniform``)
+# is inherited byte-for-byte across ``os.fork()`` — CPython's
+# ``Lib/random.py`` does not register an ``os.register_at_fork``
+# callback for it. Forked workers (gunicorn/uwsgi/multiprocessing
+# fork start method) therefore draw IDENTICAL jitter sequences from
+# their inherited state, defeating the stagger that jitter is meant
+# to provide. ``SystemRandom`` reads ``/dev/urandom`` per draw
+# (Linux ``getrandom(2)`` is fork-aware) so siblings diverge; it
+# also ignores ``random.seed()`` so a test suite that seeds the
+# global PRNG for determinism cannot accidentally pin every retry
+# to the same jitter draw.
+_retry_random: Final[random.Random] = random.SystemRandom()
 
 # Default retry set: transport- and cluster-level errors only.
 # Deterministic server / client errors (``OperationalError``,
@@ -30,6 +45,17 @@ _DEFAULT_RETRYABLE: Final[tuple[type[BaseException], ...]] = (
     ClusterError,
 )
 
+# ``ClusterPolicyError`` is a deterministic subclass of
+# ``ClusterError``: the redirect-policy gate rejected an address, and
+# retrying the same RPC against the same configured policy will land
+# on the same rejection. Excluding it by default short-circuits the
+# misuse where a caller wraps a policy-bounded RPC and burns the full
+# exponential-backoff window before surfacing the policy hit. The
+# in-tree ``ClusterClient.connect`` path passes the same exclusion
+# explicitly (``cluster.py``); external callers using the default get
+# the same behaviour without having to know about the subclass.
+_DEFAULT_EXCLUDED: Final[tuple[type[BaseException], ...]] = (ClusterPolicyError,)
+
 
 async def retry_with_backoff[T](
     func: Callable[[], Awaitable[T]],
@@ -39,7 +65,7 @@ async def retry_with_backoff[T](
     jitter: float = 0.1,
     max_elapsed_seconds: float | None = None,
     retryable_exceptions: tuple[type[BaseException], ...] = _DEFAULT_RETRYABLE,
-    excluded_exceptions: tuple[type[BaseException], ...] = (),
+    excluded_exceptions: tuple[type[BaseException], ...] = _DEFAULT_EXCLUDED,
 ) -> T:
     """Retry an async function with exponential backoff.
 
@@ -92,6 +118,11 @@ async def retry_with_backoff[T](
             non-recoverable error (e.g. a policy rejection) is a subtype
             of an otherwise-retryable family. Matched before the
             retryable check so the exception re-raises immediately.
+            Default: ``(ClusterPolicyError,)`` — a redirect-policy
+            rejection is deterministic against the configured policy
+            and retrying would burn the full backoff window for the
+            same outcome. Pass an empty tuple to opt back into the
+            previous "retry every matching subclass" behaviour.
 
     Returns:
         Result of the function
@@ -99,6 +130,18 @@ async def retry_with_backoff[T](
     Raises:
         The last exception if all attempts fail, or immediately
         for non-retryable exceptions
+
+    Comparison to ``ClusterClient.connect``:
+        The in-tree connect path invokes this helper with TIGHTER
+        defaults than the public signature for go-dqlite parity:
+        ``max_attempts=3`` (vs. 5 here) and ``max_delay=1.0`` (vs.
+        10.0 here), mirroring go-dqlite's ``BackoffCap = 1 * time.Second``.
+        External callers wrapping their own cluster-layer RPCs and
+        wanting that same shape should pass ``max_attempts=3``,
+        ``max_delay=1.0`` explicitly. The public defaults are looser
+        because non-cluster callers (admin tooling, third-party
+        wrappers) reasonably tolerate a longer worst-case wall-clock
+        in exchange for more attempts.
     """
     if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
         raise TypeError(f"max_attempts must be an int, got {type(max_attempts).__name__}")
@@ -168,8 +211,11 @@ async def retry_with_backoff[T](
             delay = min(base_delay * (2**attempt), max_delay)
 
             # Add jitter, then re-clamp so max_delay stays a hard ceiling.
+            # ``_retry_random`` (SystemRandom) is used over ``random.uniform``
+            # to keep forked workers' jitter draws independent — see the
+            # module-level comment on ``_retry_random``.
             if jitter > 0:
-                delay = min(delay * (1 + random.uniform(-jitter, jitter)), max_delay)
+                delay = min(delay * (1 + _retry_random.uniform(-jitter, jitter)), max_delay)
 
             # Clamp the sleep so it never straddles the deadline.
             if deadline is not None:
