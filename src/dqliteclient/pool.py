@@ -1000,6 +1000,40 @@ class ConnectionPool:
                     exc_info=True,
                 )
 
+    async def _close_best_effort(self, conn: DqliteConnection, site: str) -> None:
+        """Best-effort shielded close that logs ``_POOL_CLEANUP_EXCEPTIONS``
+        at DEBUG with ``exc_info=True`` rather than silently swallowing
+        them.
+
+        ``site`` is a short identifier appended to the log key
+        (``"pool.<site>: close error"``) so operators can locate which
+        call site emitted the record. Mirrors the
+        ``_initialize_close_unqueued`` discipline — both helpers now log
+        through ``exc_info=True`` so the suppressed-exception chain is
+        recoverable at DEBUG verbosity instead of being silently
+        dropped by ``contextlib.suppress`` (which has no logging
+        surface). The asymmetry between the initialize-time helper
+        (logged) and the release-time sites (silent) was a residual
+        diagnostic gap after the prior ``_POOL_CLEANUP_EXCEPTIONS``
+        narrowing pass; routing all release/drain close sites through
+        this helper closes it.
+
+        Cancel-safety: ``asyncio.shield`` runs the close to completion
+        even if an outer cancel is delivered during the await; the
+        CancelledError still propagates to the caller after the close
+        finishes. The CancelledError arm is intentionally NOT caught
+        here — preserves the pre-existing behaviour of the sites this
+        helper replaces (``contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS)``
+        suppressed only the cleanup-exception tuple; CancelledError
+        propagated to the surrounding frame). Sites that need to keep
+        running through cancel (like ``_initialize_close_unqueued``'s
+        per-conn walk) handle that arm explicitly.
+        """
+        try:
+            await asyncio.shield(conn.close())
+        except _POOL_CLEANUP_EXCEPTIONS:
+            logger.debug("pool.%s: close error", site, exc_info=True)
+
     async def _create_connection(self) -> DqliteConnection:
         """Create a new connection to the leader.
 
@@ -1060,20 +1094,22 @@ class ConnectionPool:
             # had happened. Mirrors the ``_drain_idle`` discipline.
             conn._pool_released = False
             try:
-                # Suppress the canonical ``_POOL_CLEANUP_EXCEPTIONS``
-                # tuple (OSError + DqliteConnectionError + ProtocolError
-                # + OperationalError + InterfaceError), not just
-                # ``OSError``. A late-winner conn whose transport was
-                # broken by a peer reset between checkout and close
-                # raises one of the broader categories from
-                # ``close()``; pre-fix that exception escaped, the
+                # Route through ``_close_best_effort`` so the canonical
+                # ``_POOL_CLEANUP_EXCEPTIONS`` tuple (OSError +
+                # DqliteConnectionError + ProtocolError +
+                # OperationalError + InterfaceError) is absorbed at
+                # DEBUG with ``exc_info=True`` (matches the sibling
+                # ``_initialize_close_unqueued`` discipline) rather
+                # than silently dropped. A late-winner conn whose
+                # transport was broken by a peer reset between
+                # checkout and close raises one of the broader
+                # categories from ``close()``; the helper logs them
+                # and proceeds so ``_release_reservation`` still runs
+                # below — pre-fix-narrow those exceptions escaped, the
                 # ``finally`` restored the flag, and
-                # ``_release_reservation`` was NEVER reached — the
-                # reservation slot leaked permanently. Matches the
-                # canonical ``_release`` discipline at the sibling
-                # close-and-track path.
-                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                    await asyncio.shield(conn.close())
+                # ``_release_reservation`` was NEVER reached, leaking
+                # the reservation slot permanently.
+                await self._close_best_effort(conn, "acquire-late-winner-closed")
             finally:
                 # Restore the flag for contract symmetry with
                 # ``_drain_idle``: any stale-reference second close()
@@ -1092,18 +1128,19 @@ class ConnectionPool:
             # the reference would leak a live reader task and a
             # socket. Close explicitly and adjust the reservation
             # count so the pool shrinks cleanly instead of leaking.
-            # Suppress the canonical ``_POOL_CLEANUP_EXCEPTIONS``
-            # tuple — a half-torn-down transport raises
-            # ``DqliteConnectionError`` / ``InterfaceError`` /
-            # ``ProtocolError`` / ``OperationalError`` in addition to
-            # plain ``OSError``; pre-fix the broader categories
-            # escaped and the slot leaked. Flip ``_pool_released``
-            # to ``False`` first so the close actually runs (see
-            # the closed-pool arm above for the rationale).
+            # Route through ``_close_best_effort`` so the canonical
+            # ``_POOL_CLEANUP_EXCEPTIONS`` tuple — a half-torn-down
+            # transport raises ``DqliteConnectionError`` /
+            # ``InterfaceError`` / ``ProtocolError`` /
+            # ``OperationalError`` in addition to plain ``OSError`` —
+            # is absorbed at DEBUG with ``exc_info=True``; pre-fix-
+            # narrow the broader categories escaped and the slot
+            # leaked. Flip ``_pool_released`` to ``False`` first so
+            # the close actually runs (see the closed-pool arm above
+            # for the rationale).
             conn._pool_released = False
             try:
-                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                    await asyncio.shield(conn.close())
+                await self._close_best_effort(conn, "acquire-late-winner-queuefull")
             finally:
                 conn._pool_released = True
             # Route through the helper so the counter stays
@@ -1735,8 +1772,7 @@ class ConnectionPool:
             conn._pool_released = False
             try:
                 try:
-                    with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                        await asyncio.shield(conn.close())
+                    await self._close_best_effort(conn, "acquire-drain-stale-conn")
                 except RuntimeError:
                     # "Event loop is closed" during racing
                     # ``engine.dispose()``, or cross-loop
@@ -2173,21 +2209,21 @@ class ConnectionPool:
         returned_to_queue = False
         try:
             if self._closed:
-                # Shield the close so an outer cancel mid-cleanup
-                # (e.g. ``asyncio.timeout`` around ``engine.dispose()``)
-                # cannot abort the close mid-``wait_closed`` and orphan
-                # the StreamReader task. ``_POOL_CLEANUP_EXCEPTIONS``
-                # does not include ``CancelledError``; the shield is
-                # the load-bearing guard. Symmetric with every other
-                # close site in this module.
-                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                    await asyncio.shield(conn.close())
+                # Shield (via ``_close_best_effort``) so an outer cancel
+                # mid-cleanup (e.g. ``asyncio.timeout`` around
+                # ``engine.dispose()``) cannot abort the close mid-
+                # ``wait_closed`` and orphan the StreamReader task.
+                # ``_POOL_CLEANUP_EXCEPTIONS`` does not include
+                # ``CancelledError``; the shield is the load-bearing
+                # guard. ``_POOL_CLEANUP_EXCEPTIONS`` errors are logged
+                # at DEBUG with ``exc_info=True`` (mirrors
+                # ``_initialize_close_unqueued``).
+                await self._close_best_effort(conn, "release-closed")
                 conn._pool_released = True
                 return
 
             if not await self._reset_connection(conn):
-                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                    await asyncio.shield(conn.close())
+                await self._close_best_effort(conn, "release-reset-rolled-back")
                 conn._pool_released = True
                 return
 
@@ -2199,8 +2235,7 @@ class ConnectionPool:
             # the conn is unreachable). Mirrors the close-vs-initialize
             # symmetry fix.
             if self._closed:
-                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                    await asyncio.shield(conn.close())
+                await self._close_best_effort(conn, "release-post-reset-closed")
                 conn._pool_released = True
                 return
 
@@ -2223,8 +2258,7 @@ class ConnectionPool:
             try:
                 self._pool.put_nowait(conn)
             except asyncio.QueueFull:
-                with contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS):
-                    await asyncio.shield(conn.close())
+                await self._close_best_effort(conn, "release-queuefull")
                 conn._pool_released = True
             else:
                 conn._pool_released = True
