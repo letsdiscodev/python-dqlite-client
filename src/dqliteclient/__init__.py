@@ -24,11 +24,11 @@ from dqliteclient.cluster import (
     allowlist_policy,
     default_safe_redirect_policy,
 )
+from dqliteclient.connection import CLOSE_TIMEOUT_FLOOR as _CLOSE_TIMEOUT_FLOOR
+from dqliteclient.connection import CLOSE_TIMEOUT_FLOOR_RATIONALE as _CLOSE_TIMEOUT_FLOOR_RATIONALE
+from dqliteclient.connection import DEFAULT_CLOSE_TIMEOUT_SECONDS as _DEFAULT_CLOSE_TIMEOUT_SECONDS
+from dqliteclient.connection import DEFAULT_TIMEOUT_SECONDS as _DEFAULT_TIMEOUT_SECONDS
 from dqliteclient.connection import (
-    CLOSE_TIMEOUT_FLOOR,
-    CLOSE_TIMEOUT_FLOOR_RATIONALE,
-    DEFAULT_CLOSE_TIMEOUT_SECONDS,
-    DEFAULT_TIMEOUT_SECONDS,
     DqliteConnection,
     get_current_pid,
     parse_address,
@@ -46,7 +46,8 @@ from dqliteclient.exceptions import (
 )
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore, YamlNodeStore
 from dqliteclient.pool import ConnectionPool
-from dqliteclient.protocol import DEFAULT_MAX_MESSAGE_SIZE, validate_positive_int_or_none
+from dqliteclient.protocol import DEFAULT_MAX_MESSAGE_SIZE as _DEFAULT_MAX_MESSAGE_SIZE
+from dqliteclient.protocol import validate_positive_int_or_none
 from dqliteclient.retry import retry_with_backoff
 from dqlitewire import (
     DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
@@ -54,6 +55,18 @@ from dqlitewire import (
 from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
+
+# ``Final`` does not propagate through ``from X import Y`` aliases —
+# the re-export creates a new module-level binding that needs its
+# own annotation. Pull the source-side constants in as private
+# aliases above and re-pin each name here. Mirrors the
+# ``__version__`` / ``sqlite_version`` discipline applied across
+# the workspace.
+CLOSE_TIMEOUT_FLOOR: _Final[float] = _CLOSE_TIMEOUT_FLOOR
+CLOSE_TIMEOUT_FLOOR_RATIONALE: _Final[str] = _CLOSE_TIMEOUT_FLOOR_RATIONALE
+DEFAULT_CLOSE_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_CLOSE_TIMEOUT_SECONDS
+DEFAULT_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_TIMEOUT_SECONDS
+DEFAULT_MAX_MESSAGE_SIZE: _Final[int] = _DEFAULT_MAX_MESSAGE_SIZE
 
 __version__: _Final[str] = "0.1.6"
 
