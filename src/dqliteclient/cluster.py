@@ -8,7 +8,7 @@ import os
 import random
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Final, NoReturn
+from typing import Final, NoReturn, final
 
 from dqliteclient import connection as _conn_mod
 from dqliteclient._dial import DialFunc, open_connection
@@ -248,6 +248,7 @@ def _observe_drain_exception(t: asyncio.Task[None]) -> None:
             t.exception()
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class LeaderInfo:
     """``(node_id, address)`` pair returned by :meth:`ClusterClient.leader_info`.
@@ -262,6 +263,7 @@ class LeaderInfo:
     address: str
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class NodeMetadata:
     """Per-node failure-domain + weight metadata.

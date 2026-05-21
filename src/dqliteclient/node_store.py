@@ -10,7 +10,7 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, NoReturn, Protocol, runtime_checkable
+from typing import Final, NoReturn, Protocol, final, runtime_checkable
 
 from dqliteclient import connection as _conn_mod
 from dqliteclient.exceptions import ClusterError, InterfaceError
@@ -21,6 +21,7 @@ __all__ = ["MemoryNodeStore", "NodeInfo", "NodeStore", "YamlNodeStore"]
 logger = logging.getLogger(__name__)
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class NodeInfo:
     """Information about a cluster node.
