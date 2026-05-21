@@ -1687,22 +1687,6 @@ class DqliteConnection:
         is already closed after ``writer.close()`` — the remaining
         wait is best-effort cleanup, not correctness-critical.
         """
-        # Pool-released connections are never in_use for close(); their
-        # close path has already run under pool ownership.
-        if self._pool_released:
-            return
-        # Flip the public predicate even if we early-return below
-        # (fork branch / already-disconnected path). ``closed`` is
-        # the "close() has been called" marker; ``is_connected``
-        # remains the "transport alive" marker.
-        self._closed = True
-        # Detach the unclosed-warning finalizer — orderly shutdown
-        # owns the cleanup; firing the warning now would be a false
-        # positive.
-        self._closed_flag[0] = True
-        if self._finalizer is not None:
-            self._finalizer.detach()
-            self._finalizer = None
         # Fork-after-init: the inherited socket FD is shared with the
         # parent. ``writer.close()`` would send a FIN that the parent
         # still depends on. Flip the local state to closed without
@@ -1712,6 +1696,16 @@ class DqliteConnection:
         # silent on already-closed inputs — silently no-oping in the
         # child preserves that contract for the GC / __del__ path that
         # commonly drives close in a forked worker.
+        #
+        # NB: this branch runs BEFORE the ``_pool_released`` short-
+        # circuit below. The previous ordering pre-empted the fork
+        # cleanup for pool-released connections inherited across a
+        # fork (SA pool checkin path), leaving the inherited
+        # ``_pending_drain`` Task — bound to the parent's loop —
+        # alive in the child until GC, where ``Task.__del__`` later
+        # tripped "Task was destroyed but it is pending" and the
+        # coroutine frame retained the inherited writer transport
+        # (and FD) indefinitely.
         if _current_pid != self._creator_pid:
             # Drop every reference that crosses the fork boundary so
             # GC in the child doesn't keep parent-loop primitives or
@@ -1724,6 +1718,11 @@ class DqliteConnection:
             # transaction / savepoint / loop bookkeeping also keeps
             # the child's view of the connection self-consistent —
             # ``in_transaction`` reads False for a closed connection.
+            self._closed = True
+            self._closed_flag[0] = True
+            if self._finalizer is not None:
+                self._finalizer.detach()
+                self._finalizer = None
             self._protocol = None
             self._db_id = None
             self._pending_drain = None
@@ -1734,6 +1733,23 @@ class DqliteConnection:
             self._has_untracked_savepoint = False
             self._bound_loop_ref = None
             return
+        # Pool-released connections are never in_use for close(); their
+        # close path has already run under pool ownership. The same-
+        # process idempotency contract: subsequent calls no-op.
+        if self._pool_released:
+            return
+        # Flip the public predicate even if we early-return below
+        # (already-disconnected path). ``closed`` is the "close() has
+        # been called" marker; ``is_connected`` remains the
+        # "transport alive" marker.
+        self._closed = True
+        # Detach the unclosed-warning finalizer — orderly shutdown
+        # owns the cleanup; firing the warning now would be a false
+        # positive.
+        self._closed_flag[0] = True
+        if self._finalizer is not None:
+            self._finalizer.detach()
+            self._finalizer = None
         # Run the in-use guard BEFORE the ``_protocol is None``
         # early-return so a concurrent ``connect()`` racing with
         # ``close()`` surfaces as ``InterfaceError`` instead of a silent
