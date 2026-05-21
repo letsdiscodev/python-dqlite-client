@@ -825,6 +825,14 @@ CLOSE_TIMEOUT_FLOOR_RATIONALE: Final[str] = (
     "FIN flushes, leaving connections lingering in TIME_WAIT."
 )
 
+# Numeric floor that pairs with ``CLOSE_TIMEOUT_FLOOR_RATIONALE``. Public
+# so every layer that validates a ``close_timeout`` (this module, the
+# pool, the dbapi-layer validator, the SA URL validator) uses the same
+# value — previously a 4-way constant (one private named copy + three
+# literals) that risked silent drift if the floor is ever tuned. The
+# rationale string and the floor value travel together.
+CLOSE_TIMEOUT_FLOOR: Final[float] = 0.01
+
 
 _MAX_ADDRESS_LEN: Final[int] = 1024
 
@@ -1114,7 +1122,7 @@ class DqliteConnection:
         validate_timeout(
             close_timeout,
             name="close_timeout",
-            min_value=0.01,
+            min_value=CLOSE_TIMEOUT_FLOOR,
             min_value_rationale=CLOSE_TIMEOUT_FLOOR_RATIONALE,
         )
         if dial_timeout is not None:

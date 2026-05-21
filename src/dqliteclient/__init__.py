@@ -25,6 +25,7 @@ from dqliteclient.cluster import (
     default_safe_redirect_policy,
 )
 from dqliteclient.connection import (
+    CLOSE_TIMEOUT_FLOOR,
     CLOSE_TIMEOUT_FLOOR_RATIONALE,
     DqliteConnection,
     get_current_pid,
@@ -63,6 +64,7 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 __all__ = [
+    "CLOSE_TIMEOUT_FLOOR",
     "CLOSE_TIMEOUT_FLOOR_RATIONALE",
     "ClusterClient",
     "ClusterError",

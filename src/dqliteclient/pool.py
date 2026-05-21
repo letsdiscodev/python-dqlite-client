@@ -17,6 +17,7 @@ from dqliteclient._dial import DialFunc
 from dqliteclient.cluster import ClusterClient, RedirectPolicy
 from dqliteclient.connection import (
     _TRANSACTION_ROLLBACK_SQL,
+    CLOSE_TIMEOUT_FLOOR,
     CLOSE_TIMEOUT_FLOOR_RATIONALE,
     DqliteConnection,
     _is_no_tx_rollback_error,
@@ -429,7 +430,7 @@ class ConnectionPool:
         validate_timeout(
             close_timeout,
             name="close_timeout",
-            min_value=0.01,
+            min_value=CLOSE_TIMEOUT_FLOOR,
             min_value_rationale=CLOSE_TIMEOUT_FLOOR_RATIONALE,
         )
         if dial_timeout is not None:
