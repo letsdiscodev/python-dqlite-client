@@ -13,6 +13,8 @@ from typing import Final, NoReturn
 from dqliteclient import connection as _conn_mod
 from dqliteclient._dial import DialFunc, open_connection
 from dqliteclient.connection import (
+    DEFAULT_CLOSE_TIMEOUT_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS,
     DqliteConnection,
     parse_address,
     validate_timeout,
@@ -321,7 +323,7 @@ class ClusterClient:
         self,
         node_store: NodeStore,
         *,
-        timeout: float = 10.0,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
         dial_timeout: float | None = None,
         attempt_timeout: float | None = None,
         concurrent_leader_conns: int = _DEFAULT_CONCURRENT_LEADER_CONNS,
@@ -499,7 +501,7 @@ class ClusterClient:
     def from_addresses(
         cls,
         addresses: Sequence[str],
-        timeout: float = 10.0,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
         *,
         dial_timeout: float | None = None,
         attempt_timeout: float | None = None,
@@ -1567,7 +1569,7 @@ class ClusterClient:
         max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
         max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
-        close_timeout: float = 0.5,
+        close_timeout: float = DEFAULT_CLOSE_TIMEOUT_SECONDS,
         max_attempts: int | None = None,
         max_elapsed_seconds: float | None = None,
         policy: RedirectPolicy | None = None,

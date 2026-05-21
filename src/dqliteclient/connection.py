@@ -833,6 +833,23 @@ CLOSE_TIMEOUT_FLOOR_RATIONALE: Final[str] = (
 # rationale string and the floor value travel together.
 CLOSE_TIMEOUT_FLOOR: Final[float] = 0.01
 
+# Public defaults for the two operator-visible timeout knobs. Promoted
+# from inline literals at every entry point (connect / create_pool /
+# DqliteConnection / ConnectionPool / ClusterClient / DqliteProtocol)
+# so a future tuning of either value lands in lockstep across the
+# whole stack. Without this single source of truth, a partial bump
+# would silently diverge — e.g. ``dqliteclient.connect`` and
+# ``DqliteConnection.__init__`` could disagree on the default for
+# the same operator-facing knob.
+#
+# The 10s ``timeout`` default is per-RPC-phase (each phase of an
+# operation gets the full budget independently — see DqliteProtocol's
+# ``_operation_deadline`` for the worst-case multiplier discussion).
+# The 0.5s ``close_timeout`` default is sized for LAN FIN/ACK; WAN
+# deployments should bump, SIGTERM-bound deployments may shrink.
+DEFAULT_TIMEOUT_SECONDS: Final[float] = 10.0
+DEFAULT_CLOSE_TIMEOUT_SECONDS: Final[float] = 0.5
+
 
 _MAX_ADDRESS_LEN: Final[int] = 1024
 
@@ -1059,13 +1076,13 @@ class DqliteConnection:
         address: str,
         *,
         database: str = "default",
-        timeout: float = 10.0,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
         dial_timeout: float | None = None,
         attempt_timeout: float | None = None,
         max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
         max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
         trust_server_heartbeat: bool = False,
-        close_timeout: float = 0.5,
+        close_timeout: float = DEFAULT_CLOSE_TIMEOUT_SECONDS,
         dial_func: DialFunc | None = None,
     ) -> None:
         """Initialize connection (does not connect yet).
