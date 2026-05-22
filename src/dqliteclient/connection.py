@@ -1446,6 +1446,20 @@ class DqliteConnection:
             self._in_use = False
 
     async def _connect_impl(self) -> None:
+        # Clear any stale ``_invalidation_cause`` from a prior session
+        # at the top of the attempt. The success path clears it again
+        # below (after ``open_database``) and ``close()`` clears it on
+        # the no-reconnect path; but the failure paths in this method
+        # (the ``_abort_protocol`` arms below) do NOT touch the field,
+        # so without this top-of-method clear a session-N
+        # ``_invalidate(X)`` followed by a failed session-(N+1)
+        # reconnect leaves ``X`` on the field — the next op then
+        # surfaces ``DqliteConnectionError("Not connected") from X``
+        # with ``X`` from the wrong session, misleading forensic
+        # recovery. Clearing here makes the field reflect THIS
+        # attempt's outcome only; the existing line below is redundant
+        # but harmless and preserved for forensic clarity.
+        self._invalidation_cause = None
         # If a prior ``_invalidate`` scheduled a bounded drain task,
         # retire it here before the slot gets reused. Leaving the
         # previous task in place would let a second
