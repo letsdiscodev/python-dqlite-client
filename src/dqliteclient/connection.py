@@ -2040,12 +2040,33 @@ class DqliteConnection:
         reasoning: the socket is already closed on our side, and the
         best-effort drain must not stall when the peer is
         unresponsive.
+
+        Cancel-shielded drain: an outer cancel landing while
+        ``wait_closed`` is in flight previously cancelled the drain
+        without awaiting the underlying StreamReader task to
+        completion — surfacing as ``"Task was destroyed but it is
+        pending"`` warnings at GC. Mirrors the discipline at
+        ``_connect_impl``'s finally arm (lines 1751-1771) and
+        ``ClusterClient.open_admin_connection``'s drain.
         """
         protocol = self._protocol
         if protocol is None:
             return
         self._protocol = None
         protocol.close()
+        # Schedule the bounded drain as a Task so ``asyncio.shield``
+        # can keep it alive across an outer cancel. The done-callback
+        # (the project-canonical ``_observe_drain_exception``) ensures
+        # the eventual drain exception is observed and not surfaced as
+        # a ``"Task exception was never retrieved"`` warning.
+        inner_drain: asyncio.Task[None] = asyncio.ensure_future(
+            asyncio.wait_for(protocol.wait_closed(), timeout=self._close_timeout)
+        )
+        # Local import to avoid an import cycle at module load —
+        # ``dqliteclient.cluster`` imports ``dqliteclient.connection``.
+        from dqliteclient.cluster import _observe_drain_exception
+
+        inner_drain.add_done_callback(_observe_drain_exception)
         # Narrow the suppression: a bounded wait on the transport drain
         # can legitimately raise TimeoutError (slow peer) or OSError
         # (already-closed writer). Anything else — especially
@@ -2054,7 +2075,7 @@ class DqliteConnection:
         # remain intact. DEBUG-log an unexpected Exception for
         # diagnostics; do not swallow.
         try:
-            await asyncio.wait_for(protocol.wait_closed(), timeout=self._close_timeout)
+            await asyncio.shield(inner_drain)
         except OSError:
             # OSError subsumes TimeoutError, so the single OSError
             # entry covers the slow-peer / already-closed-writer
