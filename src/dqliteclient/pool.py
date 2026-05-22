@@ -15,7 +15,7 @@ from typing import Any, Final, NoReturn, Self
 
 from dqliteclient import connection as _conn_mod
 from dqliteclient._dial import DialFunc
-from dqliteclient.cluster import ClusterClient, RedirectPolicy
+from dqliteclient.cluster import ClusterClient, RedirectPolicy, _observe_drain_exception
 from dqliteclient.connection import (
     _TRANSACTION_ROLLBACK_SQL,
     CLOSE_TIMEOUT_FLOOR,
@@ -1301,9 +1301,24 @@ class ConnectionPool:
                     # bug. Cap shape derived from the same
                     # ``_DRAIN_PER_CONN_CAP_MULTIPLIER`` as the after-
                     # cancel sweep so both drains stay in lockstep.
+                    # Schedule the inner close as a Task explicitly and
+                    # attach ``_observe_drain_exception`` as a done-
+                    # callback BEFORE awaiting the shielded wait_for.
+                    # Without the explicit Task + observer, the implicit
+                    # task ``asyncio.shield(conn.close())`` creates is
+                    # left orphaned on TimeoutError; if the abandoned
+                    # close later raises a non-OSError Exception, asyncio
+                    # logs ``"Task exception was never retrieved"`` at
+                    # GC — polluting the very pool-dispose path operators
+                    # are already paging on. Mirrors the
+                    # ``_abort_protocol`` discipline at connection.py:
+                    # 2062-2076 and the canonical pattern at
+                    # connection.py:1761-1771.
+                    inner_drain = asyncio.ensure_future(conn.close())
+                    inner_drain.add_done_callback(_observe_drain_exception)
                     try:
                         await asyncio.wait_for(
-                            asyncio.shield(conn.close()),
+                            asyncio.shield(inner_drain),
                             timeout=self._close_timeout * _DRAIN_PER_CONN_CAP_MULTIPLIER,
                         )
                     except TimeoutError:
@@ -1314,6 +1329,9 @@ class ConnectionPool:
                         # keeps running under the shield and may complete
                         # against a moved-on pool state — at worst a
                         # ``ResourceWarning`` at GC, never silent corruption.
+                        # The done-callback above observes the eventual
+                        # task exception (if any), so no
+                        # "Task exception was never retrieved" warning.
                         logger.warning(
                             "pool: close() on idle connection %s exceeded "
                             "per-iteration drain cap; abandoning to continue queue",
@@ -1417,9 +1435,18 @@ class ConnectionPool:
                 # Derived from a module-level constant rather than the
                 # earlier ``+ 0.5`` literal so a bump to the inner cap
                 # propagates without manual sync.
+                # See ``_drain_idle`` for the explicit-Task +
+                # done-callback rationale: ``asyncio.shield(coro)``
+                # creates an implicit task that gets orphaned on
+                # TimeoutError; if the inner close later raises a
+                # non-OSError Exception, asyncio logs the abandoned
+                # task at GC. Attach ``_observe_drain_exception`` so
+                # the eventual exception is observed.
+                inner_drain = asyncio.ensure_future(conn.close())
+                inner_drain.add_done_callback(_observe_drain_exception)
                 try:
                     await asyncio.wait_for(
-                        asyncio.shield(conn.close()),
+                        asyncio.shield(inner_drain),
                         timeout=self._close_timeout * _DRAIN_PER_CONN_CAP_MULTIPLIER,
                     )
                 except TimeoutError:
