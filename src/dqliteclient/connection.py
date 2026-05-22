@@ -1628,6 +1628,38 @@ class DqliteConnection:
                     # unrelated historical failure — misleading
                     # operators reading logs.
                     self._invalidation_cause = None
+                    # Clear sticky lifecycle markers so the user-
+                    # visible ``closed`` predicate and the GC-time
+                    # ``ResourceWarning`` gate reflect the reconnected
+                    # slot. ``close()`` sets both to True; without
+                    # clearing them here the ``closed`` property
+                    # lies after a reconnect (the canonical
+                    # ``if not conn.closed:`` idiom breaks) AND the
+                    # unclosed-warning finalizer short-circuits on a
+                    # leaked-without-close reconnected socket. The
+                    # placement AFTER the protocol publish (lines
+                    # above) means a concurrent ``closed`` reader
+                    # never briefly observes ``_closed=False`` while
+                    # ``_protocol is None``. Mirrors the sibling
+                    # clears of tx flags, _invalidation_cause, and
+                    # _bound_loop_ref in ``_close_impl``.
+                    self._closed = False
+                    self._closed_flag[0] = False
+                    # Re-arm the GC-time unclosed-warning finalizer.
+                    # ``close()`` detaches the prior finalizer
+                    # (connection.py:1837-1838 / 1864-1865); without
+                    # this re-registration, a reconnected socket that
+                    # the user leaks-without-close at GC produces no
+                    # ResourceWarning.
+                    if self._finalizer is None:
+                        self._finalizer = weakref.finalize(
+                            self,
+                            _connection_unclosed_warning,
+                            self._closed_flag,
+                            self._connected_flag,
+                            self._address,
+                            self._creator_pid,
+                        )
                 except OperationalError as e:
                     await self._abort_protocol()
                     _is_leader_flip = e.code in LEADER_ERROR_CODES or (
