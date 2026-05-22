@@ -212,9 +212,23 @@ async def connect(
         # user-visible. Mirrors the ``ClusterClient.connect``
         # try_connect cleanup arm and the ``dqlitedbapi.aio.aconnect``
         # cleanup-close shield.
+        # Schedule the cleanup-close as a Task with an explicit
+        # ``_observe_drain_exception`` done-callback BEFORE awaiting
+        # the shielded close. Without the explicit Task + observer,
+        # the implicit Task that ``asyncio.shield(coro)`` creates is
+        # orphaned on the outer ``CancelledError`` suppress; if the
+        # abandoned close later raises a non-OSError Exception,
+        # asyncio logs "Task exception was never retrieved" at GC.
+        # Mirrors the canonical pattern at
+        # ``connection.py::_connect_impl`` finally arm and the
+        # ``_abort_protocol`` shield discipline.
+        from dqliteclient.cluster import _observe_drain_exception
+
+        inner_drain = asyncio.ensure_future(conn.close())
+        inner_drain.add_done_callback(_observe_drain_exception)
         try:
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.shield(conn.close())
+                await asyncio.shield(inner_drain)
         except Exception:
             logger.debug(
                 "connect: cleanup-close after failed connect",
