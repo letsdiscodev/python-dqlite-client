@@ -2034,6 +2034,17 @@ class ClusterClient:
                         )
                     async with self.open_admin_connection(verified) as p2:
                         nodes = await p2.cluster()
+                    # Refresh the last-known-leader cache to the
+                    # redirect-verified address. Without this update
+                    # the next ``find_leader`` either misses the fast
+                    # path (cache is None) or hits the stale responder
+                    # entry (one extra wasted probe). Performance
+                    # regression specifically on the post-leader-flip
+                    # path — the very scenario where the leader cache
+                    # matters most. Sibling ``leader_info`` updates
+                    # the cache in its redirect-verify arm; mirror it
+                    # here.
+                    self._set_last_known_leader(verified)
                 else:
                     nodes = await protocol.cluster()
         except (OperationalError, DqliteConnectionError, ProtocolError):
