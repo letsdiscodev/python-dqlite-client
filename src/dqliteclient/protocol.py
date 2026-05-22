@@ -1103,7 +1103,19 @@ class DqliteProtocol:
         authoritative for sends just as it is for reads.
         """
         try:
-            await asyncio.wait_for(self._writer.drain(), timeout=self._timeout)
+            # Use ``asyncio.timeout`` cancel-scope semantics rather
+            # than ``asyncio.wait_for`` so an outer cancel landing
+            # while ``drain()`` is in flight does not discard the
+            # writer's high-water-mark future. Mirrors the discipline
+            # at the sibling dial / connect / admin sites
+            # (``cluster.py::_query_leader``, ``cluster.py::
+            # open_admin_connection``, ``connection.py::_connect_impl``).
+            # ``drain()`` returns ``None`` so the result-discard concern
+            # does not apply to ``_send`` today — the migration is
+            # sibling-parity defence so a future refactor that adds a
+            # result-carrying drain does not silently regress.
+            async with asyncio.timeout(self._timeout):
+                await self._writer.drain()
         except TimeoutError as e:
             raise DqliteConnectionError(
                 f"Write timeout{self._addr_suffix()} after {self._timeout}s"
@@ -1146,7 +1158,16 @@ class DqliteProtocol:
         else:
             timeout = self._read_timeout
         try:
-            data = await asyncio.wait_for(self._reader.read(_READ_CHUNK_SIZE), timeout=timeout)
+            # Use ``asyncio.timeout`` cancel-scope semantics rather
+            # than ``asyncio.wait_for`` so an outer cancel landing
+            # while ``reader.read()`` is in flight does not discard
+            # the bytes the inner future has already buffered (the
+            # load-bearing concern: at-most-once vs exactly-once for
+            # non-idempotent DML responses streaming back). Mirrors
+            # the discipline at the sibling dial / connect / admin
+            # sites; see ``_send`` for the sibling-parity rationale.
+            async with asyncio.timeout(timeout):
+                data = await self._reader.read(_READ_CHUNK_SIZE)
         except TimeoutError as e:
             raise DqliteConnectionError(
                 f"Server read{self._addr_suffix()} timed out after {timeout:.1f}s"

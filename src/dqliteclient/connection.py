@@ -1545,8 +1545,9 @@ class DqliteConnection:
         # outer cancel landing while the dial is in flight does not
         # discard the ``(reader, writer)`` result and orphan the
         # writer. Mirrors the discipline already applied to
-        # ``ClusterClient._query_leader`` and
-        # ``ClusterClient.open_admin_connection``.
+        # ``ClusterClient._query_leader``,
+        # ``ClusterClient.open_admin_connection``, and the wire-path
+        # ``DqliteProtocol._send`` / ``_read_data``.
         writer = None
         try:
             async with asyncio.timeout(self._attempt_timeout):
