@@ -898,6 +898,16 @@ def parse_address(address: str) -> tuple[str, int]:
         raise ValueError(
             f"Invalid address: length {len(address)} exceeds maximum {_MAX_ADDRESS_LEN}"
         )
+    # Reject embedded NUL early with a specific diagnostic. The
+    # downstream regex / IDN / IPv6-bracket guards all reject NUL-
+    # containing inputs eventually, but they surface the generic
+    # "not a valid hostname or IP literal" catch-all message which
+    # conflates NUL smuggling with other shape failures. Bound the
+    # diagnostic so the NUL itself is not interpolated into the log
+    # line via ``{address!r}`` (``repr`` escapes NUL but the bounded
+    # offset is more useful than the escape).
+    if "\x00" in address:
+        raise ValueError(f"Invalid address: contains NUL byte at offset {address.index(chr(0))}")
 
     if address.startswith("["):
         # Bracketed IPv6: [host]:port. RFC 3986 §3.2.2 reserves the
