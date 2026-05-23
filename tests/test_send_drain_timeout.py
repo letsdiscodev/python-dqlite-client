@@ -43,7 +43,7 @@ class TestSendDrainTimeout:
         loop = asyncio.get_running_loop()
         start = loop.time()
         with pytest.raises(DqliteConnectionError, match="timeout|timed out"):
-            await protocol._send()
+            await protocol._send(b"")
         elapsed = loop.time() - start
 
         # Timeout is 0.1s; allow a generous slack for scheduling.
@@ -60,7 +60,7 @@ class TestSendDrainTimeout:
         protocol._writer.drain = _never_drain
 
         with pytest.raises(DqliteConnectionError) as exc_info:
-            await protocol._send()
+            await protocol._send(b"")
         assert "test:9001" in str(exc_info.value)
 
 
@@ -97,7 +97,7 @@ class TestSendDrainMessageShape:
         protocol = DqliteProtocol(reader, writer, timeout=0.5, address="peer:9001")
 
         with pytest.raises(DqliteConnectionError) as exc_info:
-            await protocol._send()
+            await protocol._send(b"")
 
         msg = str(exc_info.value)
         assert expected_substr in msg, (
@@ -123,7 +123,7 @@ class TestSendDrainMessageShape:
         protocol = DqliteProtocol(reader, writer, timeout=0.05, address="peer:9001")
 
         with pytest.raises(DqliteConnectionError) as exc_info:
-            await protocol._send()
+            await protocol._send(b"")
         msg = str(exc_info.value)
         assert "Write timeout" in msg, (
             f"expected 'Write timeout' in {msg!r}; the timeout arm must "

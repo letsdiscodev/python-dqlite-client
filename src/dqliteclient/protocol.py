@@ -175,6 +175,17 @@ class DqliteProtocol:
             max_continuation_frames=max_continuation_frames,
             max_message_size=effective_max_message_size,
         )
+        # Symmetric outbound cap. ``MessageEncoder.encode()`` rejects
+        # frames whose total size exceeds ``max_message_size`` BEFORE
+        # they reach the writer, so an accidentally oversized
+        # ``PrepareRequest`` (huge SQL string) or ``ExecSqlRequest``
+        # (oversized bind value) surfaces as a local ``EncodeError``
+        # instead of a remote rejection after a round-trip or a
+        # stalled write pipe. Sharing the same cap value with the
+        # decoder keeps the lever single-knob from the operator's
+        # perspective. Go-dqlite has no outbound cap; this is purely
+        # Python defence-in-depth.
+        self._encoder = MessageEncoder(max_message_size=effective_max_message_size)
         self._max_message_size = effective_max_message_size
         self._client_id = 0
         self._heartbeat_timeout = 0
@@ -294,8 +305,7 @@ class DqliteProtocol:
         client in some code paths and on per-connection state set up
         by ``handle_client``. Use :meth:`handshake` for those paths.
         """
-        self._writer.write(MessageEncoder().encode_handshake())
-        await self._send()
+        await self._send(MessageEncoder().encode_handshake())
 
     async def handshake(self, client_id: int | None = None) -> int:
         """Perform protocol handshake.
@@ -359,8 +369,7 @@ class DqliteProtocol:
             client_id = secrets.randbits(63) or 1
         # Send protocol version + client registration together
         request = ClientRequest(client_id=client_id)
-        self._writer.write(MessageEncoder().encode_handshake() + request.encode())
-        await self._send()
+        await self._send(MessageEncoder().encode_handshake() + self._encoder.encode(request))
 
         # Read welcome response
         response = await self._read_response()
@@ -470,8 +479,7 @@ class DqliteProtocol:
         Returns (node_id, address).
         """
         request = LeaderRequest()
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -501,8 +509,7 @@ class DqliteProtocol:
         but the typical caller asks the leader for the freshest view.
         """
         request = ClusterRequest(format=1)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -530,8 +537,7 @@ class DqliteProtocol:
         ``NodeRole.SPARE``; promote with :meth:`assign` after.
         """
         request = AddRequest(node_id=node_id, address=address)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -556,8 +562,7 @@ class DqliteProtocol:
         Mirrors go-dqlite's ``client.go::EncodeAssign``.
         """
         request = AssignRequest(node_id=node_id, role=role)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -582,8 +587,7 @@ class DqliteProtocol:
         Mirrors go-dqlite's ``client.go::EncodeRemove``.
         """
         request = RemoveRequest(node_id=node_id)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -611,8 +615,7 @@ class DqliteProtocol:
         Mirrors go-dqlite's ``client.go::EncodeDescribe``.
         """
         request = DescribeRequest(format=0)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -641,8 +644,7 @@ class DqliteProtocol:
         Mirrors go-dqlite's ``client.go::EncodeWeight``.
         """
         request = WeightRequest(weight=weight)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -669,8 +671,7 @@ class DqliteProtocol:
         Mirrors go-dqlite's ``client.go::EncodeDump``.
         """
         request = DumpRequest(name=database)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -706,8 +707,7 @@ class DqliteProtocol:
         Mirrors the spec-level admin operation ``go-dqlite/client.Transfer``.
         """
         request = TransferRequest(target_node_id=target_node_id)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -727,8 +727,7 @@ class DqliteProtocol:
         Returns the database ID.
         """
         request = OpenRequest(name=name, flags=flags, vfs=vfs)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -750,8 +749,7 @@ class DqliteProtocol:
         Returns (stmt_id, num_params).
         """
         request = PrepareRequest(db_id=db_id, sql=sql)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -792,8 +790,7 @@ class DqliteProtocol:
     async def finalize(self, db_id: int, stmt_id: int) -> None:
         """Finalize (close) a prepared statement."""
         request = FinalizeRequest(db_id=db_id, stmt_id=stmt_id)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -856,8 +853,7 @@ class DqliteProtocol:
             wire desync.
         """
         request = InterruptRequest(db_id=db_id)
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         # Drain: swallow any trailing continuation frames, break when
         # EmptyResponse arrives. Bound by the single operation deadline
@@ -954,8 +950,7 @@ class DqliteProtocol:
         rows_affected is NOT a sum across statements.
         """
         request = ExecSqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         response = await self._read_response()
 
@@ -980,8 +975,7 @@ class DqliteProtocol:
         for any other unexpected message type.
         """
         request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
-        self._writer.write(request.encode())
-        await self._send()
+        await self._send(self._encoder.encode(request))
 
         deadline = self._operation_deadline()
         response = await self._read_response(deadline=deadline)
@@ -1094,15 +1088,30 @@ class DqliteProtocol:
 
         return column_names, all_rows
 
-    async def _send(self) -> None:
-        """Drain the writer, wrapping transport errors as DqliteConnectionError.
+    async def _send(self, frame: bytes) -> None:
+        """Write a frame and drain, wrapping transport errors as DqliteConnectionError.
 
-        A peer that accepts the TCP connection but stops reading can stall
-        ``drain()`` indefinitely on the high-water-mark future. Bound the
-        drain by ``self._timeout`` so the caller-configured timeout is
-        authoritative for sends just as it is for reads.
+        The synchronous ``self._writer.write(frame)`` is part of the
+        protected scope: CPython's ``_SelectorSocketTransport.write``
+        raises ``RuntimeError("Connection lost")`` /
+        ``RuntimeError("Transport is closed")`` synchronously when the
+        underlying transport is in the closing state (e.g. peer RST
+        between two requests on the same pooled connection, concurrent
+        ``_invalidate`` from a fork-pid mismatch). Without the write
+        inside the try/except, that RuntimeError leaked past
+        ``_run_protocol``'s except chain — which catches
+        DqliteConnectionError / ProtocolError / OperationalError /
+        cancel-class / _WireEncodeError but NOT bare RuntimeError —
+        bypassing the invalidate arm and leaving the connection in a
+        live-but-dead state.
+
+        A peer that accepts the TCP connection but stops reading can
+        stall ``drain()`` indefinitely on the high-water-mark future.
+        Bound the drain by ``self._timeout`` so the caller-configured
+        timeout is authoritative for sends just as it is for reads.
         """
         try:
+            self._writer.write(frame)
             # Use ``asyncio.timeout`` cancel-scope semantics rather
             # than ``asyncio.wait_for`` so an outer cancel landing
             # while ``drain()`` is in flight does not discard the
@@ -1126,7 +1135,8 @@ class DqliteProtocol:
         # them. See the canonical OSError / PEP-3151 idiom in
         # ``sqlalchemydqlite.base`` (the dialect's ``is_disconnect``
         # OSError-cause-walk). RuntimeError is
-        # kept (not an OSError subclass) to cover "Transport is closed".
+        # kept (not an OSError subclass) to cover "Transport is closed"
+        # raised synchronously from ``writer.write``.
         except (OSError, RuntimeError) as e:
             raise DqliteConnectionError(f"Write failed{self._addr_suffix()}: {e}") from e
 

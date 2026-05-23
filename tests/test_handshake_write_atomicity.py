@@ -1,6 +1,6 @@
 """Pin: ``handshake`` writes the protocol-version word and the client
-registration request to the wire as a SINGLE ``writer.write(...)`` call,
-followed by a SINGLE ``await self._send()`` (drain).
+registration request to the wire as a SINGLE ``self._send(frame)``
+call carrying a single assembled ``bytes`` payload.
 
 The dqlite server expects the 8-byte version word followed immediately
 by the ``ClientRequest`` frame. If a future refactor inserts an
@@ -11,8 +11,12 @@ an incomplete handshake — the next handshake on the same socket
 would be misframed.
 
 The current code assembles both pieces into a single ``bytes`` object
-before the only ``writer.write`` call (see ``protocol.py``). These
-tests pin that contract so the assembly cannot drift.
+before the only ``self._send`` call (see ``protocol.py``). The
+``_send`` helper internally performs ``self._writer.write(frame)``
+followed by ``await self._writer.drain()`` inside a single try/except
+so a synchronous transport-closed RuntimeError surfaces as
+``DqliteConnectionError``. These tests pin the bundling contract so
+the assembly cannot drift.
 """
 
 from __future__ import annotations
@@ -34,24 +38,23 @@ def _make_protocol() -> DqliteProtocol:
 
 
 @pytest.mark.asyncio
-async def test_handshake_writes_version_and_request_in_single_write() -> None:
-    """Pin: exactly one ``writer.write`` invocation during handshake."""
+async def test_handshake_sends_version_and_request_in_single_call() -> None:
+    """Pin: exactly one ``self._send`` invocation during handshake."""
     proto = _make_protocol()
     proto._send = AsyncMock()
     proto._read_response = AsyncMock(return_value=WelcomeResponse(heartbeat_timeout=0))
 
     await proto.handshake(client_id=42)
 
-    write_mock = proto._writer.write
-    assert write_mock.call_count == 1, (  # type: ignore[attr-defined]
-        "handshake must encode version word + ClientRequest as a single "
-        "buffer and call writer.write once; multiple writes risk leaving "
-        "the server with a torn handshake on cancellation"
+    assert proto._send.call_count == 1, (
+        "handshake must assemble version word + ClientRequest as a single "
+        "buffer and call _send once; multiple sends risk leaving the "
+        "server with a torn handshake on cancellation"
     )
 
 
 @pytest.mark.asyncio
-async def test_handshake_single_write_payload_starts_with_version_word() -> None:
+async def test_handshake_single_send_payload_starts_with_version_word() -> None:
     """Pin: the single buffer's first 8 bytes are the protocol-version
     handshake (so a regression that swaps the order is caught here)."""
     from dqlitewire.codec import MessageEncoder
@@ -62,7 +65,7 @@ async def test_handshake_single_write_payload_starts_with_version_word() -> None
 
     await proto.handshake(client_id=42)
 
-    payload = proto._writer.write.call_args.args[0]  # type: ignore[attr-defined]
+    payload = proto._send.call_args.args[0]
     expected_prefix = MessageEncoder().encode_handshake()
     assert payload.startswith(expected_prefix), (
         "handshake payload must begin with the 8-byte version word"
@@ -73,7 +76,7 @@ async def test_handshake_single_write_payload_starts_with_version_word() -> None
 
 
 @pytest.mark.asyncio
-async def test_handshake_drain_called_once() -> None:
+async def test_handshake_send_called_once() -> None:
     """Pin: exactly one drain on the assembled buffer (no per-piece flush)."""
     proto = _make_protocol()
     proto._send = AsyncMock()

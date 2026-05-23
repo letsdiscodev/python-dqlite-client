@@ -59,7 +59,7 @@ async def test_write_path_uses_timeout_not_read_timeout() -> None:
 
     start = asyncio.get_event_loop().time()
     with pytest.raises(DqliteConnectionError, match="Write timeout"):
-        await p._send()
+        await p._send(b"")
     elapsed = asyncio.get_event_loop().time() - start
     # The drain was cut at the write-path `self._timeout = 0.1 s`, not
     # stretched to `self._read_timeout = 60 s`. Allow generous slack.

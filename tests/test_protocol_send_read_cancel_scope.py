@@ -56,7 +56,7 @@ async def test_send_timeout_surfaces_as_dqlite_connection_error() -> None:
     proto._timeout = 0.01
 
     with pytest.raises(DqliteConnectionError, match=r"Write timeout"):
-        await proto._send()
+        await proto._send(b"")
 
 
 @pytest.mark.asyncio
@@ -98,7 +98,7 @@ async def test_send_outer_cancel_propagates_as_cancel_not_dqlite_error() -> None
     proto._timeout = 60.0  # long timeout so only the outer cancel fires
 
     async def run() -> None:
-        await proto._send()
+        await proto._send(b"")
 
     task = asyncio.create_task(run())
     await drain_started.wait()
