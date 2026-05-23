@@ -74,7 +74,7 @@ async def test_acquire_cleanup_close_completes_under_outer_cancel() -> None:
         # assignment — the test would catch that as close_completed=False.
         close_completed = True
 
-    async def fake_drain_idle() -> None:
+    async def fake_drain_idle(*_args: object, **_kwargs: object) -> None:
         return
 
     pool._drain_idle = fake_drain_idle
@@ -122,7 +122,7 @@ async def test_acquire_cleanup_close_failure_still_sets_pool_released() -> None:
         # original exception.
         raise RuntimeError("simulated close-time RuntimeError")
 
-    async def fake_drain_idle() -> None:
+    async def fake_drain_idle(*_args: object, **_kwargs: object) -> None:
         return
 
     pool._drain_idle = fake_drain_idle
@@ -148,7 +148,7 @@ async def test_drain_idle_failure_does_not_skip_close() -> None:
         nonlocal close_call_count
         close_call_count += 1
 
-    async def fake_drain_idle() -> None:
+    async def fake_drain_idle(*_args: object, **_kwargs: object) -> None:
         raise DqliteConnectionError("simulated drain failure")
 
     pool._drain_idle = fake_drain_idle

@@ -94,7 +94,7 @@ def _make_pool_with_broken_conn(broken: _BrokenConn) -> ConnectionPool:
 
 
 def _stub_drain_idle(pool: ConnectionPool) -> None:
-    async def _noop() -> None:
+    async def _noop(*_args: object, **_kwargs: object) -> None:
         return None
 
     pool._drain_idle = _noop
@@ -186,7 +186,7 @@ async def test_cleanup_logs_drain_idle_failure(caplog: pytest.LogCaptureFixture)
     broken = _BrokenConn(close_side_effect=None)
     pool = _make_pool_with_broken_conn(broken)
 
-    async def explode() -> None:
+    async def explode(*_args: object, **_kwargs: object) -> None:
         # OSError is in _POOL_CLEANUP_EXCEPTIONS — the narrow catch
         # absorbs transport-class failures and DEBUG-logs them, but
         # programmer bugs (TypeError / AttributeError) still propagate.

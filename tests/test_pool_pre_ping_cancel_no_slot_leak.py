@@ -114,7 +114,7 @@ async def test_pre_ping_cancel_after_close_before_drain_no_leak(
 
     # _drain_idle is the first await after close; cancel during its
     # await releases via the except BaseException arm.
-    async def slow_drain(self: object) -> None:
+    async def slow_drain(self: object, *_args: object, **_kwargs: object) -> None:
         await asyncio.sleep(0)
 
     monkeypatch.setattr("dqliteclient.pool.ConnectionPool._drain_idle", slow_drain)

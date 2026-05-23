@@ -1253,15 +1253,39 @@ class ConnectionPool:
         if self._closed_event is not None:
             self._closed_event.set()
 
-    async def _drain_idle(self) -> None:
+    async def _drain_idle(self, *, deadline: float | None = None) -> None:
         """Close all idle connections in the pool.
 
         Called when a connection is found to be broken (e.g., after a
         leader change or server restart), since other idle connections
         are likely stale too.
+
+        Optional ``deadline`` (monotonic ``loop.time()`` value): when
+        the running loop's clock advances past it, the drain stops
+        attempting further connections. The check is between
+        iterations so an already-started per-connection close still
+        gets its per-iteration cap. Callers from ``acquire()`` pass
+        the acquire-time deadline so the user's ``pool.timeout`` /
+        outer ``asyncio.timeout`` is honoured end-to-end — otherwise
+        a queue of pathologically slow ``close()`` peers could blow
+        past the documented deadline by ``max_size × cap`` seconds
+        before ``_create_connection`` even runs, and the surfaced
+        "Timed out creating a fresh connection" message would
+        misattribute the phase. ``None`` keeps the original
+        unbounded-overall semantic; the per-iteration cap remains
+        the only bound.
         """
+        deadline_exit = False
         try:
             while not self._pool.empty():
+                if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                    logger.debug(
+                        "pool: _drain_idle hit the overall deadline; "
+                        "leaving remaining idle connections for the "
+                        "next acquire / close"
+                    )
+                    deadline_exit = True
+                    return
                 try:
                     conn = self._pool.get_nowait()
                 except asyncio.QueueEmpty:  # pragma: no cover
@@ -1379,8 +1403,16 @@ class ConnectionPool:
             # DqliteConnection sits orphaned in the pool's queue after
             # ``close()`` returns. The original cancel still propagates
             # via the surrounding ``finally``.
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.shield(self._drain_remaining_after_cancel())
+            #
+            # ``deadline_exit`` skips this sweep: the caller passed a
+            # deadline and the loop returned because it expired, so
+            # running the unbounded after-cancel sweep here would
+            # defeat the very contract the deadline parameter enforces.
+            # The queue will be picked up by the next ``acquire()``,
+            # the next dead-conn detect, or ``pool.close()``.
+            if not deadline_exit:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(self._drain_remaining_after_cancel())
 
     async def _drain_remaining_after_cancel(self) -> None:
         """Best-effort sweep for connections still in the queue after
@@ -1840,8 +1872,15 @@ class ConnectionPool:
             # delivered to a checkpoint inside _drain_idle propagates
             # out of acquire() before the _create_connection's except
             # arm runs, leaking one reservation slot per occurrence.
+            # Pass the user's acquire deadline so the overall drain is
+            # bounded by the documented ``pool.timeout`` budget — the
+            # per-iteration cap alone could otherwise compound to
+            # ``max_size × close_timeout × cap_multiplier`` before
+            # ``_create_connection`` runs, and the surfaced
+            # "Timed out creating a fresh connection" message would
+            # blame the wrong phase.
             try:
-                await self._drain_idle()
+                await self._drain_idle(deadline=deadline)
             except BaseException:
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.shield(self._release_reservation())
@@ -2014,8 +2053,17 @@ class ConnectionPool:
                     # programmer-bug inside _drain_idle (AttributeError /
                     # TypeError) surfaces instead of being DEBUG-logged into
                     # silence.
+                    # Bound the cleanup-path drain by ``close_timeout``:
+                    # the user's ``acquire`` deadline has already fired
+                    # (we are inside ``except BaseException``), so an
+                    # unbounded drain would delay the outer cancel /
+                    # exception observation by ``max_size × cap``
+                    # seconds. ``close_timeout`` matches the policy of
+                    # the surrounding finally and the shielded
+                    # ``conn.close()`` below.
+                    cleanup_deadline = asyncio.get_running_loop().time() + self._close_timeout
                     try:
-                        await self._drain_idle()
+                        await self._drain_idle(deadline=cleanup_deadline)
                     except _POOL_CLEANUP_EXCEPTIONS:
                         logger.debug(
                             "pool.acquire cleanup: _drain_idle failed",
