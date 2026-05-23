@@ -1677,9 +1677,9 @@ class DqliteConnection:
                     await self._abort_protocol()
                     _is_leader_flip = e.code in LEADER_ERROR_CODES or (
                         e.code == _SQLITE_NOTFOUND
-                        and (getattr(e, "raw_message", None) or e.message or "").startswith(
-                            LEADER_LOST_DB_LOOKUP_SUBSTRING
-                        )
+                        and (getattr(e, "raw_message", None) or e.message or "")
+                        .lower()
+                        .startswith(LEADER_LOST_DB_LOOKUP_SUBSTRING)
                     )
                     if _is_leader_flip:
                         # Leader-change errors during OPEN are
