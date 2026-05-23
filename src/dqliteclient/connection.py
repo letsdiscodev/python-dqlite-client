@@ -1207,6 +1207,16 @@ class DqliteConnection:
         self._db_id: int | None = None
         self._in_transaction = False
         self._in_use = False
+        # Captures the ``asyncio.Task`` that holds ``_in_use=True`` so
+        # the ``_check_in_use`` diagnostic can name both the claimant
+        # and the contender, mirroring the ``_tx_owner`` arm's
+        # owner+current shape. Cleared at every site that clears
+        # ``_in_use``. Deliberately preserved across ``_invalidate``
+        # (same discipline as ``_in_use`` itself per the comment at
+        # the body of ``_invalidate``); the next caller sees the
+        # claimant attribution of the operation that wedged the
+        # connection.
+        self._in_use_claimant: asyncio.Task[Any] | None = None
         # Lifecycle predicate distinct from ``is_connected``: flipped
         # to True at the top of ``close()`` / ``_close_impl`` and
         # never flipped back. ``is_connected`` reports "transport is
@@ -1431,16 +1441,19 @@ class DqliteConnection:
         # protocols. See companion close() symmetry.
         try:
             self._in_use = True
+            self._in_use_claimant = asyncio.current_task()
             await self._connect_impl()
         except BaseException:
             # On failure, clear _in_use AND _bound_loop_ref if no protocol
             # was published. Mirrors the original failure-path discipline.
             self._in_use = False
+            self._in_use_claimant = None
             if self._protocol is None:
                 self._bound_loop_ref = None
             raise
         else:
             self._in_use = False
+            self._in_use_claimant = None
 
     async def _connect_impl(self) -> None:
         # Clear any stale ``_invalidation_cause`` from a prior session
@@ -1880,6 +1893,7 @@ class DqliteConnection:
             # shortcut try/finally that normally clears this flag
             # (lines below) is not reached on the fork-pid path.
             self._in_use = False
+            self._in_use_claimant = None
             return
         # Pool-released connections are never in_use for close(); their
         # close path has already run under pool ownership. The same-
@@ -1915,9 +1929,11 @@ class DqliteConnection:
         # ``_in_use=True`` would permanently wedge the connection.
         try:
             self._in_use = True
+            self._in_use_claimant = asyncio.current_task()
             await self._close_impl()
         finally:
             self._in_use = False
+            self._in_use_claimant = None
 
     async def _close_impl(self) -> None:
         # ``_invalidate`` may have scheduled a bounded drain task on
@@ -2279,12 +2295,19 @@ class DqliteConnection:
                 "Do not share connections across event loops or OS threads."
             )
         if self._in_use:
+            # Report BOTH the claimant (the task that holds ``_in_use``)
+            # AND the contender (the task that just hit this guard) so
+            # operators triaging contention point at the right culprit.
+            # Mirrors the ``_tx_owner`` arm's owner+current shape below.
+            # ``getattr``-safe so ``__new__``-built test fixtures that
+            # bypass ``__init__`` still produce the diagnostic.
+            claimant_repr = repr(getattr(self, "_in_use_claimant", None))
             current_repr = repr(asyncio.current_task())
             raise InterfaceError(
                 "Cannot perform operation: another operation is in progress on this "
-                f"connection (current task: {current_repr}). DqliteConnection does "
-                "not support concurrent coroutine access. Use a ConnectionPool to "
-                "manage multiple concurrent operations."
+                f"connection (claimant: {claimant_repr}, current task: {current_repr}). "
+                "DqliteConnection does not support concurrent coroutine access. "
+                "Use a ConnectionPool to manage multiple concurrent operations."
             )
         if self._in_transaction and self._tx_owner is not None:
             current = asyncio.current_task()
@@ -2568,6 +2591,7 @@ class DqliteConnection:
             # permanently. The dbapi sync facade has the symmetric
             # discipline; this mirrors it.
             self._in_use = True
+            self._in_use_claimant = asyncio.current_task()
             return await fn(protocol, db_id)
         except _WireEncodeError as e:
             # Client-side parameter-encoding error. The wire bytes were
@@ -2737,6 +2761,7 @@ class DqliteConnection:
             raise
         finally:
             self._in_use = False
+            self._in_use_claimant = None
 
     async def execute(self, sql: str, params: Sequence[Any] | None = None) -> tuple[int, int]:
         """Execute a SQL statement.
