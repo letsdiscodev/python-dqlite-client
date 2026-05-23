@@ -413,6 +413,32 @@ class YamlNodeStore(NodeStore):
     PyYAML is an optional dependency: install
     ``python-dqlite-client[yaml-store]`` to use this class. The base
     install does not pull PyYAML.
+
+    Cap-fire lost-update window
+    ---------------------------
+
+    Concurrent ``set_nodes`` callers are serialised on an
+    ``asyncio.Lock``. Under normal operation two callers race-free on
+    the final tuple assignment so neither caller's update is lost.
+
+    The exceptional ``RuntimeError`` exit (raised when an outer-cancel
+    storm exceeds ``_MAX_CANCEL_DRAIN_ITERS`` while the worker thread
+    is wedged on a slow ``fsync``) trades the last-writer-wins
+    guarantee for wall-clock honesty: it schedules an out-of-band
+    ``_reconcile_in_memory`` task that re-reads the on-disk state
+    after the lock has been released, then surfaces the cap with
+    ``RuntimeError``. A subsequent successful ``set_nodes`` from
+    another caller may then have its in-memory snapshot overwritten
+    by the deferred reconcile of the older disk state — i.e., the
+    in-memory ``_nodes`` snapshot is eventually consistent on this
+    path, NOT last-writer-wins. The on-disk state itself remains
+    correctly serialised (fsync + atomic rename).
+
+    Callers that observe the cap-fire ``RuntimeError`` should treat
+    the in-memory snapshot as untrusted until either ``set_nodes``
+    is retried successfully or the store is reconstructed; reading
+    via ``get_nodes()`` is well-defined but may briefly return the
+    pre-cap value.
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
