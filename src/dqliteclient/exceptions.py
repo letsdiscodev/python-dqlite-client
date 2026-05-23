@@ -266,3 +266,17 @@ class OperationalError(DqliteError):
         # that want structured access; logging code that wants both can
         # format ``f"{e!r}"`` or read the attributes directly.
         return self.message
+
+    def __repr__(self) -> str:
+        # Surface ``code`` in the labelled-form so forensic log sites
+        # (``logger.exception``, ``logger.error("%r", exc)``, pytest's
+        # exception-with-args display) capture the wire-level code
+        # rather than rendering the inherited bare ``(message, code)``
+        # tuple form. Mirrors the sibling
+        # ``DqliteConnectionError.__repr__`` and the dbapi-layer
+        # ``dqlitedbapi.exceptions.OperationalError`` shape — cross-
+        # package forensic log tooling expects symmetric labelled
+        # output regardless of whether the exception is unwrapped or
+        # wrapped. ``code`` is unconditionally set on this class so
+        # the suffix always renders.
+        return f"{type(self).__name__}({self.message!r}, code={self.code!r})"
