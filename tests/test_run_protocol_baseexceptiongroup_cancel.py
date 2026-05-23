@@ -84,6 +84,59 @@ async def test_non_cancel_baseexceptiongroup_does_not_invalidate() -> None:
 
 
 @pytest.mark.asyncio
+async def test_nested_group_with_cancel_invalidates_connection() -> None:
+    """A ``BaseExceptionGroup`` nested inside another
+    ``BaseExceptionGroup`` (the shape ``asyncio.TaskGroup`` produces
+    when an inner TaskGroup propagates out through an outer one) must
+    still trigger ``_invalidate``. A shallow ``any(isinstance(child,
+    cancel_classes))`` walk misses the nested cancel; the PEP 654
+    idiom ``BaseExceptionGroup.split()`` recurses by design and is the
+    correct primitive."""
+    conn = _make_connection()
+
+    async def fn(_protocol: object, _db_id: int) -> None:
+        raise BaseExceptionGroup(
+            "outer",
+            [
+                BaseExceptionGroup(
+                    "inner",
+                    [asyncio.CancelledError()],
+                ),
+            ],
+        )
+
+    with pytest.raises(BaseExceptionGroup):
+        await conn._run_protocol(fn)
+
+    assert conn._invalidate.call_count == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_mixed_nested_group_with_cancel_invalidates_connection() -> None:
+    """Mirror the production shape where the outer group carries both
+    a non-cancel child (sibling app error) and an inner group with a
+    cancel — the cancel still has to surface to ``_invalidate``."""
+    conn = _make_connection()
+
+    async def fn(_protocol: object, _db_id: int) -> None:
+        raise BaseExceptionGroup(
+            "outer",
+            [
+                ValueError("app error"),
+                BaseExceptionGroup(
+                    "inner",
+                    [asyncio.CancelledError()],
+                ),
+            ],
+        )
+
+    with pytest.raises(BaseExceptionGroup):
+        await conn._run_protocol(fn)
+
+    assert conn._invalidate.call_count == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_in_use_is_cleared_on_baseexceptiongroup_propagation() -> None:
     """Sibling invariant: regardless of group composition, ``_in_use``
     must be cleared by the ``finally`` block so the connection is not

@@ -2750,13 +2750,22 @@ class DqliteConnection:
             # next op. Matches the bare-class invariant the comment
             # above documents.
             #
+            # Use ``BaseExceptionGroup.split`` rather than a shallow
+            # ``any(isinstance(child, cancel_classes))`` walk: groups
+            # can be nested (an inner ``TaskGroup`` propagating out
+            # through an outer one produces a group-of-groups), and
+            # only a recursive match catches the buried cancel.
+            # ``split`` is the canonical PEP 654 idiom and recurses
+            # by design.
+            #
             # Other groups (containing only Dqlite/Operational
             # /Protocol classes) propagate to the catch-all so they
             # land in the right except arm above on the next layer
             # up; we do NOT invalidate on those because the inner
             # arms already encode the precise per-class policy.
             cancel_classes = (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
-            if any(isinstance(child, cancel_classes) for child in eg.exceptions):
+            match, _rest = eg.split(cancel_classes)
+            if match is not None:
                 self._invalidate(eg)
             raise
         finally:
