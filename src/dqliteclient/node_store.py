@@ -20,6 +20,17 @@ __all__ = ["MemoryNodeStore", "NodeInfo", "NodeStore", "YamlNodeStore"]
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on cancel-storm absorption inside
+# ``YamlNodeStore.set_nodes``'s shield-drain loop. The lock is held
+# across this loop; without a cap, a cancel-storm + a wedged worker
+# thread (kernel I/O hang) would spin here forever and wedge every
+# other ``set_nodes`` caller on the same store process-wide. The
+# small constant balances tolerating ordinary shutdown cancel
+# cascades (a handful of cancels) against bounding pathological
+# storms. Exceeding it surfaces a clear ``RuntimeError`` rather
+# than letting the store wedge silently.
+_MAX_CANCEL_DRAIN_ITERS = 64
+
 
 @final
 @dataclass(frozen=True, slots=True)
@@ -741,10 +752,54 @@ class YamlNodeStore(NodeStore):
                 # Loop on repeated cancel so a stubborn outer
                 # cancel cascade still waits out the worker
                 # thread, which asyncio cannot abort.
+                #
+                # Bound the absorption: a cancel-storm + a wedged
+                # worker thread (kernel I/O hang, NFS mount lost,
+                # encrypted volume sealed) would otherwise spin
+                # here forever holding ``self._lock``, which wedges
+                # every other ``set_nodes`` caller on the same store
+                # process-wide. ``_MAX_CANCEL_DRAIN_ITERS`` caps the
+                # absorbed cancels at a small constant. The worker
+                # thread itself cannot be aborted from Python — so a
+                # truly stuck fsync still loses the store; the cap
+                # makes the failure visible (a clear
+                # ``RuntimeError``) rather than silent.
+                cancel_count = 0
                 while not inner.done():
                     try:
                         await asyncio.shield(inner)
                     except asyncio.CancelledError:
+                        cancel_count += 1
+                        if cancel_count > _MAX_CANCEL_DRAIN_ITERS:
+                            logger.warning(
+                                "set_nodes: cancel-drain budget exceeded "
+                                "(%d cancels absorbed); worker thread "
+                                "appears stuck. Releasing lock and "
+                                "surfacing RuntimeError.",
+                                cancel_count,
+                            )
+                            # Best-effort: ask asyncio to cancel the
+                            # inner task (no-op for a to_thread future
+                            # whose worker is mid-syscall, but
+                            # harmless), then give the asyncio side
+                            # one bounded settle round.
+                            # ``wait_for``'s ``timeout`` keeps the
+                            # cap's wall-clock honest — a wedged worker
+                            # thread would otherwise leave us parked
+                            # here on the settle-await forever and
+                            # defeat the cap. ``suppress`` swallows
+                            # ``TimeoutError`` / ``CancelledError`` so
+                            # this path always reaches the ``raise
+                            # RuntimeError`` below.
+                            inner.cancel()
+                            with contextlib.suppress(asyncio.CancelledError, Exception):
+                                await asyncio.wait_for(asyncio.shield(inner), timeout=0.5)
+                            raise RuntimeError(
+                                "YamlNodeStore.set_nodes: cancel-drain "
+                                f"budget exceeded after {cancel_count} "
+                                "cancels absorbed; worker thread is "
+                                "stuck on fsync."
+                            ) from None
                         continue
                     except Exception:
                         # Non-cancel inner failure (``OSError`` on a
