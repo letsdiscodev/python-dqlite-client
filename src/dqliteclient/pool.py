@@ -518,6 +518,7 @@ class ConnectionPool:
                 attempt_timeout=attempt_timeout,
                 max_total_rows=max_total_rows,
                 max_continuation_frames=max_continuation_frames,
+                max_message_size=max_message_size,
                 trust_server_heartbeat=trust_server_heartbeat,
                 dial_func=dial_func,
             )
@@ -533,6 +534,7 @@ class ConnectionPool:
                 attempt_timeout=attempt_timeout,
                 max_total_rows=max_total_rows,
                 max_continuation_frames=max_continuation_frames,
+                max_message_size=max_message_size,
                 trust_server_heartbeat=trust_server_heartbeat,
                 dial_func=dial_func,
             )

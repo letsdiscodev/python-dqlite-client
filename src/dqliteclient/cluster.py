@@ -332,6 +332,7 @@ class ClusterClient:
         redirect_policy: RedirectPolicy | None = None,
         max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
         max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
+        max_message_size: int | None = None,
         trust_server_heartbeat: bool = False,
         dial_func: DialFunc | None = None,
     ) -> None:
@@ -440,6 +441,19 @@ class ClusterClient:
         # carrying multi-GB results.
         self._max_total_rows = max_total_rows
         self._max_continuation_frames = max_continuation_frames
+        # Symmetric inbound + outbound frame cap forwarded to every
+        # admin path (``open_admin_connection``) and leader probe
+        # (``_query_leader``). ``None`` defers to the wire-layer
+        # default (64 MiB) via ``DqliteProtocol.__init__``. A prior
+        # parity fix extended this class to forward
+        # ``max_total_rows`` / ``max_continuation_frames`` /
+        # ``trust_server_heartbeat``; ``max_message_size`` was added
+        # to the pool/dbapi/SA surface later and was not retrofitted
+        # here, so an operator tightening the cap cluster-wide as a
+        # DoS hardening measure saw the cap silently bypassed on
+        # the admin path (notably ``dump``, where a multi-GB
+        # database arrives as one frame per file content).
+        self._max_message_size = max_message_size
         self._trust_server_heartbeat = trust_server_heartbeat
         self._dial_func: DialFunc | None = dial_func
         # Last-known-leader cache (mirror of go-dqlite's
@@ -513,6 +527,7 @@ class ClusterClient:
         redirect_policy: RedirectPolicy | None = None,
         max_total_rows: int | None = _DEFAULT_MAX_TOTAL_ROWS,
         max_continuation_frames: int | None = _DEFAULT_MAX_CONTINUATION_FRAMES,
+        max_message_size: int | None = None,
         trust_server_heartbeat: bool = False,
         dial_func: DialFunc | None = None,
     ) -> "ClusterClient":
@@ -540,6 +555,7 @@ class ClusterClient:
             redirect_policy=redirect_policy,
             max_total_rows=max_total_rows,
             max_continuation_frames=max_continuation_frames,
+            max_message_size=max_message_size,
             trust_server_heartbeat=trust_server_heartbeat,
             dial_func=dial_func,
         )
@@ -1379,6 +1395,7 @@ class ClusterClient:
                 trust_server_heartbeat=trust_server_heartbeat,
                 max_total_rows=self._max_total_rows,
                 max_continuation_frames=self._max_continuation_frames,
+                max_message_size=self._max_message_size,
                 address=address,
             )
             # Probe-only handshake: write the protocol version and
@@ -2754,6 +2771,7 @@ class ClusterClient:
                         trust_server_heartbeat=self._trust_server_heartbeat,
                         max_total_rows=self._max_total_rows,
                         max_continuation_frames=self._max_continuation_frames,
+                        max_message_size=self._max_message_size,
                         address=address,
                     )
                     # NOTE: unlike ``DqliteConnection._connect_impl``,
