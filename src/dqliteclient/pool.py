@@ -1342,10 +1342,36 @@ class ConnectionPool:
                     # connection.py:1761-1771.
                     inner_drain = asyncio.ensure_future(conn.close())
                     inner_drain.add_done_callback(_observe_drain_exception)
+                    # Compose the per-iteration cap with the remaining
+                    # deadline budget. The per-iter cap is
+                    # ``close_timeout × _DRAIN_PER_CONN_CAP_MULTIPLIER``
+                    # (defence against a stuck close); the deadline gate
+                    # at the top of the loop only fires BETWEEN
+                    # iterations, so a single stuck close at the per-iter
+                    # cap could blow past the user-supplied deadline by
+                    # up to ``(multiplier - 1) × close_timeout``. Clip
+                    # the per-iter cap to the remaining deadline so the
+                    # overall budget is honoured end-to-end.
+                    per_iter_cap = self._close_timeout * _DRAIN_PER_CONN_CAP_MULTIPLIER
+                    if deadline is not None:
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            # Deadline already exceeded; abandon this
+                            # connection's drain. The top-of-loop gate
+                            # would normally catch this between
+                            # iterations, but rechecking here closes
+                            # the per-iter overshoot the comment above
+                            # documents.
+                            logger.debug(
+                                "pool: _drain_idle deadline exhausted mid-iteration; abandoning"
+                            )
+                            deadline_exit = True
+                            return
+                        per_iter_cap = min(per_iter_cap, remaining)
                     try:
                         await asyncio.wait_for(
                             asyncio.shield(inner_drain),
-                            timeout=self._close_timeout * _DRAIN_PER_CONN_CAP_MULTIPLIER,
+                            timeout=per_iter_cap,
                         )
                     except TimeoutError:
                         # The inner close-timeout discipline has a bug or
