@@ -866,7 +866,18 @@ DEFAULT_TIMEOUT_SECONDS: Final[float] = 10.0
 DEFAULT_CLOSE_TIMEOUT_SECONDS: Final[float] = 0.5
 
 
-_MAX_ADDRESS_LEN: Final[int] = 1024
+# SSOT-shared with the wire layer: ``LeaderResponse`` and
+# ``ServersResponse`` reject any address longer than this on decode,
+# so any caller-supplied seed above the cap could never round-trip
+# through cluster discovery or redirect. Re-use the wire constant
+# directly so a tightening or relaxation at one layer applies at
+# both. The wire constant is module-private upstream (leading
+# underscore); importing it from its defining module is the
+# established cross-layer pattern (cf. the wire-layer cap consumers
+# in this same file).
+from dqlitewire.messages.responses import _MAX_ADDRESS_SIZE as _WIRE_MAX_ADDRESS_SIZE  # noqa: E402
+
+_MAX_ADDRESS_LEN: Final[int] = _WIRE_MAX_ADDRESS_SIZE
 
 
 def parse_address(address: str) -> tuple[str, int]:
@@ -883,15 +894,17 @@ def parse_address(address: str) -> tuple[str, int]:
     ``create_engine`` time rather than inside a SA retry loop. The
     legacy underscore alias is kept for backwards compatibility.
     """
-    # Up-front length cap. The wire-side ``LeaderResponse.address`` is
-    # already capped at 256 bytes server-side, but ``parse_address``
-    # is also reachable from caller-supplied seed URLs (env vars,
-    # config files). A misconfigured megabyte-sized address would
-    # otherwise produce a ``ValueError`` whose message interpolates
-    # the full input via ``{address!r}`` — multi-MB log lines, large
-    # tracebacks, expensive ``except ValueError`` formatting. Reject
-    # up front with a small, bounded message; downstream sites that
-    # interpolate ``address`` then operate on a known-bounded value.
+    # Up-front length cap, matching the wire-side
+    # ``LeaderResponse.address`` / ``ServersResponse.address`` ceiling
+    # (SSOT re-export — see the ``_MAX_ADDRESS_LEN`` definition above).
+    # ``parse_address`` is reachable from caller-supplied seed URLs
+    # (env vars, config files). A misconfigured megabyte-sized address
+    # would otherwise produce a ``ValueError`` whose message
+    # interpolates the full input via ``{address!r}`` — multi-MB log
+    # lines, large tracebacks, expensive ``except ValueError``
+    # formatting. Reject up front with a small, bounded message; an
+    # address that survives ``parse_address`` is also guaranteed to
+    # round-trip through cluster discovery and redirect.
     if not isinstance(address, str):
         raise ValueError(f"Invalid address: expected str, got {type(address).__name__}")
     if len(address) > _MAX_ADDRESS_LEN:

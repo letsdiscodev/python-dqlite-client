@@ -1,14 +1,17 @@
-"""Pin: ``parse_address`` rejects pathologically long inputs up front.
+"""Pin: ``parse_address`` rejects pathologically long inputs up front,
+matching the wire-side ``LeaderResponse.address`` /
+``ServersResponse.address`` cap.
 
-The wire-side ``LeaderResponse.address`` is server-capped at 256
-bytes, but ``parse_address`` is also reachable from caller-supplied
-seed URLs (env vars, config files). Without an up-front length cap,
-a misconfigured megabyte-sized address produces a ``ValueError``
-whose message interpolates the full input via ``{address!r}`` —
-multi-MB log lines, large tracebacks, and expensive
-``except ValueError`` formatting through any wrapping layer.
+The wire-side cap is server-side at 256 bytes
+(``_MAX_ADDRESS_SIZE`` in ``dqlitewire.messages.responses``);
+``parse_address`` reuses the same constant as the SSOT so any seed
+that survives parsing is also guaranteed to round-trip through
+cluster discovery and redirect. Without the SSOT a 600-byte address
+could survive ``parse_address`` (under the prior 1024-byte ceiling),
+get used to dial, and then fail on the first ``LeaderResponse`` /
+``ServersResponse`` carrying that address back.
 
-Pin a 1 KiB cap with a small, bounded error message.
+Pin the wire-aligned cap with a small, bounded error message.
 """
 
 from __future__ import annotations
@@ -42,6 +45,26 @@ def test_at_cap_address_proceeds_to_normal_parse() -> None:
     assert len(addr) < _MAX_ADDRESS_LEN
     out_host, out_port = parse_address(addr)
     assert out_port == 9001
+
+
+def test_max_address_len_matches_wire_cap() -> None:
+    """SSOT pin: the client-side ``_MAX_ADDRESS_LEN`` is the wire-side
+    ``_MAX_ADDRESS_SIZE`` re-exported (not a parallel value)."""
+    from dqlitewire.messages.responses import _MAX_ADDRESS_SIZE
+
+    assert _MAX_ADDRESS_LEN == _MAX_ADDRESS_SIZE
+
+
+def test_address_above_wire_cap_rejected_with_actionable_message() -> None:
+    """A 300-byte address (above the wire cap of 256) is rejected
+    locally; without this the address would dial successfully but
+    every later wire frame echoing it would surface as ``DecodeError``
+    on the address-cap path."""
+    from dqlitewire.messages.responses import _MAX_ADDRESS_SIZE
+
+    huge = "a" * _MAX_ADDRESS_SIZE + ":9001"  # > 256 bytes incl. port
+    with pytest.raises(ValueError, match="exceeds maximum"):
+        parse_address(huge)
 
 
 def test_non_string_input_rejected() -> None:
