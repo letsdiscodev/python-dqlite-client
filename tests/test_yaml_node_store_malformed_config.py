@@ -15,17 +15,17 @@ from dqliteclient.node_store import YamlNodeStore
 
 
 def test_oserror_on_read_raises_cluster_error(tmp_path: Path) -> None:
-    """File exists but read_text raises OSError (e.g. permission
-    denied). The constructor must surface the failure as
+    """File exists but os.read raises OSError (e.g. permission
+    denied mid-read). The constructor must surface the failure as
     ClusterError so the operator sees the path."""
     yaml_file = tmp_path / "nodes.yml"
     yaml_file.write_text("[]")
 
-    def fake_read_text(*_args: object, **_kwargs: object) -> str:
+    def fake_read(_fd: int, _n: int) -> bytes:
         raise PermissionError("permission denied")
 
     with (
-        patch.object(Path, "read_text", fake_read_text),
+        patch("dqliteclient.node_store.os.read", fake_read),
         pytest.raises(ClusterError, match="cannot read"),
     ):
         YamlNodeStore(yaml_file)

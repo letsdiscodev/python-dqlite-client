@@ -466,27 +466,57 @@ class YamlNodeStore(NodeStore):
         #   3. Corrupt YAML -> ClusterError with file path.
         if not self._path.exists():
             return ()
-        # Stat-precheck the file size before reading: a pathologically
-        # large file (corrupt YAML / co-tenant write / accidental
-        # overwrite) would otherwise be fully loaded into memory by
-        # ``read_text`` before yaml.safe_load even sees it. 1 MiB is
-        # generous for any legitimate dqlite node store (a real store
-        # is a few KB) while bounding the worst-case eager-load cost
-        # at construction time (this runs synchronously on the
-        # event-loop thread before any to_thread dispatch).
+        # Open-once / fstat / bounded read closes the TOCTOU window
+        # between a separate ``stat()`` + ``read_text()`` syscall
+        # pair: a co-tenant rename / symlink-swap between the two
+        # syscalls would have allowed reading bytes from a different
+        # inode than the one stat'd (CWE-367), and the prior
+        # ``read_text()`` followed any intervening symlink (CWE-59).
+        # ``O_NOFOLLOW`` rejects a symlink at the target path with
+        # ELOOP. ``O_CLOEXEC`` keeps the fd from leaking across
+        # ``exec()``. The size cap is enforced via ``fstat`` on the
+        # already-open fd AND a defence-in-depth post-read check
+        # (the file could legitimately grow between fstat and read,
+        # bounded by the kernel's per-read return). On platforms
+        # without ``O_NOFOLLOW`` (Windows) the fallback path runs
+        # the older stat+read sequence — symlink semantics there
+        # are tightly OS-controlled.
         try:
-            stat = self._path.stat()
+            fd = os.open(
+                str(self._path),
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
         except OSError as e:
-            raise ClusterError(f"YamlNodeStore: cannot stat {self._path}: {e}") from e
-        if stat.st_size > _MAX_YAML_NODE_STORE_BYTES:
+            raise ClusterError(f"YamlNodeStore: cannot open {self._path}: {e}") from e
+        try:
+            try:
+                fstat = os.fstat(fd)
+            except OSError as e:
+                raise ClusterError(f"YamlNodeStore: cannot fstat {self._path}: {e}") from e
+            if fstat.st_size > _MAX_YAML_NODE_STORE_BYTES:
+                raise ClusterError(
+                    f"YamlNodeStore: {self._path} exceeds maximum size "
+                    f"({fstat.st_size} > {_MAX_YAML_NODE_STORE_BYTES} bytes)"
+                )
+            # Read at most cap+1 bytes so a file that grew between
+            # fstat and read still trips the cap rather than
+            # silently consuming unbounded memory.
+            try:
+                data = os.read(fd, _MAX_YAML_NODE_STORE_BYTES + 1)
+            except OSError as e:
+                raise ClusterError(f"YamlNodeStore: cannot read {self._path}: {e}") from e
+        finally:
+            os.close(fd)
+        if len(data) > _MAX_YAML_NODE_STORE_BYTES:
             raise ClusterError(
-                f"YamlNodeStore: {self._path} exceeds maximum size "
-                f"({stat.st_size} > {_MAX_YAML_NODE_STORE_BYTES} bytes)"
+                f"YamlNodeStore: {self._path} grew past the maximum "
+                f"size ({_MAX_YAML_NODE_STORE_BYTES} bytes) during the "
+                f"read"
             )
         try:
-            text = self._path.read_text(encoding="utf-8")
-        except OSError as e:
-            raise ClusterError(f"YamlNodeStore: cannot read {self._path}: {e}") from e
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise ClusterError(f"YamlNodeStore: {self._path} contains non-UTF-8 bytes: {e}") from e
         if not text.strip():
             return ()
         import yaml
