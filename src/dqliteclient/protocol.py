@@ -307,7 +307,7 @@ class DqliteProtocol:
         client in some code paths and on per-connection state set up
         by ``handle_client``. Use :meth:`handshake` for those paths.
         """
-        await self._send(MessageEncoder().encode_handshake())
+        await self._send(self._encoder.encode_handshake())
 
     async def handshake(self, client_id: int | None = None) -> int:
         """Perform protocol handshake.
@@ -371,7 +371,7 @@ class DqliteProtocol:
             client_id = secrets.randbits(63) or 1
         # Send protocol version + client registration together
         request = ClientRequest(client_id=client_id)
-        await self._send(MessageEncoder().encode_handshake() + self._encoder.encode(request))
+        await self._send(self._encoder.encode_handshake() + self._encoder.encode(request))
 
         # Read welcome response
         response = await self._read_response()
