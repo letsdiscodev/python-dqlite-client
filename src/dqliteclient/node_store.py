@@ -824,6 +824,60 @@ class YamlNodeStore(NodeStore):
                             inner.cancel()
                             with contextlib.suppress(asyncio.CancelledError, Exception):
                                 await asyncio.wait_for(asyncio.shield(inner), timeout=0.5)
+                            # Re-load self._nodes from disk so the
+                            # in-memory snapshot matches the on-disk
+                            # truth (which may be the new payload if
+                            # the worker thread finalised ``os.replace``
+                            # after we gave up, the old payload if the
+                            # worker never reached the rename, or torn
+                            # if the worker was killed mid-rename).
+                            # Without this re-load, ``self._nodes``
+                            # lags behind disk indefinitely — until the
+                            # next successful ``set_nodes`` or process
+                            # restart. Go's ``client/store_yaml.go::
+                            # SetServers`` uses an uninterruptible
+                            # mutex so the divergence is unreachable
+                            # there; the cap is Python-specific so the
+                            # post-cap reconciliation is too.
+                            # Schedule the disk re-read as a Task and
+                            # attach an observer; do NOT await it
+                            # here (the task is still in cancelling()
+                            # state from the absorbed storm above, so
+                            # any await raises CancelledError
+                            # immediately). The task runs after the
+                            # RuntimeError below propagates; the next
+                            # ``get_nodes()`` re-reads
+                            # ``self._nodes`` and may observe either
+                            # the pre-cap value (if the re-load hasn't
+                            # completed yet) or the reconciled value
+                            # (if it has). Eventual consistency is
+                            # the best we can do once the lock has
+                            # been released. ``_observe_drain_exception``
+                            # absorbs any raise so a failed re-load
+                            # doesn't surface as
+                            # "Task exception was never retrieved".
+                            from dqliteclient.cluster import (
+                                _observe_drain_exception,
+                            )
+
+                            def _reconcile_in_memory() -> None:
+                                try:
+                                    self._nodes = self._load_from_disk()
+                                except Exception:
+                                    logger.warning(
+                                        "set_nodes cap-fire: "
+                                        "_load_from_disk also failed; "
+                                        "in-memory snapshot may lag "
+                                        "the actual on-disk state "
+                                        "until the next successful "
+                                        "set_nodes",
+                                        exc_info=True,
+                                    )
+
+                            reload_task = asyncio.ensure_future(
+                                asyncio.to_thread(_reconcile_in_memory)
+                            )
+                            reload_task.add_done_callback(_observe_drain_exception)
                             raise RuntimeError(
                                 "YamlNodeStore.set_nodes: cancel-drain "
                                 f"budget exceeded after {cancel_count} "
