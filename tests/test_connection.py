@@ -422,19 +422,24 @@ class TestDqliteConnection:
         assert any("handshake ok" in m and "localhost:9001" in m for m in messages)
         assert any("db opened" in m and "localhost:9001" in m for m in messages)
 
-    async def test_invalidate_clears_in_use_flag(self, connected_connection) -> None:
-        """_invalidate must reset _in_use alongside dropping the protocol.
+    async def test_invalidate_preserves_in_use_flag(self, connected_connection) -> None:
+        """_invalidate must NOT clear _in_use.
 
-        If an out-of-band invalidation (e.g. scheduled from a sync-side
-        timeout path) fires while _in_use=True, leaving the flag set
-        deterministically blocks the next call on this connection with
-        "another operation is in progress" — a misleading error for a
-        connection that is in fact dead and needs reconnecting.
+        The flag's contract is "owned by the task that claimed it
+        between claim-site and clear-site". Clearing it from an
+        out-of-band path (``call_soon_threadsafe``, heartbeat,
+        ``transaction()`` rollback-failure arm) would let a second task
+        enter a ``_run_protocol``-protected critical section while the
+        original claimant is still mid-``await``. The in-flight task
+        observes the nulled ``_protocol`` and runs its own ``finally``
+        to clear the flag; the next caller transiently sees "another
+        operation is in progress" until that finally runs — which is
+        the correct behaviour for an in-flight claim.
         """
         conn, _, _ = connected_connection
         conn._in_use = True
         conn._invalidate(OperationalError("synthetic", 0))
-        assert conn._in_use is False
+        assert conn._in_use is True
         assert conn._protocol is None
 
     async def test_invalidate_closes_transport(self, connected_connection) -> None:

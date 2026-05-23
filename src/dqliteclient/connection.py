@@ -2323,14 +2323,17 @@ class DqliteConnection:
         If ``cause`` is provided, it is remembered so a later caller that
         hits "Not connected" can chain it as ``__cause__`` for diagnostics.
 
-        Also clears the ``_in_use`` slot: invalidation can be invoked
-        out-of-band (e.g. scheduled from the dbapi sync-timeout path
-        via ``call_soon_threadsafe``), bypassing ``_run_protocol``'s
-        finally that normally resets the flag. An invalidated connection
-        is no longer holding a meaningful in-flight operation, so the
-        flag and the liveness state must stay consistent — otherwise
-        the next call deterministically raises "another operation is
-        in progress" on a connection that is in fact dead.
+        Does NOT touch the ``_in_use`` slot: the flag's contract is
+        "owned by the task that claimed it between claim-site and
+        clear-site". Clearing it here — when ``_invalidate`` was
+        invoked out-of-band (e.g. ``call_soon_threadsafe`` from the
+        dbapi sync-timeout path) — would let a second task into a
+        ``_run_protocol``-protected critical section while the original
+        in-flight task is still mid-``await``. The in-flight task
+        unblocks promptly once we null ``self._protocol`` below (its
+        next read raises a transport error), and its own
+        ``finally`` then clears ``_in_use`` — restoring the
+        "transient" wait the next caller would see anyway.
 
         Synchronous writer-close + async bounded drain: ``protocol.close()``
         is synchronous (writer.close()), but ``wait_closed()`` is a
@@ -2432,7 +2435,13 @@ class DqliteConnection:
                     self._pending_drain = None
         self._protocol = None
         self._db_id = None
-        self._in_use = False
+        # NOTE: ``_in_use`` is intentionally NOT cleared here. See the
+        # method docstring — the flag's task-ownership contract requires
+        # that only the task that claimed it clears it (typically via
+        # ``_run_protocol``'s finally at line ~2728 or ``connect()``'s
+        # finally arms). Clearing it from this out-of-band path can let
+        # a concurrent task enter ``_run_protocol`` while the original
+        # claimant is still mid-await.
         # Atomic clear of transaction-state flags: an external
         # invalidation (heartbeat path, KeyboardInterrupt mid-yield,
         # ``call_soon_threadsafe``) lands here without going through
