@@ -2670,6 +2670,31 @@ class DqliteConnection:
             # INTERRUPT on a different connection.
             self._invalidate(e)
             raise
+        except BaseExceptionGroup as eg:
+            # ``asyncio.TaskGroup.__aexit__`` (Python 3.11+) wraps
+            # sibling cancellations in a ``BaseExceptionGroup`` per
+            # PEP 654. A group containing any cancel-class child
+            # must be treated equivalently to the bare-class arm
+            # above: we cannot prove the in-flight request/response
+            # bytes were delivered or that the next write to the
+            # same transport would land on the expected protocol
+            # state, so invalidate. The bare ``except`` chain above
+            # does not match groups by design (PEP 654 says
+            # ``isinstance(eg, CancelledError)`` is False); without
+            # this arm, the group propagates uninvalidated and the
+            # connection's wire state is silently reused on the
+            # next op. Matches the bare-class invariant the comment
+            # above documents.
+            #
+            # Other groups (containing only Dqlite/Operational
+            # /Protocol classes) propagate to the catch-all so they
+            # land in the right except arm above on the next layer
+            # up; we do NOT invalidate on those because the inner
+            # arms already encode the precise per-class policy.
+            cancel_classes = (asyncio.CancelledError, KeyboardInterrupt, SystemExit)
+            if any(isinstance(child, cancel_classes) for child in eg.exceptions):
+                self._invalidate(eg)
+            raise
         finally:
             self._in_use = False
 
