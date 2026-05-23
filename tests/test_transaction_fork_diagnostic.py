@@ -47,7 +47,7 @@ async def test_transaction_after_fork_raises_fork_diagnostic_not_cross_task() ->
     # ``os.register_at_fork``), not from ``os.getpid()``; patching
     # ``os.getpid`` would be dead code.
     with (
-        patch("dqliteclient.connection._current_pid", fake_parent_pid + 1),
+        patch("dqliteclient.connection.os.getpid", return_value=fake_parent_pid + 1),
         pytest.raises(InterfaceError, match="fork") as excinfo,
     ):
         async with conn.transaction():

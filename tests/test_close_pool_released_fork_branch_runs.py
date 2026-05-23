@@ -27,7 +27,6 @@ import os
 
 import pytest
 
-import dqliteclient.connection as _conn_mod
 from dqliteclient.connection import DqliteConnection
 
 
@@ -49,7 +48,8 @@ async def test_pool_released_close_in_forked_child_nulls_pending_drain(
     conn._in_transaction = True
     conn._tx_owner = asyncio.current_task()
 
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     try:
         await conn.close()
     finally:
@@ -109,7 +109,8 @@ async def test_non_pool_released_fork_branch_still_works(
     conn._pending_drain = sentinel_task
     conn._in_transaction = True
 
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     try:
         await conn.close()
     finally:

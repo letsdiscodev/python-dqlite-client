@@ -37,7 +37,6 @@ from unittest.mock import patch
 
 import pytest
 
-from dqliteclient import connection as _conn_mod
 from dqliteclient.exceptions import DqliteConnectionError
 from dqliteclient.pool import ConnectionPool
 
@@ -136,7 +135,8 @@ async def test_release_short_circuits_after_fork(
     fake = _FakeConn()
 
     # Simulate "we are the forked child" by flipping the cached pid.
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
 
     # Must NOT raise RuntimeError from asyncio internals.
     await pool._release(fake)  # type: ignore[arg-type]

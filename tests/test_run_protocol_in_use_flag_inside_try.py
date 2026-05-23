@@ -49,7 +49,7 @@ def _make_connection() -> DqliteConnection:
     conn._invalidation_cause = None
     conn._bound_loop_ref = None
     conn._pending_drain = None
-    conn._creator_pid = _conn_mod._current_pid
+    conn._creator_pid = _conn_mod.get_current_pid()
     conn._pool_released = False
     conn._database = "main"
     conn._protocol = MagicMock()

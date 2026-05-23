@@ -508,7 +508,7 @@ class ClusterClient:
         ``InterfaceError`` from one method and successful
         operation from the next.
         """
-        if _conn_mod._current_pid != self._creator_pid:
+        if _conn_mod.get_current_pid() != self._creator_pid:
             raise InterfaceError(
                 f"ClusterClient used after fork; reconstruct from "
                 f"configuration in the target process. (created in "

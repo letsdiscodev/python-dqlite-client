@@ -23,7 +23,6 @@ import os
 
 import pytest
 
-from dqliteclient import connection as _conn_mod
 from dqliteclient.cluster import ClusterClient
 from dqliteclient.exceptions import InterfaceError
 from dqliteclient.node_store import MemoryNodeStore
@@ -38,7 +37,8 @@ async def test_describe_with_address_raises_after_fork(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cluster = _make_cluster()
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     with pytest.raises(InterfaceError, match="after fork"):
         await cluster.describe(address="h:9001")
 
@@ -48,7 +48,8 @@ async def test_set_weight_with_address_raises_after_fork(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cluster = _make_cluster()
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     with pytest.raises(InterfaceError, match="after fork"):
         await cluster.set_weight(7, address="h:9001")
 
@@ -61,7 +62,8 @@ async def test_open_admin_connection_raises_after_fork(
     ``dial_func``, so a callable capturing parent-loop-bound state
     (e.g. ``aiohttp.ClientSession``) is never called post-fork."""
     cluster = _make_cluster()
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     with pytest.raises(InterfaceError, match="after fork"):
         async with cluster.open_admin_connection("h:9001"):
             pytest.fail("should not reach")
@@ -75,6 +77,7 @@ async def test_find_leader_still_raises_after_fork(
     survive the refactor that lifts the check into a shared
     ``_check_pid()`` helper."""
     cluster = _make_cluster()
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     with pytest.raises(InterfaceError, match="after fork"):
         await cluster.find_leader()

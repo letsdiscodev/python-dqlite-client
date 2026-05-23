@@ -29,7 +29,7 @@ def test_dqlite_connection_fork_diagnostic_includes_creator_and_current_pid() ->
     conn = DqliteConnection("localhost:9001")
     fake_child_pid = conn._creator_pid + 1
     with (
-        mock.patch("dqliteclient.connection._current_pid", fake_child_pid),
+        mock.patch("dqliteclient.connection.os.getpid", return_value=fake_child_pid),
         mock.patch("dqliteclient.connection.get_current_pid", return_value=fake_child_pid),
         pytest.raises(InterfaceError) as exc,
     ):
@@ -44,7 +44,7 @@ def test_connection_pool_initialize_fork_diagnostic_includes_pids() -> None:
     pool = ConnectionPool(addresses=["localhost:9001"])
     fake_child_pid = pool._creator_pid + 1
     with (
-        mock.patch("dqliteclient.connection._current_pid", fake_child_pid),
+        mock.patch("dqliteclient.connection.os.getpid", return_value=fake_child_pid),
         mock.patch("dqliteclient.connection.get_current_pid", return_value=fake_child_pid),
     ):
         import asyncio
@@ -64,7 +64,7 @@ def test_cluster_client_find_leader_fork_diagnostic_includes_pids() -> None:
     cluster = ClusterClient(MemoryNodeStore(["localhost:9001"]))
     fake_child_pid = cluster._creator_pid + 1
     with (
-        mock.patch("dqliteclient.connection._current_pid", fake_child_pid),
+        mock.patch("dqliteclient.connection.os.getpid", return_value=fake_child_pid),
         mock.patch("dqliteclient.connection.get_current_pid", return_value=fake_child_pid),
     ):
         import asyncio

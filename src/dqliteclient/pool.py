@@ -661,7 +661,7 @@ class ConnectionPool:
         (single digits) unless steady-state concurrency demands warm
         connections at engine startup.
         """
-        if _conn_mod._current_pid != self._creator_pid:
+        if _conn_mod.get_current_pid() != self._creator_pid:
             raise InterfaceError(
                 f"Pool used after fork; reconstruct from configuration "
                 f"in the target process. (created in pid {self._creator_pid}, "
@@ -1508,7 +1508,7 @@ class ConnectionPool:
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
         """Acquire a connection from the pool."""
-        if _conn_mod._current_pid != self._creator_pid:
+        if _conn_mod.get_current_pid() != self._creator_pid:
             raise InterfaceError(
                 f"Pool used after fork; reconstruct from configuration "
                 f"in the target process. (created in pid {self._creator_pid}, "
@@ -2279,7 +2279,7 @@ class ConnectionPool:
         # child (it never holds the slot — it only inherited the
         # reference). Symmetric with ``acquire``'s and ``close``'s
         # fork short-circuits.
-        if _conn_mod._current_pid != self._creator_pid:
+        if _conn_mod.get_current_pid() != self._creator_pid:
             with contextlib.suppress(AttributeError):
                 conn._pool_released = True
             return
@@ -2499,7 +2499,7 @@ class ConnectionPool:
         # ``_close_done`` set but not yet ``set()``) does not block on
         # an Event bound to the parent's loop. Awaiting that Event in
         # the child's fresh loop hangs forever.
-        if _conn_mod._current_pid != self._creator_pid:
+        if _conn_mod.get_current_pid() != self._creator_pid:
             self._closed = True
             self._closed_flag[0] = True
             if self._finalizer is not None:

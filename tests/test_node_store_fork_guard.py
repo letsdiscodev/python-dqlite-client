@@ -28,7 +28,6 @@ from pathlib import Path
 
 import pytest
 
-from dqliteclient import connection as _conn_mod
 from dqliteclient.exceptions import InterfaceError
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo, YamlNodeStore
 from dqlitewire import NodeRole
@@ -39,7 +38,8 @@ async def test_memory_store_get_nodes_after_fork_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = MemoryNodeStore(addresses=["h:9001"])
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     with pytest.raises(InterfaceError, match="after fork"):
         await store.get_nodes()
 
@@ -49,7 +49,8 @@ async def test_memory_store_set_nodes_after_fork_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = MemoryNodeStore(addresses=["h:9001"])
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     with pytest.raises(InterfaceError, match="after fork"):
         await store.set_nodes([NodeInfo(1, "h:9001", NodeRole.VOTER)])
 
@@ -63,7 +64,8 @@ async def test_yaml_store_get_nodes_after_fork_raises(
     path = tmp_path / "cluster.yaml"
     path.write_text("- Address: h:9001\n  ID: 1\n  Role: voter\n")
     store = YamlNodeStore(path)
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     with pytest.raises(InterfaceError, match="after fork"):
         await store.get_nodes()
 
@@ -77,6 +79,7 @@ async def test_yaml_store_set_nodes_after_fork_raises(
     path = tmp_path / "cluster.yaml"
     path.write_text("- Address: h:9001\n  ID: 1\n  Role: voter\n")
     store = YamlNodeStore(path)
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     with pytest.raises(InterfaceError, match="after fork"):
         await store.set_nodes([NodeInfo(1, "h:9002", NodeRole.VOTER)])

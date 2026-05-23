@@ -16,7 +16,6 @@ import os
 
 import pytest
 
-from dqliteclient import connection as _conn_mod
 from dqliteclient.exceptions import InterfaceError
 from dqliteclient.pool import ConnectionPool
 
@@ -26,7 +25,8 @@ async def test_pool_initialize_raises_after_fork(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pool = ConnectionPool(addresses=["h:9001"], min_size=1, max_size=2)
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     with pytest.raises(InterfaceError, match="after fork"):
         await pool.initialize()
 
@@ -36,7 +36,8 @@ async def test_pool_acquire_raises_after_fork(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pool = ConnectionPool(addresses=["h:9001"], min_size=0, max_size=2)
-    monkeypatch.setattr(_conn_mod, "_current_pid", os.getpid() + 1)
+    _real_getpid = os.getpid
+    monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
     with pytest.raises(InterfaceError, match="after fork"):
         async with pool.acquire():
             pytest.fail("should not reach")

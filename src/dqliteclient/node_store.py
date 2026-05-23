@@ -214,7 +214,7 @@ class MemoryNodeStore(NodeStore):
         self._creator_pid = os.getpid()
 
     def _check_pid(self) -> None:
-        if _conn_mod._current_pid != self._creator_pid:
+        if _conn_mod.get_current_pid() != self._creator_pid:
             raise InterfaceError(
                 f"MemoryNodeStore used after fork; reconstruct from "
                 f"configuration in the target process. (created in "
@@ -446,7 +446,7 @@ class YamlNodeStore(NodeStore):
         self._creator_pid = os.getpid()
 
     def _check_pid(self) -> None:
-        if _conn_mod._current_pid != self._creator_pid:
+        if _conn_mod.get_current_pid() != self._creator_pid:
             raise InterfaceError(
                 f"YamlNodeStore used after fork; reconstruct from "
                 f"configuration in the target process. (created in "

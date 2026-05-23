@@ -65,52 +65,36 @@ __all__ = ["DqliteConnection"]
 
 logger = logging.getLogger(__name__)
 
-# Fork-aware pid cache. ``os.getpid()`` is a vDSO syscall on x86-64
-# Linux (~30 ns/call) but not on aarch64 Linux (~700 ns/call), so a
-# per-call check that fires on every public method became a measurable
-# overhead on aarch64 deployments. Cache the pid in a module-level int
-# and refresh on fork via ``os.register_at_fork(after_in_child=...)``,
-# which Python guarantees runs in the child before user code resumes.
-# Callers compare against ``_current_pid`` instead of ``os.getpid()``;
-# the comparison is a Python int-equality (~10 ns) regardless of
-# arch. ``register_at_fork`` is unavailable on Windows; fall back to
-# ``os.getpid`` there (Windows has no fork anyway).
-#
-# Callback-ordering caveat: ``register_at_fork(after_in_child=...)``
-# callbacks run in registration order (CPython 3.13). A third-party
-# ``after_in_child`` callback registered AFTER ``dqliteclient.connection``
-# is imported, but that itself dispatches into dqliteclient (e.g. a
-# logging handler whose own fork callback emits a debug message via a
-# custom handler that touches the pool), would observe the cached
-# ``_current_pid`` BEFORE ``_refresh_pid_cache`` has run — and the
-# fork guard would not trip. The cache is best-effort under such
-# pathological hook ordering; the only fully-correct posture is
-# ``os.getpid()`` directly, which costs ~700 ns/call on aarch64.
-# Production code paths reach ``_check_in_use`` via the pool's
-# acquire path which is far more expensive than 700 ns regardless,
-# so a future profile-guided revisit may simplify this.
-_current_pid: int = os.getpid()
-
-
-def _refresh_pid_cache() -> None:
-    global _current_pid
-    _current_pid = os.getpid()
+# Process-pid accessor. The prior module-global ``_current_pid`` +
+# ``register_at_fork(after_in_child=...)`` cache was best-effort
+# under pathological fork-hook ordering — a third-party
+# ``after_in_child`` callback registered BEFORE ``dqliteclient``
+# was imported, but that itself dispatched into dqliteclient (a
+# logging handler whose own fork hook emits a debug message via
+# the pool, etc.), would observe the stale cached parent pid
+# BEFORE ``_refresh_pid_cache`` ran, and the fork guard would not
+# trip — silent wire corruption in the child rather than the
+# documented ``InterfaceError("used after fork")``. ``os.getpid()``
+# is a vDSO syscall on Linux (sub-microsecond) and the prior
+# aarch64 ~700 ns/call concern is dwarfed by the pool acquire
+# path that dominates every call site. Resolving through the
+# syscall directly closes the race regardless of fork-hook
+# ordering.
 
 
 def get_current_pid() -> int:
-    """Return the cached current pid as observed by the dqliteclient
-    atfork machinery.
+    """Return the current process pid, syscall-direct.
+
+    No module-global cache: a cached value would lag a ``fork()`` in
+    the child until our ``register_at_fork`` callback ran, which is
+    after any third-party callback that races us. The ``getpid``
+    syscall is vDSO-fast on Linux.
 
     Public accessor for cross-package callers (notably
-    ``python-dqlite-dbapi``'s connection / cursor close paths). The
-    underlying ``_current_pid`` module attribute is private and may
-    move; the accessor is the stable surface.
+    ``python-dqlite-dbapi``'s connection / cursor close paths).
     """
-    return _current_pid
+    return os.getpid()
 
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_refresh_pid_cache)
 
 # Re-snapshot cap for ``_pending_drain`` retire arms in ``_connect_impl``
 # / ``_close_impl``. The number of iterations a racing ``_invalidate``
@@ -1864,7 +1848,7 @@ class DqliteConnection:
         # tripped "Task was destroyed but it is pending" and the
         # coroutine frame retained the inherited writer transport
         # (and FD) indefinitely.
-        if _current_pid != self._creator_pid:
+        if get_current_pid() != self._creator_pid:
             # Drop every reference that crosses the fork boundary so
             # GC in the child doesn't keep parent-loop primitives or
             # the inherited socket FD alive. ``_pending_drain`` in
@@ -2244,7 +2228,7 @@ class DqliteConnection:
         use after pool release, missing async context, wrong event
         loop, concurrent operation, or transaction owned by another
         task."""
-        if _current_pid != self._creator_pid:
+        if get_current_pid() != self._creator_pid:
             raise InterfaceError(
                 f"Connection used after fork; reconstruct from configuration "
                 f"in the target process. (created in pid {self._creator_pid}, "
