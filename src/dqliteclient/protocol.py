@@ -35,7 +35,9 @@ from dqlitewire import (
 )
 from dqlitewire import ProtocolError as _WireProtocolError
 from dqlitewire import ServerFailure as _WireServerFailure
-from dqlitewire import sanitize_server_text as _sanitize_server_text
+from dqlitewire import (
+    sanitize_for_log as _sanitize_for_log,
+)
 from dqlitewire.messages import (
     AddRequest,
     AssignRequest,
@@ -1230,19 +1232,22 @@ class DqliteProtocol:
         Returns an empty string when the address is unknown — keeping
         error messages clean for callers that don't thread it in.
 
-        Sanitises the address through ``_sanitize_server_text`` to
-        strip control characters / CR / LF / U+2028 / U+2029 before
-        interpolating it into an exception message. The address can
-        be server-controlled in the leader-redirect reconnect path
-        (LeaderResponse.address is intentionally NOT sanitised at
-        decode time — sanitising would split allowlist sets — so the
-        user-facing error/log boundary must do it instead). Without
-        this, a hostile leader could inject CRLF into the address
-        and produce log lines that splice across rows.
+        Routes the address through ``sanitize_for_log`` (the strict
+        variant that ESCAPES LF/TAB and strips U+2028/U+2029/bidi
+        controls), NOT ``sanitize_server_text`` (display variant
+        that preserves LF for multi-line readability). The exception
+        text built here flows into downstream
+        ``logger.error("%s", exc)`` / ``logger.exception(...)``
+        sites; a peer that supplied an LF-bearing address — either
+        via leader-redirect, a malformed node store entry, or a
+        dial_func override that bypassed ``parse_address`` — would
+        otherwise produce log records that splice across rows
+        (CWE-117). Mirrors the discipline applied to
+        ``ClusterClient._ProbeMiss.message``.
         """
         if not self._address:
             return ""
-        return f" to {_sanitize_server_text(self._address)}"
+        return f" to {_sanitize_for_log(self._address)}"
 
     def _failure_text(self, response: FailureResponse) -> str:
         """Render a FailureResponse as the body string for an
