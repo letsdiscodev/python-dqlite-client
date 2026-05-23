@@ -2594,7 +2594,13 @@ class DqliteConnection:
             if e.code in LEADER_ERROR_CODES:
                 self._invalidate(e)
             elif e.code == _SQLITE_NOTFOUND and (
-                (getattr(e, "raw_message", None) or e.message or "").startswith(
+                # Lower-case the haystack so a future upstream
+                # wording capitalisation change does not silently
+                # break the leader-flip classifier arm.
+                # ``LEADER_LOST_DB_LOOKUP_SUBSTRING`` is already
+                # lowercase by convention (the wire layer's SSOT
+                # pins it). Sibling at SA's ``is_disconnect``.
+                (getattr(e, "raw_message", None) or e.message or "").lower().startswith(
                     LEADER_LOST_DB_LOOKUP_SUBSTRING
                 )
             ):
