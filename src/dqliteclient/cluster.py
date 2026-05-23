@@ -1043,7 +1043,16 @@ class ClusterClient:
                             trust_server_heartbeat=trust_server_heartbeat,
                         )
                 except TimeoutError as e:
-                    _safe_addr = _sanitize_display_text(node.address)
+                    # Use the log-bound sanitiser (escapes LF/TAB) so
+                    # the address embedded in ``_ProbeMiss.message``
+                    # cannot split a downstream log record when a
+                    # caller emits ``ClusterError`` via ``logger.error("%s",
+                    # err)``. Defence-in-depth against a dial_func
+                    # override or a peer that supplied a malformed
+                    # address that bypassed ``parse_address`` (CWE-117).
+                    # Mirrors the discipline at the redirect-verify
+                    # arm below (lines 1128-1149).
+                    _safe_addr = sanitize_for_log(node.address)
                     logger.debug(
                         "find_leader: %s timed out after %.3fs (%d/%d)",
                         sanitize_for_log(node.address),
@@ -1080,7 +1089,12 @@ class ClusterClient:
                     )
                     return _ProbeMiss(
                         message=(
-                            f"{_sanitize_display_text(node.address)}: "
+                            # ``sanitize_for_log`` escapes LF/TAB so the
+                            # address (and the truncated error text) in
+                            # ``_ProbeMiss.message`` cannot split a
+                            # downstream log record (CWE-117). Mirrors
+                            # the redirect-verify arm at lines 1128-1149.
+                            f"{sanitize_for_log(node.address)}: "
                             f"{sanitize_for_log(_truncate_error(str(e)))}"
                         ),
                         exc=e,
@@ -1155,10 +1169,16 @@ class ClusterClient:
                 # ``(node_id=0, address="")`` "no leader known yet"
                 # reply. Without this branch the ``errors`` list
                 # silently stays empty.
-                _safe_addr = _sanitize_display_text(node.address)
+                # ``sanitize_for_log`` escapes LF/TAB so the address
+                # embedded in ``_ProbeMiss.message`` cannot split a
+                # downstream log record when a caller emits the
+                # surrounding ``ClusterError`` via ``logger.*("%s",
+                # err)``. Mirrors the discipline at the redirect-
+                # verify arm below.
+                _safe_addr = sanitize_for_log(node.address)
                 logger.debug(
                     "find_leader: %s reports no leader known (%d/%d)",
-                    sanitize_for_log(node.address),
+                    _safe_addr,
                     idx + 1,
                     total_nodes,
                 )
