@@ -2041,7 +2041,16 @@ class ClusterClient:
                 # ``find_leader`` calls). Mirrors the leader-flip
                 # re-verify arm in ``leader_info``.
                 node_id, address = await protocol.get_leader()
-                if not _addr_equiv(address, leader_addr) and not (node_id == 0 and not address):
+                # An empty ``address`` is the wire-layer's "leader not
+                # currently known" shape — both (0, "") (canonical "no
+                # leader" sentinel) and (N, "") (RAFT_NOMEM transient
+                # documented at messages/responses.py:441-470). Treat
+                # both uniformly: skip the redirect-chase and read
+                # cluster configuration from the current responder.
+                # Mirrors leader_info's RAFT_NOMEM handling (which
+                # returns None on the same shape) and matches Go's
+                # ``len(address) == 0`` check in client/leader.go.
+                if not _addr_equiv(address, leader_addr) and address:
                     # Leadership flipped: the responder hands back a
                     # different address. Re-validate against the
                     # redirect policy AND re-probe the hinted target
