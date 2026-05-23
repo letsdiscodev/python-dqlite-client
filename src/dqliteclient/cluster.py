@@ -194,15 +194,25 @@ def _addr_equiv(a: str, b: str) -> bool:
 
 def _truncate_error(message: str) -> str:
     # Report the overflow count (``len - max``) in the suffix to
-    # match the wire-layer ``_cap_raw_message`` SSOT and the sibling
+    # match the wire-layer ``cap_raw_message`` SSOT and the sibling
     # ``_truncate_for_message`` / ``_truncate_for_log`` helpers in
     # dbapi and SA. Reporting total length here would mislead an
     # operator reading ``[truncated, 4096 chars]`` into thinking the
     # original was 4096 long, when ``max + 4096`` is the real value.
-    if len(message) <= _MAX_ERROR_MESSAGE_SNIPPET:
-        return message
-    overflow = len(message) - _MAX_ERROR_MESSAGE_SNIPPET
-    return message[:_MAX_ERROR_MESSAGE_SNIPPET] + f"... [truncated, {overflow} chars]"
+    #
+    # Compose ``sanitize_server_text`` (display variant — preserves LF
+    # / Tab for multi-line server diagnostics, strips control / bidi /
+    # invisible codepoints) so server-supplied text does NOT carry log-
+    # splitting characters into the consumed ``raw_message`` attribute.
+    # Downstream consumers (SA's ``is_disconnect`` substring matcher,
+    # operator-side ``logger.error("%s", exc.raw_message)``) still see
+    # readable multi-line content but cannot be tricked into emitting
+    # forged log lines by a hostile peer's FailureResponse (CWE-117).
+    safe = _sanitize_display_text(message)
+    if len(safe) <= _MAX_ERROR_MESSAGE_SNIPPET:
+        return safe
+    overflow = len(safe) - _MAX_ERROR_MESSAGE_SNIPPET
+    return safe[:_MAX_ERROR_MESSAGE_SNIPPET] + f"... [truncated, {overflow} chars]"
 
 
 def _validate_node_id(node_id: object) -> None:
