@@ -1788,35 +1788,38 @@ class ClusterClient:
                     trust_server_heartbeat=trust_server_heartbeat,
                     policy=policy,
                 )
+                # Pre-validate the leader address explicitly so the
+                # "Server redirected to invalid leader address" message
+                # only fires on address-shape failures attributable to
+                # the server's LeaderResponse. ``DqliteConnection.__init__``
+                # validates many other fields (close_timeout, max_total_rows,
+                # max_message_size, ...) and raises bare ``ValueError`` for
+                # any of them. Catching all ValueErrors at the construction
+                # site misattributed client-knob misconfiguration as a
+                # server-redirect failure — operator triage went looking
+                # at the server when the fault was in their own connect
+                # arguments. Let validator ``ValueError``s from the
+                # constructor propagate as-is with their field-specific
+                # message so operators see what they actually set wrong.
                 try:
-                    conn = DqliteConnection(
-                        leader,
-                        database=database,
-                        timeout=self._timeout,
-                        dial_timeout=self._dial_timeout,
-                        attempt_timeout=self._attempt_timeout,
-                        max_total_rows=max_total_rows,
-                        max_continuation_frames=max_continuation_frames,
-                        trust_server_heartbeat=trust_server_heartbeat,
-                        close_timeout=close_timeout,
-                        dial_func=self._dial_func,
-                        max_message_size=max_message_size,
-                    )
+                    parse_address(leader)
                 except ValueError as e:
-                    # ``DqliteConnection.__init__`` validates the
-                    # address (hostname format, port range, IDN,
-                    # etc.) and raises bare ``ValueError`` on
-                    # malformed input. The leader address came from
-                    # the server's LeaderResponse — a malformed
-                    # redirect target is a deterministic protocol
-                    # violation that should NOT be retried, AND
-                    # should surface through PEP 249 wrapping.
-                    # Re-raise as ``ClusterPolicyError`` so the SA
-                    # / dbapi classifier maps it to a clean error
-                    # class instead of leaking ``ValueError``.
                     raise ClusterPolicyError(
                         f"Server redirected to invalid leader address: {e}"
                     ) from e
+                conn = DqliteConnection(
+                    leader,
+                    database=database,
+                    timeout=self._timeout,
+                    dial_timeout=self._dial_timeout,
+                    attempt_timeout=self._attempt_timeout,
+                    max_total_rows=max_total_rows,
+                    max_continuation_frames=max_continuation_frames,
+                    trust_server_heartbeat=trust_server_heartbeat,
+                    close_timeout=close_timeout,
+                    dial_func=self._dial_func,
+                    max_message_size=max_message_size,
+                )
                 try:
                     await conn.connect()
                 except BaseException:
