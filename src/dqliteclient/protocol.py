@@ -891,6 +891,18 @@ class DqliteProtocol:
         deadline = self._operation_deadline()
         frames = 0
         while True:
+            # Cap is checked BEFORE the read so the documented bound
+            # ``N`` allows AT MOST ``N`` non-EMPTY frames (a check
+            # after the read would fire AFTER reading the (N+1)-th).
+            if (
+                self._max_continuation_frames is not None
+                and frames >= self._max_continuation_frames
+            ):
+                raise ProtocolError(
+                    f"Interrupt drain exceeded max_continuation_frames cap "
+                    f"({self._max_continuation_frames}); server may be "
+                    f"slow-dripping rows{self._addr_suffix()}."
+                )
             response = await self._read_response(deadline=deadline, allow_trailing=True)
             if isinstance(response, EmptyResponse):
                 return
@@ -931,12 +943,6 @@ class DqliteProtocol:
                     f"{self._addr_suffix()}"
                 )
             frames += 1
-            if self._max_continuation_frames is not None and frames > self._max_continuation_frames:
-                raise ProtocolError(
-                    f"Interrupt drain exceeded max_continuation_frames cap "
-                    f"({self._max_continuation_frames}); server may be "
-                    f"slow-dripping rows{self._addr_suffix()}."
-                )
             # Fall through: keep reading until EmptyResponse arrives.
 
     async def exec_sql(
@@ -1019,21 +1025,29 @@ class DqliteProtocol:
         response = initial
         frames = 1  # the initial frame counts
         while response.has_more:
+            # Per-frame cap complements max_total_rows: a
+            # slow-drip server sending 1-row-per-frame would
+            # otherwise pin a client CPU with O(n) iterations of
+            # decode work, where n is max_total_rows. Check BEFORE
+            # the read so the documented cap ``N`` allows AT MOST
+            # ``N`` decoded frames (initial + continuations counted
+            # uniformly); a check after the read fires AFTER reading
+            # the (N+1)-th frame even when ``has_more=False`` would
+            # have ended the loop on the next iteration anyway.
+            if (
+                self._max_continuation_frames is not None
+                and frames >= self._max_continuation_frames
+            ):
+                raise ProtocolError(
+                    f"Query exceeded max_continuation_frames cap "
+                    f"({self._max_continuation_frames}); server may be "
+                    f"slow-dripping rows."
+                )
             next_response = await self._read_continuation(deadline=deadline)
             frames += 1
             if not next_response.rows and next_response.has_more:
                 raise ProtocolError(
                     "ROWS continuation made no progress: frame had 0 rows and has_more=True"
-                )
-            if self._max_continuation_frames is not None and frames > self._max_continuation_frames:
-                # Per-frame cap complements max_total_rows: a
-                # slow-drip server sending 1-row-per-frame would
-                # otherwise pin a client CPU with O(n) iterations of
-                # decode work, where n is max_total_rows.
-                raise ProtocolError(
-                    f"Query exceeded max_continuation_frames cap "
-                    f"({self._max_continuation_frames}); server may be "
-                    f"slow-dripping rows."
                 )
             if self._max_total_rows is not None and (
                 len(all_rows) + len(next_response.rows) > self._max_total_rows
