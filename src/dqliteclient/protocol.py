@@ -1182,8 +1182,16 @@ class DqliteProtocol:
         if deadline is not None:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
+                # Report the actual budget that was overrun, not the
+                # per-read window. With ``trust_server_heartbeat=True``
+                # the per-read ``self._read_timeout`` may be widened
+                # well above the configured ``self._timeout``; with
+                # heartbeat widening disabled the deadline budget is
+                # ``self._timeout``. Either way, ``-remaining`` is the
+                # observed overrun and is what operators want to see.
+                overrun = -remaining
                 raise DqliteConnectionError(
-                    f"Operation{self._addr_suffix()} exceeded {self._read_timeout}s deadline"
+                    f"Operation{self._addr_suffix()} exceeded deadline by {overrun:.3f}s"
                 )
             # Clamp against drift: the loop clock can advance between
             # the guard above and the ``wait_for`` call below. Without
