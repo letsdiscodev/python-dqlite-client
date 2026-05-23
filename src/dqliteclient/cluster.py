@@ -2332,6 +2332,18 @@ class ClusterClient:
                             f"addr={_sanitize_display_text(vaddress)!r}; "
                             f"node_id=0 must be paired with an empty address"
                         )
+                    # Filter the third-hop address through the same
+                    # redirect policy as the first-hop hint. The verified
+                    # responder is allowlisted by the operator but its
+                    # reported leader can be any peer (cluster mid-flip,
+                    # or — worst case — a compromised follower returning
+                    # an attacker-controlled address as its own leader
+                    # hint). The defence-in-depth contract documented at
+                    # the top of this branch ("hostile follower tunneling
+                    # an attacker-controlled address") must apply to the
+                    # third hop too, mirroring the per-node policy filter
+                    # ``cluster_info`` applies at lines 2099-2114.
+                    self._check_redirect(vaddress, policy=policy)
                     return LeaderInfo(node_id=vnode_id, address=vaddress)
                 return LeaderInfo(node_id=node_id, address=address)
         except (OperationalError, DqliteConnectionError, ProtocolError):

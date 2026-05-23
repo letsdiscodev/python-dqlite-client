@@ -137,6 +137,56 @@ async def test_instance_redirect_policy_used_when_no_per_call_policy() -> None:
 
 
 @pytest.mark.asyncio
+async def test_third_hop_vaddress_filtered_by_policy() -> None:
+    """The third-hop ``vaddress`` reported by the verified responder
+    must be policy-checked too. The verified responder is allowlisted
+    by the operator, but its reported leader can be any peer — a
+    compromised follower could return an attacker-controlled address
+    as its own leader hint, bypassing the defence the first-hop check
+    was designed to enforce."""
+
+    # First flip is allowed by the policy: responder at 10.0.0.5
+    # confirms a leader at 10.0.0.7 (still in the 10.0.0.0/24 subnet).
+    # The verified responder then reports 192.168.1.1 as the third
+    # hop, which the policy must reject.
+    def reject_outside_10_subnet(addr: str) -> bool:
+        host, _ = addr.rsplit(":", 1)
+        return host.startswith("10.")
+
+    cluster = _build_cluster_with_responder(
+        responder_node_id=7,
+        responder_address="10.0.0.5:9001",
+        verified_node_id=9,
+        verified_address="192.168.1.1:9001",
+    )
+
+    with pytest.raises(ClusterPolicyError, match="redirect.*rejected"):
+        await cluster.leader_info(policy=reject_outside_10_subnet)
+
+
+@pytest.mark.asyncio
+async def test_third_hop_vaddress_passes_when_within_policy() -> None:
+    """Sibling positive: when the third hop is within the policy, the
+    LeaderInfo round-trips cleanly."""
+
+    def reject_outside_10_subnet(addr: str) -> bool:
+        host, _ = addr.rsplit(":", 1)
+        return host.startswith("10.")
+
+    cluster = _build_cluster_with_responder(
+        responder_node_id=7,
+        responder_address="10.0.0.5:9001",
+        verified_node_id=9,
+        verified_address="10.0.0.9:9001",
+    )
+
+    info = await cluster.leader_info(policy=reject_outside_10_subnet)
+    assert info is not None
+    assert info.node_id == 9
+    assert info.address == "10.0.0.9:9001"
+
+
+@pytest.mark.asyncio
 async def test_no_leader_response_returns_none() -> None:
     """When the responder reports ``(node_id=0, address="")`` (mid-
     election sentinel), ``leader_info`` returns ``None`` and never
