@@ -464,7 +464,17 @@ class YamlNodeStore(NodeStore):
         #      tolerates a missing file at NewYamlNodeStore time).
         #   2. Empty / whitespace-only file -> empty tuple.
         #   3. Corrupt YAML -> ClusterError with file path.
-        if not self._path.exists():
+        # Use ``lstat`` (does NOT follow symlinks) so a dangling
+        # symlink at the store path surfaces as an explicit OSError
+        # via the ``os.open(O_NOFOLLOW)`` below — not silently as
+        # "file missing" via ``Path.exists()`` which follows symlinks
+        # and returns False for a dangling target. Only
+        # ``FileNotFoundError`` (no entry at the path) collapses to
+        # the empty-store fallback; ``PermissionError`` / ``OSError``
+        # propagate so the operator sees the actual cause.
+        try:
+            self._path.lstat()
+        except FileNotFoundError:
             return ()
         # Open-once / fstat / bounded read closes the TOCTOU window
         # between a separate ``stat()`` + ``read_text()`` syscall
