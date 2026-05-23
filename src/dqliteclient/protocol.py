@@ -38,6 +38,9 @@ from dqlitewire import ServerFailure as _WireServerFailure
 from dqlitewire import (
     sanitize_for_log as _sanitize_for_log,
 )
+from dqlitewire import (
+    sanitize_server_text as _sanitize_display_text,
+)
 from dqlitewire.messages import (
     AddRequest,
     AssignRequest,
@@ -1269,11 +1272,20 @@ class DqliteProtocol:
         the cutoff — operators tailing logs via
         ``logger.error("%s", exc)`` would see the truncated server
         text but lose the peer-address attribution.
+
+        Routes the server text through ``sanitize_server_text``
+        (display variant — preserves LF / Tab for multi-line server
+        diagnostics, strips control / bidi / invisible codepoints)
+        so a hostile peer cannot inject log-splitting characters
+        into the exception's display message. The leader-flip
+        rewrap arm in ``connection.py`` already applies the same
+        helper; mirror it on the canonical query-path raise.
         """
         from dqliteclient.cluster import _truncate_error
 
         truncated_msg = _truncate_error(response.message)
-        return _failure_message(truncated_msg, self._addr_suffix())
+        safe_msg = _sanitize_display_text(truncated_msg)
+        return _failure_message(safe_msg, self._addr_suffix())
 
     def _operation_deadline(self) -> float:
         """Deadline (monotonic seconds) for a single read-side protocol
