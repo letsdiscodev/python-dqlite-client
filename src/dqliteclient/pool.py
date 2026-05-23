@@ -546,6 +546,13 @@ class ConnectionPool:
         self._pool: asyncio.Queue[DqliteConnection] = asyncio.Queue(maxsize=max_size)
         self._size = 0
         self._lock = asyncio.Lock()
+        # Loop-binding guard mirroring ``DqliteConnection._check_in_use``
+        # at ``connection.py``: ``asyncio.Queue`` / ``asyncio.Lock`` lazy-
+        # bind to a loop on first use, and silent cross-loop misuse
+        # surfaces only as a deep asyncio-internal error later. Lazy-bind
+        # on first call to ``_check_loop_binding`` so factory-style
+        # construction outside a running loop still works.
+        self._loop_ref: weakref.ref[asyncio.AbstractEventLoop] | None = None
         self._closed = False
         self._closed_event: asyncio.Event | None = None
         self._close_done: asyncio.Event | None = None
@@ -637,6 +644,48 @@ class ConnectionPool:
             f"in the target process instead."
         )
 
+    def _check_loop_binding(self) -> None:
+        """Validate the pool's asyncio primitives match the current loop.
+
+        ``self._pool`` (``asyncio.Queue``), ``self._lock``
+        (``asyncio.Lock``), and the close-coordination
+        ``asyncio.Event`` slots (``_closed_event`` / ``_close_done``)
+        are constructed eagerly and lazy-bind to whichever loop
+        touches them first. Silent cross-loop misuse — pool created
+        on loop A, awaited from loop B — surfaces only as a deep
+        asyncio-internal error rather than an actionable diagnostic.
+
+        Mirrors the sibling discipline at
+        ``DqliteConnection._check_in_use`` (`connection.py`): lazy-bind
+        on first call, verify on every subsequent call, raise a clean
+        ``InterfaceError`` on mismatch.
+        """
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError as e:
+            raise InterfaceError("ConnectionPool must be used from within an async context.") from e
+        # ``getattr``-safe so ``__new__``-built test fixtures that
+        # bypass ``__init__`` (and the field initialisation there) can
+        # still drive public methods without tripping AttributeError
+        # at this guard.
+        loop_ref = getattr(self, "_loop_ref", None)
+        if loop_ref is None:
+            # Lazy-bind. Factory-style construction outside any running
+            # loop is supported; the bind happens on first use.
+            self._loop_ref = weakref.ref(current_loop)
+            return
+        bound = loop_ref()
+        if bound is None:
+            raise InterfaceError(
+                "ConnectionPool is bound to a closed event loop. "
+                "Reconstruct the pool in the new loop."
+            )
+        if current_loop is not bound:
+            raise InterfaceError(
+                "ConnectionPool is bound to a different event loop. "
+                "Do not share pools across event loops or OS threads."
+            )
+
     async def initialize(self) -> None:
         """Initialize the pool with minimum connections.
 
@@ -667,6 +716,7 @@ class ConnectionPool:
                 f"in the target process. (created in pid {self._creator_pid}, "
                 f"current pid {_conn_mod.get_current_pid()})"
             )
+        self._check_loop_binding()
         # Hold the lock across the gather so a second concurrent
         # initialize() call observes _initialized=True after the first
         # completes and returns without re-creating.
@@ -1540,6 +1590,7 @@ class ConnectionPool:
                 f"in the target process. (created in pid {self._creator_pid}, "
                 f"current pid {_conn_mod.get_current_pid()})"
             )
+        self._check_loop_binding()
         if self._closed:
             raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
 
@@ -2309,6 +2360,7 @@ class ConnectionPool:
             with contextlib.suppress(AttributeError):
                 conn._pool_released = True
             return
+        self._check_loop_binding()
         returned_to_queue = False
         try:
             if self._closed:
@@ -2532,6 +2584,7 @@ class ConnectionPool:
                 self._finalizer.detach()
                 self._finalizer = None
             return
+        self._check_loop_binding()
         if self._closed:
             # Cross-loop edge case (same pid, past the fork gate):
             # ``self._close_done`` is an ``asyncio.Event`` captured by
