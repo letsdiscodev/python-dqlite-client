@@ -1394,37 +1394,30 @@ class ClusterClient:
             await protocol.negotiate_protocol_only()
             node_id, leader_addr = await protocol.get_leader()
 
-            # Upstream dqlite's ``raft_leader`` sets ``id`` and ``address``
-            # atomically: either both are filled in (a leader is known) or
-            # both are zero/NULL. The server substitutes ``""`` for NULL,
-            # so the only wire-legal shapes are ``(0, "")`` and
-            # ``(nonzero, nonempty)``.
+            # Upstream dqlite's ``raft_leader`` normally pairs ``id``
+            # and ``address`` (both filled in for a known leader, both
+            # zero/NULL for "no leader"). The server substitutes
+            # ``""`` for NULL on the wire. The ``(node_id != 0,
+            # leader_addr == "")`` shape is reachable on a real
+            # follower after a ``RAFT_NOMEM`` from
+            # ``recvUpdateLeader`` (raft/recv.c): step 1 sets
+            # ``current_leader.id``; step 4 mallocs the address.
+            # If the malloc fails, the follower reports ``(id=N,
+            # address="")`` until the next AppendEntries arrival
+            # retries the update. The Go and C clients both treat
+            # this as "leader unknown"; do the same here so the
+            # operator does not see a connection-killing
+            # ProtocolError on a recoverable cluster window. The
+            # wire decoder logs a WARNING for forensic visibility.
             if node_id != 0 and not leader_addr:
-                # Observability: an operator tailing logs during a
-                # leader-discovery stall needs the breadcrumb at the
-                # point of detection, not only via the raised
-                # ProtocolError surfaced upstream. Log at DEBUG so the
-                # WARN/ERROR paths stay uncluttered during healthy
-                # per-node probes.
-                #
-                # Log both addresses through ``sanitize_for_log`` so a
-                # hostile peer can't inject CRLF / Tab / control-chars
-                # into operator-facing logs (CWE-117).
-                # ``_sanitize_display_text`` preserves LF / Tab for
-                # exception-message readability — wrong helper for
-                # logger records. Mirrors the sibling discipline at
-                # ``_verify_redirect`` (this module).
                 logger.debug(
-                    "query_leader: %s returned malformed redirect (node_id=%s, address=%r)",
+                    "query_leader: %s reports leader_id=%d with empty "
+                    "address (RAFT_NOMEM transient — treating as "
+                    "'no leader known')",
                     sanitize_for_log(address),
                     node_id,
-                    sanitize_for_log(leader_addr),
                 )
-                raise ProtocolError(
-                    f"server {_sanitize_display_text(address)} returned "
-                    f"node_id={node_id} with empty leader address; "
-                    f"expected both or neither"
-                )
+                return None
             if node_id == 0 and leader_addr:
                 # Mirror arm: the inverse illegal shape. Upstream
                 # ``raft_leader`` never writes a non-empty address with
@@ -2218,21 +2211,33 @@ class ClusterClient:
                     # no longer self-identifies as leader. Surface
                     # ``None`` rather than confabulating an answer.
                     return None
-                if (node_id == 0) != (not address):
-                    # Malformed: exactly one of the two is empty. The
-                    # upstream ``raft_leader`` call in
-                    # ``dqlite-upstream/src/gateway.c`` is atomic —
-                    # both fields are set together or neither is.
-                    # Asymmetric with sibling ``_query_leader`` which
-                    # already raises ``ProtocolError`` for the same
-                    # shape; bring this admin path into discipline so
-                    # a hostile follower's ``(0, attacker-addr)`` or
-                    # ``(7, "")`` cannot ride past the policy gate
-                    # below as a silent ``None``.
+                if node_id != 0 and not address:
+                    # RAFT_NOMEM transient on the responder: step 1
+                    # of ``recvUpdateLeader`` (raft/recv.c) set
+                    # ``current_leader.id``; step 4 failed to malloc
+                    # the address buffer. ``handle_leader``
+                    # null-coerces address to ``""`` on the wire.
+                    # Treat as "no leader known" matching the Go and
+                    # C clients and the sibling ``_query_leader``
+                    # arm.
+                    logger.debug(
+                        "leader_info: %s reports leader_id=%d with empty "
+                        "address (RAFT_NOMEM transient — treating as "
+                        "'no leader known')",
+                        sanitize_for_log(leader_addr),
+                        node_id,
+                    )
+                    return None
+                if node_id == 0 and address:
+                    # The remaining malformed shape: ``(0, nonempty)``.
+                    # Upstream ``raft_leader`` never emits id=0 with a
+                    # non-empty address — a hostile follower's
+                    # ``(0, attacker-addr)`` cannot ride past the
+                    # policy gate below as a silent ``None``.
                     raise ProtocolError(
                         f"leader_info: malformed (node_id, address) — "
                         f"got id={node_id!r} addr={_sanitize_display_text(address)!r}; "
-                        f"expected both or neither (raft_leader atomicity)"
+                        f"node_id=0 must be paired with an empty address"
                     )
                 if not _addr_equiv(address, leader_addr):
                     # Leadership flipped between find_leader and this
@@ -2268,12 +2273,24 @@ class ClusterClient:
                         vnode_id, vaddress = await p2.get_leader()
                     if vnode_id == 0 and not vaddress:
                         return None
-                    if (vnode_id == 0) != (not vaddress):
+                    if vnode_id != 0 and not vaddress:
+                        # RAFT_NOMEM transient on the verified hint —
+                        # same shape as the parent arm; treat as "no
+                        # leader known".
+                        logger.debug(
+                            "leader_info: verified hint %s reports "
+                            "leader_id=%d with empty address (RAFT_NOMEM "
+                            "transient — treating as 'no leader known')",
+                            sanitize_for_log(verified),
+                            vnode_id,
+                        )
+                        return None
+                    if vnode_id == 0 and vaddress:
                         raise ProtocolError(
                             f"leader_info: malformed (node_id, address) on "
                             f"verified hint — got id={vnode_id!r} "
                             f"addr={_sanitize_display_text(vaddress)!r}; "
-                            f"expected both or neither"
+                            f"node_id=0 must be paired with an empty address"
                         )
                     return LeaderInfo(node_id=vnode_id, address=vaddress)
                 return LeaderInfo(node_id=node_id, address=address)

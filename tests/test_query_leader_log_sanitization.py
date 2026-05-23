@@ -30,40 +30,13 @@ def _make_cluster() -> ClusterClient:
     return ClusterClient(store, timeout=0.5)
 
 
-@pytest.mark.asyncio
-async def test_query_leader_empty_addr_with_nonzero_id_sanitizes_debug_log(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    cluster = _make_cluster()
-
-    async def fake_open_connection(
-        host: str, port: int, **_kwargs: object
-    ) -> tuple[MagicMock, MagicMock]:
-        reader = MagicMock()
-        writer = MagicMock()
-        writer.close = MagicMock()
-        writer.wait_closed = AsyncMock()
-        return reader, writer
-
-    fake_proto = MagicMock()
-    fake_proto.handshake = AsyncMock(return_value=10_000)
-    fake_proto.negotiate_protocol_only = AsyncMock()
-    # node_id != 0 with empty address triggers the first malformed-redirect arm.
-    fake_proto.get_leader = AsyncMock(return_value=(7, ""))
-
-    with (
-        caplog.at_level(logging.DEBUG, logger="dqliteclient.cluster"),
-        pytest.raises(ProtocolError),
-    ):
-        # Patch open_connection + protocol so _query_leader exercises
-        # the malformed-redirect path without touching the network.
-        from unittest.mock import patch
-
-        with (
-            patch("asyncio.open_connection", new=fake_open_connection),
-            patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
-        ):
-            await cluster._query_leader("localhost:9001", trust_server_heartbeat=False)
+# The ``(node_id != 0, address == "")`` arm previously raised
+# ProtocolError with the hostile leader_addr in the message; it now
+# routes to "no leader known" with a DEBUG breadcrumb that does NOT
+# carry the leader_addr field (the field is empty in this arm).
+# Sanitization coverage for that surface moved to the ``(0, hostile)``
+# arm below, which is the only remaining path that emits a
+# hostile-controlled address into the DEBUG record.
 
 
 def _assert_no_raw_control_bytes(records: list[logging.LogRecord]) -> None:

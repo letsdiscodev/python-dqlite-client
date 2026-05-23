@@ -1,13 +1,17 @@
-"""Pin: ``leader_info`` raises ``ProtocolError`` for malformed
-``(node_id, address)`` shapes and re-probes via ``_verify_redirect``
-when leadership flipped between ``find_leader`` and the follow-up
-``get_leader`` round-trip.
+"""Pin: ``leader_info`` raises ``ProtocolError`` for the malformed
+``(node_id=0, address!="")`` shape and tolerates the
+``(node_id>0, address="")`` RAFT_NOMEM transient by surfacing
+``None`` (matching the sibling ``_query_leader`` arm and the Go / C
+clients). The re-probe via ``_verify_redirect`` runs when leadership
+flipped between ``find_leader`` and the follow-up ``get_leader``.
 
-The malformed-shape check mirrors the sibling ``_query_leader`` arm
-which raises ``ProtocolError`` for the same shape (raft_leader is
-atomic — both fields are set together or neither). The re-probe
-mirrors the parallel-sweep ``_probe_one`` and fast-path arms which
-already call ``_verify_redirect`` on the hint before trusting it.
+The ``(node_id>0, address="")`` shape is reachable on a real
+follower after a ``RAFT_NOMEM`` from ``recvUpdateLeader``
+(raft/recv.c): step 1 sets ``current_leader.id``; step 4 fails to
+malloc the address buffer. ``handle_leader`` null-coerces the NULL
+address to ``""`` on the wire. Treating this as
+"no leader known" rather than ``ProtocolError`` keeps a recoverable
+cluster window from killing the admin RPC.
 """
 
 from __future__ import annotations
@@ -59,10 +63,14 @@ async def test_malformed_zero_id_nonempty_address_raises_protocol_error() -> Non
 
 
 @pytest.mark.asyncio
-async def test_malformed_nonzero_id_empty_address_raises_protocol_error() -> None:
+async def test_nonzero_id_empty_address_returns_none() -> None:
+    """``(7, "")`` is the RAFT_NOMEM transient from
+    ``recvUpdateLeader`` — return ``None`` ("no leader known") rather
+    than raise. Matches the sibling ``_query_leader`` arm and Go/C
+    client behaviour."""
     cluster = _make_cluster((7, ""))
-    with pytest.raises(ProtocolError, match="malformed"):
-        await cluster.leader_info()
+    info = await cluster.leader_info()
+    assert info is None
 
 
 @pytest.mark.asyncio
@@ -166,13 +174,14 @@ async def test_verified_target_returns_zero_nonempty_raises_protocol_error() -> 
 
 
 @pytest.mark.asyncio
-async def test_verified_target_returns_nonzero_empty_raises_protocol_error() -> None:
-    """Other half of the inner atomicity invariant — a verified
-    target reporting ``(7, "")`` must also raise."""
+async def test_verified_target_returns_nonzero_empty_returns_none() -> None:
+    """Inner re-validation pin: a verified target reporting
+    ``(7, "")`` is the RAFT_NOMEM transient. Mirror the outer arm and
+    surface ``None`` rather than raising."""
     cluster = _make_cluster(
         (7, "flipped:9001"),
         verified_return="flipped:9001",
         verified_get_leader=(7, ""),
     )
-    with pytest.raises(ProtocolError, match="malformed"):
-        await cluster.leader_info()
+    info = await cluster.leader_info()
+    assert info is None

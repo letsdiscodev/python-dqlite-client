@@ -703,14 +703,17 @@ class TestQueryLeaderTrustsHeartbeat:
         assert captured.get("trust_server_heartbeat") is False
 
 
-class TestQueryLeaderRejectsUnreachableCombo:
-    """A (nonzero id, empty address) response is a protocol violation;
-    reject it instead of silently substituting the queried address.
+class TestQueryLeaderTreatsRaftNomemAsNoLeader:
+    """A ``(node_id=N, address="")`` reply is reachable on a real
+    follower after ``RAFT_NOMEM`` in ``recvUpdateLeader``: the
+    follower assigns ``current_leader.id = N`` in step 1 and may
+    then fail to malloc the address in step 4. The Go and C clients
+    both treat this as "leader unknown"; we match that behaviour
+    rather than raising ``ProtocolError`` and killing the cluster
+    probe.
     """
 
-    async def test_nonzero_id_with_empty_address_raises_protocol_error(self) -> None:
-        from dqliteclient.exceptions import ProtocolError
-
+    async def test_nonzero_id_with_empty_address_returns_none(self) -> None:
         store = MemoryNodeStore(["localhost:9001"])
         client = ClusterClient(store, timeout=1.0)
 
@@ -736,9 +739,9 @@ class TestQueryLeaderRejectsUnreachableCombo:
         with (
             patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
             patch("dqliteclient.cluster.DqliteProtocol", FakeProto),
-            pytest.raises(ProtocolError),
         ):
-            await client._query_leader("localhost:9001")
+            result = await client._query_leader("localhost:9001")
+        assert result is None
 
     async def test_find_leader_multi_node_all_no_leader_known(self) -> None:
         """Parity with the single-node case in
@@ -786,17 +789,15 @@ class TestQueryLeaderRejectsUnreachableCombo:
         ):
             await client.find_leader()
 
-    async def test_malformed_redirect_is_debug_logged(
+    async def test_raft_nomem_transient_is_debug_logged(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The point-of-detection DEBUG breadcrumb must include the
-        queried address AND the bad (node_id, address) pair so an
-        operator can correlate the discovery stall in logs alone,
-        not only via the surfaced ProtocolError.
+        queried address and the leader_id so an operator can
+        correlate the discovery stall in logs alone, even though the
+        arm no longer raises (it returns ``None``).
         """
         import logging
-
-        from dqliteclient.exceptions import ProtocolError
 
         store = MemoryNodeStore(["node-3:9000"])
         client = ClusterClient(store, timeout=1.0)
@@ -824,18 +825,18 @@ class TestQueryLeaderRejectsUnreachableCombo:
             patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
             patch("dqliteclient.cluster.DqliteProtocol", FakeProto),
             caplog.at_level(logging.DEBUG, logger="dqliteclient.cluster"),
-            pytest.raises(ProtocolError, match="empty leader address"),
         ):
-            await client._query_leader("node-3:9000")
+            result = await client._query_leader("node-3:9000")
+        assert result is None
 
         matching = [
             r
             for r in caplog.records
             if r.levelno == logging.DEBUG
-            and "malformed redirect" in r.getMessage()
+            and "RAFT_NOMEM" in r.getMessage()
             and "node-3:9000" in r.getMessage()
         ]
-        assert matching, f"expected DEBUG 'malformed redirect' with address; got {caplog.records!r}"
+        assert matching, f"expected DEBUG RAFT_NOMEM breadcrumb; got {caplog.records!r}"
 
     async def test_zero_id_empty_address_returns_none(self) -> None:
         store = MemoryNodeStore(["localhost:9001"])

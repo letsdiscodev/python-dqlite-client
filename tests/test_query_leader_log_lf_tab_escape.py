@@ -115,13 +115,12 @@ async def test_query_leader_zero_id_nonempty_addr_log_args_escape_lf_tab(
 async def test_query_leader_nonzero_id_empty_addr_uses_sanitize_for_log(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Arm 1 (``node_id != 0 and not leader_addr``): even though the
-    ``address`` reaches this log after a successful ``parse_address``
-    gate (so no LF / Tab survives in practice), the helper must be
-    ``sanitize_for_log`` to match the sibling discipline in
-    ``_verify_redirect``. Pin via direct helper-identity check:
-    monkeypatch both helpers on the cluster module and assert
-    ``sanitize_for_log`` was called for the log site."""
+    """Arm 1 (``node_id != 0 and not leader_addr``): the RAFT_NOMEM
+    transient now returns ``None`` rather than raising — but it still
+    emits a DEBUG breadcrumb naming the queried ``address``, and that
+    must be routed through ``sanitize_for_log`` (not
+    ``_sanitize_display_text``) to match the sibling discipline in
+    ``_verify_redirect``."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()
@@ -151,17 +150,14 @@ async def test_query_leader_nonzero_id_empty_addr_uses_sanitize_for_log(
         patch.object(cluster_mod, "_sanitize_display_text", new=spy_display),
         patch("asyncio.open_connection", new=_fake_open_connection()),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
-        pytest.raises(ProtocolError),
     ):
-        await cluster._query_leader("localhost:9001", trust_server_heartbeat=False)
+        result = await cluster._query_leader("localhost:9001", trust_server_heartbeat=False)
+    assert result is None
 
-    # The log site for arm 1 logs ``address`` and ``leader_addr``
-    # through ``sanitize_for_log``. The ``ProtocolError`` raise
-    # arm still uses ``_sanitize_display_text`` for the
-    # exception-text rendering. The pin is that ``sanitize_for_log``
-    # was called at least once (for the log site) and that
-    # ``_sanitize_display_text`` was NOT the helper threading
-    # ``address`` into the log record's args.
+    # The DEBUG breadcrumb routes the queried ``address`` through
+    # ``sanitize_for_log``. Pin the helper identity so a future
+    # refactor cannot regress into ``_sanitize_display_text`` (which
+    # preserves LF / Tab — wrong for a logger record).
     assert log_calls, (
-        "expected sanitize_for_log to be called inside _query_leader's malformed-redirect log site"
+        "expected sanitize_for_log to be called inside the RAFT_NOMEM-transient DEBUG breadcrumb"
     )
