@@ -2076,6 +2076,23 @@ class DqliteConnection:
         self._protocol = None
         self._db_id = None
         protocol.close()
+        # Schedule the bounded drain as a Task so ``asyncio.shield``
+        # can keep it alive across an outer cancel — mirrors the
+        # discipline at ``_abort_protocol`` (below). A cancel landing
+        # mid-``wait_closed`` previously discarded the underlying
+        # StreamReader task, surfacing later as "Task was destroyed but
+        # it is pending" at GC. The done-callback (project-canonical
+        # ``_observe_drain_exception``) ensures the eventual drain
+        # exception is observed and not surfaced as a "Task exception
+        # was never retrieved" warning.
+        inner_drain: asyncio.Task[None] = asyncio.ensure_future(
+            asyncio.wait_for(protocol.wait_closed(), timeout=self._close_timeout)
+        )
+        # Local import to avoid an import cycle at module load —
+        # ``dqliteclient.cluster`` imports ``dqliteclient.connection``.
+        from dqliteclient.cluster import _observe_drain_exception
+
+        inner_drain.add_done_callback(_observe_drain_exception)
         # Narrow the suppression: a bounded wait on the transport
         # drain can legitimately raise TimeoutError (slow peer) or
         # OSError (already-closed writer). Anything else — especially
@@ -2084,7 +2101,7 @@ class DqliteConnection:
         # remain intact. DEBUG-log unexpected Exceptions for
         # diagnostics; do not swallow.
         try:
-            await asyncio.wait_for(protocol.wait_closed(), timeout=self._close_timeout)
+            await asyncio.shield(inner_drain)
         except OSError:
             # OSError subsumes TimeoutError, so the single OSError
             # entry covers the slow-peer / already-closed-writer
@@ -2600,9 +2617,9 @@ class DqliteConnection:
                 # ``LEADER_LOST_DB_LOOKUP_SUBSTRING`` is already
                 # lowercase by convention (the wire layer's SSOT
                 # pins it). Sibling at SA's ``is_disconnect``.
-                (getattr(e, "raw_message", None) or e.message or "").lower().startswith(
-                    LEADER_LOST_DB_LOOKUP_SUBSTRING
-                )
+                (getattr(e, "raw_message", None) or e.message or "")
+                .lower()
+                .startswith(LEADER_LOST_DB_LOOKUP_SUBSTRING)
             ):
                 # Go-parity: ``driverError`` at
                 # ``go-dqlite/driver/driver.go`` maps ``errNotFound``
