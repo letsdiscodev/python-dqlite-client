@@ -1064,10 +1064,17 @@ def _connection_unclosed_warning(
     if closed_flag[0] or not connected_flag[0]:
         return
     with contextlib.suppress(RuntimeError):
+        # Sanitise the address before interpolation: a custom
+        # ``dial_func`` that bypassed ``parse_address`` could
+        # otherwise carry LF / U+2028 into journald via the
+        # ResourceWarning emission and split the record.
+        # Defence-in-depth matching the ``__repr__`` discipline on
+        # this class (CWE-117).
         warnings.warn(
-            f"DqliteConnection(address={address!r}) was garbage-collected "
-            f"without await close(). Call ``await conn.close()`` "
-            f"explicitly to release the underlying socket promptly.",
+            f"DqliteConnection(address={sanitize_for_log(str(address))!r}) "
+            f"was garbage-collected without await close(). Call "
+            f"``await conn.close()`` explicitly to release the "
+            f"underlying socket promptly.",
             ResourceWarning,
             stacklevel=2,
         )
