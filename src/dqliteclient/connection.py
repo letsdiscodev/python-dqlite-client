@@ -1890,6 +1890,12 @@ class DqliteConnection:
             self._savepoint_implicit_begin = False
             self._has_untracked_savepoint = False
             self._bound_loop_ref = None
+            # Clear the in-use guard too so a child-process caller is
+            # not permanently locked out by ``_check_in_use``'s
+            # "another operation is in progress" branch. The post-
+            # shortcut try/finally that normally clears this flag
+            # (lines below) is not reached on the fork-pid path.
+            self._in_use = False
             return
         # Pool-released connections are never in_use for close(); their
         # close path has already run under pool ownership. The same-
