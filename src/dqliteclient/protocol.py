@@ -393,8 +393,21 @@ class DqliteProtocol:
             # ``DqliteError._MAX_RAW_MESSAGE`` codepoints, default 4 KiB)
             # that ``ProtocolError.raw_message`` is meant to carry for
             # cross-process forensic recovery.
-            raise ProtocolError(
+            # Raise OperationalError (with the structured ``code``
+            # second positional) rather than ProtocolError so the
+            # server-supplied SQLite code is preserved as an
+            # attribute, not only interpolated into the message
+            # string. Mirrors the 16 sibling FailureResponse-derived
+            # raise sites; the prior ProtocolError site was the lone
+            # asymmetric path that forced downstream classifiers
+            # (``_connect_impl``'s leader-flip arm, dbapi's
+            # ``_CODE_TO_EXCEPTION``, SA's ``is_disconnect``) to
+            # fall back on substring matching. Semantically the
+            # handshake failure carries a server-supplied SQLite
+            # code — operational, not protocol-shape.
+            raise OperationalError(
                 f"Handshake failed: [{response.code}] {self._failure_text(response)}",
+                response.code,
                 raw_message=response.message,
             )
 

@@ -346,8 +346,11 @@ class TestDqliteProtocol:
         failure = FailureResponse(code=1, message="auth failed").encode()
         mock_reader.read.return_value = failure
 
-        with pytest.raises(ProtocolError, match="Handshake failed"):
+        with pytest.raises(OperationalError, match="Handshake failed") as ei:
             await protocol.handshake()
+        # Structured ``code`` matches the wire code (mirrors the 16
+        # sibling FailureResponse-derived raise sites).
+        assert ei.value.code == 1
 
     async def test_handshake_failure_includes_code_and_address(
         self,
@@ -364,13 +367,14 @@ class TestDqliteProtocol:
         mock_reader.read.return_value = failure
         protocol = DqliteProtocol(mock_reader, mock_writer, address="leader.example:9001")
 
-        with pytest.raises(ProtocolError) as ei:
+        with pytest.raises(OperationalError) as ei:
             await protocol.handshake()
 
         message = str(ei.value)
         assert "[101]" in message
         assert "bad protocol version" in message
         assert "leader.example:9001" in message
+        assert ei.value.code == 101
 
     async def test_handshake_failure_empty_message_uses_placeholder(
         self,
@@ -384,7 +388,7 @@ class TestDqliteProtocol:
         failure = FailureResponse(code=1, message="").encode()
         mock_reader.read.return_value = failure
 
-        with pytest.raises(ProtocolError) as ei:
+        with pytest.raises(OperationalError) as ei:
             await protocol.handshake()
 
         assert "(no diagnostic from server)" in str(ei.value)
