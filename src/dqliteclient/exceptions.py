@@ -2,9 +2,9 @@
 
 from typing import Any, ClassVar
 
+from dqlitewire import DEFAULT_MAX_RAW_MESSAGE as _DEFAULT_MAX_RAW_MESSAGE
 from dqlitewire import ProtocolError as _WireProtocolError
-from dqlitewire._truncate import _DEFAULT_MAX_RAW_MESSAGE
-from dqlitewire._truncate import _cap_raw_message as _wire_cap_raw_message
+from dqlitewire import cap_raw_message as _wire_cap_raw_message
 
 __all__ = [
     "ClusterError",
@@ -40,9 +40,8 @@ class DqliteError(Exception):
     # Cap on ``raw_message``. The rationale (~64 KiB
     # ``FailureResponse``, ``BaseExceptionGroup`` fan-out under hostile
     # peers, cross-process pickling) lives in
-    # ``dqlitewire._truncate._DEFAULT_MAX_RAW_MESSAGE`` — the single
-    # source of truth shared with ``dqlitedbapi``. Subclasses may
-    # override.
+    # ``dqlitewire.DEFAULT_MAX_RAW_MESSAGE`` — the single source of
+    # truth shared with ``dqlitedbapi``. Subclasses may override.
     _MAX_RAW_MESSAGE: ClassVar[int] = _DEFAULT_MAX_RAW_MESSAGE
 
     raw_message: str | None
