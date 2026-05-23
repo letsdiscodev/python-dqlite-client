@@ -112,7 +112,16 @@ async def test_busy_with_checkpoint_message_clears_tx_state() -> None:
     """SQLITE_BUSY (5) with the upstream gateway's "checkpoint in
     progress" wording is a Raft-side BUSY where the tx-state-clear is
     safe — the in-flight write was not accepted, so the local tracker
-    must mirror the server's view."""
+    must mirror the server's view.
+
+    The OperationalError is rewrapped as DqliteConnectionError so
+    SA's ``is_disconnect`` catches it via the connection-class arm
+    (SA's substring scan is gated on ``code is None`` and so cannot
+    catch a coded BUSY); the SA pool recycles the slot, closing the
+    SA-side transaction-tracker / server-side state divergence the
+    bare-OperationalError raise left open."""
+    from dqliteclient.exceptions import DqliteConnectionError
+
     conn = DqliteConnection("localhost:9001")
     conn._db_id = 1
     conn._protocol = object()  # type: ignore[assignment]
@@ -125,10 +134,12 @@ async def test_busy_with_checkpoint_message_clears_tx_state() -> None:
     conn._savepoint_stack = ["sp"]
     conn._savepoint_implicit_begin = True
 
-    with pytest.raises(OperationalError):
+    with pytest.raises(DqliteConnectionError) as ei:
         await conn._run_protocol(fake_send)
 
-    assert conn._protocol is not None  # not invalidated
+    # Original OperationalError chained via __cause__ for forensics.
+    assert isinstance(ei.value.__cause__, OperationalError)
+    assert conn._protocol is not None  # not invalidated at the wire
     assert conn._in_transaction is False
     assert conn._tx_owner is None
     assert conn._savepoint_stack == []
@@ -198,7 +209,13 @@ async def test_busy_with_checkpoint_substring_only_in_raw_message_clears_tx_stat
     wording is shifted past the truncation boundary on ``message``
     still classifies as Raft-BUSY. Without this, the tracker stays in
     the (wrong) engine-BUSY state and the user's local
-    ``_in_transaction`` flag lies about server state."""
+    ``_in_transaction`` flag lies about server state.
+
+    Surfaces as DqliteConnectionError (the Raft-checkpoint rewrap);
+    see sibling test for the SA-pool-invalidate rationale.
+    """
+    from dqliteclient.exceptions import DqliteConnectionError
+
     conn = DqliteConnection("localhost:9001")
     conn._db_id = 1
     conn._protocol = object()  # type: ignore[assignment]
@@ -221,10 +238,11 @@ async def test_busy_with_checkpoint_substring_only_in_raw_message_clears_tx_stat
     conn._savepoint_stack = ["sp"]
     conn._savepoint_implicit_begin = True
 
-    with pytest.raises(OperationalError):
+    with pytest.raises(DqliteConnectionError) as ei:
         await conn._run_protocol(fake_send)
 
-    assert conn._protocol is not None  # not invalidated
+    assert isinstance(ei.value.__cause__, OperationalError)
+    assert conn._protocol is not None  # not invalidated at the wire
     assert conn._in_transaction is False
     assert conn._tx_owner is None
     assert conn._savepoint_stack == []

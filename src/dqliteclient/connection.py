@@ -2670,6 +2670,24 @@ class DqliteConnection:
                 self._savepoint_stack.clear()
                 self._savepoint_implicit_begin = False
                 self._has_untracked_savepoint = False
+                # Rewrap as ``DqliteConnectionError`` so SA's
+                # ``is_disconnect`` classifier (which gates the
+                # substring scan on ``code is None`` and so cannot
+                # catch a coded BUSY) sees the failure via the
+                # connection-class arm and invalidates the pool
+                # slot. The local tx-flag clear above keeps THIS
+                # connection wire-coherent for any direct caller
+                # that catches the rewrap, but the SA pool now
+                # recycles the slot — closing the SA-side
+                # transaction-tracker / server-side state
+                # divergence the bare-OperationalError raise left
+                # open. Mirrors the discipline applied to leader-
+                # flip paths above.
+                raise DqliteConnectionError(
+                    f"raft-checkpoint reset the in-flight transaction: {e}",
+                    code=e.code,
+                    raw_message=getattr(e, "raw_message", None),
+                ) from e
             raise
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit) as e:
             # Interrupted mid-operation; we don't know how much of the
