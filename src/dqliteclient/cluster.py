@@ -1119,15 +1119,27 @@ class ClusterClient:
                     sem_acquired = False
 
                 if leader_address:
+                    # Policy applies to EVERY confirmed-leader address,
+                    # not just the redirect-different-from-probe case.
+                    # The probed node's own address must pass the same
+                    # gate as a redirect target — otherwise an
+                    # allowlist-style policy is silently bypassed when
+                    # the policy-excluded node happens to be the
+                    # current leader (the canonical regional-pin use
+                    # case). The cached fast-path (cluster.py:867-869,
+                    # 919) already gates on every cached-leader
+                    # consultation; this restores the probe-path
+                    # symmetry. ``_check_redirect`` is idempotent and
+                    # inexpensive (a single callable invocation).
+                    # Re-raises ClusterPolicyError on rejection; the
+                    # gather loop catches it and propagates.
+                    self._check_redirect(leader_address, policy=policy)
                     # Only leader_address values that did NOT come from
                     # node.address itself need authorizing — those are
                     # real redirects. Compare via the canonical
                     # (host, port) tuple so an IPv6 bracketing
                     # difference does not look like a redirect.
                     if not _addr_equiv(leader_address, node.address):
-                        # Re-raises ClusterPolicyError on rejection;
-                        # the gather loop catches it and propagates.
-                        self._check_redirect(leader_address, policy=policy)
                         # Re-probe the redirect target to confirm it
                         # self-identifies as leader. Stale-hint
                         # peers can hand back a node that no longer

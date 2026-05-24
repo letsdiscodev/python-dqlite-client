@@ -125,21 +125,32 @@ class TestRedirectPolicy:
             f"probe attempts (expected 1)."
         )
 
-    def test_self_leader_bypasses_policy(self) -> None:
-        """If the queried node is the leader (returns its own address),
-        the redirect policy doesn't apply — the address is already in the
-        seed list by definition."""
+    def test_self_leader_does_not_bypass_policy(self) -> None:
+        """Policy applies to EVERY confirmed-leader address, including
+        the self-confirm case where the probed node returns its own
+        address. The seed list and the policy are independent — an
+        allowlist policy can legitimately exclude addresses present in
+        the seed list (the canonical regional-pin use case). Pre-
+        existing behavior silently bypassed the policy on self-confirm;
+        the fix lifts the policy check out of the inner
+        ``if not _addr_equiv`` so it runs on every leader hit. See
+        ``test_probe_one_redirect_policy_on_self_confirm.py`` for the
+        full pin set covering both arms."""
+        from dqliteclient.exceptions import ClusterError, ClusterPolicyError
+
         store = MemoryNodeStore(["10.0.0.1:9001"])
-        # Policy that rejects everything — but the node returning its own
-        # address isn't a real redirect, so it's accepted.
+        # Policy rejects everything — the self-confirm path must
+        # propagate the rejection, not silently return the address.
         cc = ClusterClient(
             store,
             timeout=5.0,
             redirect_policy=lambda _a: False,
         )
-        with patch.object(cc, "_query_leader", new=AsyncMock(return_value="10.0.0.1:9001")):
-            result = asyncio.run(cc.find_leader())
-        assert result == "10.0.0.1:9001"
+        with (
+            patch.object(cc, "_query_leader", new=AsyncMock(return_value="10.0.0.1:9001")),
+            pytest.raises((ClusterPolicyError, ClusterError)),
+        ):
+            asyncio.run(cc.find_leader())
 
     def test_redirect_rejection_emits_debug_log(self, caplog) -> None:
         """Policy rejection must emit a DEBUG log so an SSRF-style
