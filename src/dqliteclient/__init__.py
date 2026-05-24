@@ -68,7 +68,7 @@ DEFAULT_CLOSE_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_CLOSE_TIMEOUT_SECONDS
 DEFAULT_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_TIMEOUT_SECONDS
 DEFAULT_MAX_MESSAGE_SIZE: _Final[int] = _DEFAULT_MAX_MESSAGE_SIZE
 
-__version__: _Final[str] = "0.2.0"
+__version__: _Final[str] = "0.2.1"
 
 logger = logging.getLogger(__name__)
 # Convention from the Python logging HOWTO: attach a ``NullHandler``
