@@ -1787,6 +1787,21 @@ class ClusterClient:
                     f"got {max_elapsed_seconds}"
                 )
 
+        # Resolve the effective DoS cap with the "per-call overrides
+        # instance default; None falls back" idiom already used for
+        # ``policy=`` at cluster.py:744-756. Without this resolution
+        # the per-call kwarg's ``None`` default silently dropped the
+        # ``ClusterClient(..., max_message_size=N)`` constructor value
+        # — ``DqliteProtocol`` then resolved ``None`` to
+        # ``DEFAULT_MAX_MESSAGE_SIZE`` (the wire default), silently
+        # bypassing the operator's DoS-hardening cap on the connect
+        # path. Sibling sites at cluster.py:1428 (``_query_leader``)
+        # and cluster.py:2828 (admin connect) already consult
+        # ``self._max_message_size``; this restores parity.
+        effective_max_message_size = (
+            max_message_size if max_message_size is not None else self._max_message_size
+        )
+
         attempt_counter = [0]
 
         async def try_connect() -> DqliteConnection:
@@ -1828,7 +1843,7 @@ class ClusterClient:
                     trust_server_heartbeat=trust_server_heartbeat,
                     close_timeout=close_timeout,
                     dial_func=self._dial_func,
-                    max_message_size=max_message_size,
+                    max_message_size=effective_max_message_size,
                 )
                 try:
                     await conn.connect()
