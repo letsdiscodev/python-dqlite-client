@@ -2546,9 +2546,18 @@ class ConnectionPool:
             with contextlib.suppress(AttributeError):
                 conn._pool_released = True
             return
-        self._check_loop_binding()
+        # NB: ``_check_loop_binding()`` lives INSIDE the try arm so
+        # the ``finally`` at the bottom of this method runs (and the
+        # reservation slot is released) even when the binding check
+        # raises ``InterfaceError`` against a cross-loop / closed-
+        # loop misuse. Without this discipline, the diagnostic raise
+        # bypassed the compensating finally and the slot stayed
+        # incremented forever — under operator-misuse-then-retry
+        # patterns (engine.dispose() + retry-on-new-loop) every
+        # misuse permanently shrank ``max_size`` by 1.
         returned_to_queue = False
         try:
+            self._check_loop_binding()
             if self._closed:
                 # Shield (via ``_close_best_effort``) so an outer cancel
                 # mid-cleanup (e.g. ``asyncio.timeout`` around
