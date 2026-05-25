@@ -1887,7 +1887,28 @@ class ConnectionPool:
                     # valid; return it to the queue so the next
                     # acquirer can use it instead of closing and
                     # releasing (which would shrink _size).
-                    await self._put_back_or_release_late_winner(get_task.result())
+                    #
+                    # ``RuntimeError`` from inside the helper —
+                    # typically ``"Event loop is closed"`` during a
+                    # racing ``engine.dispose()`` — would otherwise
+                    # propagate out and SUPPLANT the user's original
+                    # cancel exception (preserved only via
+                    # ``__context__``). Log and absorb so the bare
+                    # ``raise`` below re-raises the original.
+                    # Narrow to ``RuntimeError`` so programming bugs
+                    # (``AttributeError``, ``TypeError``, etc.) still
+                    # surface. Mirrors the sibling discipline at
+                    # ``acquire``'s except-arm shielded close.
+                    try:
+                        await self._put_back_or_release_late_winner(get_task.result())
+                    except RuntimeError:
+                        logger.debug(
+                            "pool.acquire cleanup: late-winner helper raised "
+                            "RuntimeError (typically 'Event loop is closed' "
+                            "under engine.dispose()); original cancel/"
+                            "exception preserved via __context__.",
+                            exc_info=True,
+                        )
                 elif get_task is not None and not get_task.done():
                     get_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
@@ -1941,7 +1962,25 @@ class ConnectionPool:
                     # delivering). Route the conn back via the same
                     # put-back-or-release path the outer-cancel arm
                     # uses, so the slot is not leaked.
-                    await self._put_back_or_release_late_winner(get_task.result())
+                    #
+                    # ``RuntimeError`` absorption mirrors the
+                    # outer-cancel arm above: a racing
+                    # ``engine.dispose()`` can render the loop closed
+                    # mid-cleanup and the helper's
+                    # ``_close_best_effort`` / ``_release_reservation``
+                    # would otherwise raise ``RuntimeError("Event
+                    # loop is closed")``, supplanting the loop's
+                    # natural continuation (`continue` to re-check
+                    # pool state) with a noisy diagnostic.
+                    try:
+                        await self._put_back_or_release_late_winner(get_task.result())
+                    except RuntimeError:
+                        logger.debug(
+                            "pool.acquire post-wait demux: late-winner helper "
+                            "raised RuntimeError (typically 'Event loop is "
+                            "closed' under engine.dispose())",
+                            exc_info=True,
+                        )
                 continue
 
         # If connection is dead, discard and create a fresh one with leader discovery.
