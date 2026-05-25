@@ -976,14 +976,33 @@ class ClusterClient:
                     type(e).__name__,
                 )
                 self._set_last_known_leader(None)
-            except ClusterPolicyError:
+            except ClusterPolicyError as policy_exc:
                 # The cached address redirected us to a policy-
                 # rejected target (or the operator changed the
                 # redirect policy). Clear and propagate — the same
                 # policy applies to every other probe, so falling
                 # through would not produce a different outcome.
+                #
+                # Preserve the cached-address forensic trail: chain
+                # via ``from`` so the raised ``ClusterPolicyError``'s
+                # ``__cause__`` records which cached node redirected
+                # us to the rejected target. The parallel-sweep arm
+                # below (lines 1349-1356) accumulates this history
+                # for the sweep path; the fast-path raise unwinds
+                # past that accumulator, so without the explicit
+                # chain here a forensic walker sees only a bare
+                # ``ClusterPolicyError`` with no breadcrumb back to
+                # the cached address. ``ClusterError`` here is the
+                # cheapest carrier of the "fast-path redirect
+                # rejected" diagnostic with the sanitised cached
+                # address embedded; the operator's bug-class
+                # remains ``ClusterPolicyError`` (the outer raise).
                 self._set_last_known_leader(None)
-                raise
+                raise policy_exc from ClusterError(
+                    f"find_leader: fast-path probe of cached leader "
+                    f"{sanitize_for_log(cached)} redirected to a "
+                    f"policy-rejected target ({policy_exc})"
+                )
 
         # Snapshot defensively into a fresh list — the NodeStore Protocol
         # documents that the returned Sequence "will not be mutated
