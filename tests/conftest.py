@@ -67,8 +67,15 @@ def leader_response() -> bytes:
 
 @pytest.fixture
 def db_response() -> bytes:
-    """Create encoded DbResponse."""
-    return DbResponse(db_id=1).encode()
+    """Create encoded DbResponse.
+
+    Upstream ``gateway.c::handle_open`` always assigns ``id=0`` to
+    the first (and only) database opened on a fresh connection; the
+    client enforces this with a defence-in-depth guard in
+    ``DqliteProtocol.open_database``. Tests that mock the wire MUST
+    use ``db_id=0`` to match the server contract.
+    """
+    return DbResponse(db_id=0).encode()
 
 
 @pytest.fixture

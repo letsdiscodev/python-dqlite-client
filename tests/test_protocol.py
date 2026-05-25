@@ -403,7 +403,7 @@ class TestDqliteProtocol:
 
         db_id = await protocol.open_database("test.db")
 
-        assert db_id == 1
+        assert db_id == 0
 
     async def test_open_database_failure(
         self,

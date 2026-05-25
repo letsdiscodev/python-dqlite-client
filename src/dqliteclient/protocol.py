@@ -817,7 +817,21 @@ class DqliteProtocol:
     async def open_database(self, name: str, flags: int = 0, vfs: str = "") -> int:
         """Open a database.
 
-        Returns the database ID.
+        Returns the database ID. Upstream contractually assigns ``0``
+        to the first (and only) database opened on a fresh connection
+        — ``gateway.c::handle_open`` writes ``response.id = 0`` and
+        the next OPEN on the same connection is refused with
+        ``SQLITE_BUSY`` (``gateway.c:319-324``). A wire response that
+        echoes any other id is either a buggy / misconfigured server
+        or a hostile peer; reject defensively rather than threading
+        the bad id through every subsequent RPC and surfacing the
+        symptom one round-trip later via ``prepare``'s ``db_id``
+        mismatch guard. Mirrors that guard's discipline.
+
+        Uses ``WIRE_DECODE_FAILED_PREFIX`` so SA's ``is_disconnect``
+        triggers pool invalidation downstream — the connection's
+        view of the database id is irrecoverable on this RPC, so the
+        pool must drop the slot.
         """
         async with self._lock:
             request = OpenRequest(name=name, flags=flags, vfs=vfs)
@@ -833,6 +847,13 @@ class DqliteProtocol:
             if not isinstance(response, DbResponse):
                 raise ProtocolError(
                     f"Expected DbResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
+
+            if response.db_id != 0:
+                raise ProtocolError(
+                    f"{WIRE_DECODE_FAILED_PREFIX}: OPEN returned db_id={response.db_id}, "
+                    f"expected 0 (upstream contract: first DB on a fresh connection "
+                    f"is always assigned id 0){self._addr_suffix()}"
                 )
 
             return response.db_id

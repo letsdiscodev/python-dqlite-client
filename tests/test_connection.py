@@ -206,7 +206,7 @@ class TestDqliteConnection:
 
         responses = [
             WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
+            DbResponse(db_id=0).encode(),
         ]
         mock_reader.read.side_effect = responses
 
@@ -236,7 +236,7 @@ class TestDqliteConnection:
 
         responses = [
             WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
+            DbResponse(db_id=0).encode(),
             ResultResponse(last_insert_id=0, rows_affected=0).encode(),  # BEGIN
         ]
         mock_reader.read.side_effect = responses
@@ -278,7 +278,7 @@ class TestDqliteConnection:
         # Handshake + open_database + BEGIN succeed
         responses = [
             WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
+            DbResponse(db_id=0).encode(),
             ResultResponse(last_insert_id=0, rows_affected=0).encode(),  # BEGIN
         ]
         mock_reader.read.side_effect = responses
@@ -548,7 +548,7 @@ class TestDqliteConnection:
 
         responses = [
             WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
+            DbResponse(db_id=0).encode(),
         ]
         mock_reader.read.side_effect = responses
 
@@ -783,7 +783,7 @@ class TestDqliteConnection:
 
         responses = [
             WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
+            DbResponse(db_id=0).encode(),
         ]
         mock_reader.read.side_effect = responses
 
@@ -1055,7 +1055,7 @@ class TestDqliteConnection:
 
         responses = [
             WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
+            DbResponse(db_id=0).encode(),
         ]
         mock_reader.read.side_effect = responses
 
@@ -1111,7 +1111,7 @@ class TestDqliteConnection:
 
         responses = [
             WelcomeResponse(heartbeat_timeout=15000).encode(),
-            DbResponse(db_id=1).encode(),
+            DbResponse(db_id=0).encode(),
         ]
         mock_reader.read.side_effect = responses
 
