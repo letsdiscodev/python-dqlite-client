@@ -49,10 +49,34 @@ async def test_max_delay_bad_values_rejected(bad: float) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad", [-0.1, 1.1, float("inf"), float("nan")])
+@pytest.mark.parametrize("bad", [-0.1, 1.0, 1.1, float("inf"), float("nan")])
 async def test_jitter_bad_values_rejected(bad: float) -> None:
-    with pytest.raises(ValueError, match=r"jitter must be in \[0, 1\]"):
+    """Half-open ``[0, 1)``: at ``jitter=1.0`` exactly,
+    ``1 + uniform(-1, 1)`` can draw 0 and zero the backoff. Pin
+    the rejection so an operator copying ``jitter=1`` from a
+    benchmark snippet gets an actionable diagnostic instead of
+    occasional zero-backoff attempts."""
+    with pytest.raises(ValueError, match=r"jitter must be in \[0, 1\)"):
         await retry_with_backoff(_ok, jitter=bad)
+
+
+@pytest.mark.asyncio
+async def test_jitter_one_message_explains_zero_backoff_risk() -> None:
+    """The diagnostic must explain WHY 1.0 is rejected — the
+    operator needs to know what to set instead."""
+    with pytest.raises(ValueError) as exc_info:
+        await retry_with_backoff(_ok, jitter=1.0)
+    msg = str(exc_info.value)
+    assert "exponential-backoff contract" in msg
+    assert "zero the backoff" in msg
+
+
+@pytest.mark.asyncio
+async def test_jitter_zero_point_nine_nine_still_accepted() -> None:
+    """The closest practical max-randomisation value is still
+    accepted — pin that no off-by-one shrank the range further."""
+    result = await retry_with_backoff(_ok, max_attempts=1, jitter=0.99)
+    assert result == 42
 
 
 @pytest.mark.asyncio

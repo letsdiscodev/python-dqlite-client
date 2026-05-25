@@ -93,7 +93,12 @@ async def retry_with_backoff[T](
         max_attempts: Maximum number of attempts
         base_delay: Initial delay between retries in seconds
         max_delay: Maximum delay between retries
-        jitter: Random jitter factor (0-1)
+        jitter: Random jitter factor in ``[0, 1)`` — e.g. ``0.5``
+            means each delay is randomly scaled by ``[0.5, 1.5]``.
+            ``1.0`` is rejected: ``1 + uniform(-1, 1)`` can legally
+            draw 0, zeroing the backoff for that iteration and
+            defeating the exponential-backoff contract. Cap at
+            ``0.99`` for the strongest randomisation.
         max_elapsed_seconds: Optional total wall-clock cap. ``None``
             (default) means "only ``max_attempts`` governs termination."
             Set to a positive finite number to abort the retry loop
@@ -160,8 +165,18 @@ async def retry_with_backoff[T](
             raise ValueError(f"{name} must be a non-negative finite number, got {value}")
     if isinstance(jitter, bool) or not isinstance(jitter, (int, float)):
         raise TypeError(f"jitter must be a number, got {type(jitter).__name__}")
-    if not math.isfinite(jitter) or not (0 <= jitter <= 1):
-        raise ValueError(f"jitter must be in [0, 1], got {jitter}")
+    if not math.isfinite(jitter) or not (0 <= jitter < 1):
+        # Half-open interval ``[0, 1)``: at ``jitter=1.0`` exactly,
+        # ``1 + uniform(-1, 1)`` can legally draw 0 (the lower bound
+        # is a legal return of ``random.uniform(a, b)``), which zeros
+        # the backoff for that iteration and defeats the documented
+        # exponential-backoff contract. Reject at the validator
+        # rather than admitting the degenerate value silently.
+        raise ValueError(
+            f"jitter must be in [0, 1) — values at or above 1 allow the "
+            f"uniform(-jitter, jitter) draw to zero the backoff, defeating "
+            f"the exponential-backoff contract. Got {jitter}."
+        )
     if max_elapsed_seconds is not None:
         if isinstance(max_elapsed_seconds, bool) or not isinstance(
             max_elapsed_seconds, (int, float)
