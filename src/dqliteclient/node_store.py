@@ -15,10 +15,39 @@ from typing import Final, NoReturn, Protocol, final, runtime_checkable
 from dqliteclient import connection as _conn_mod
 from dqliteclient.exceptions import ClusterError, InterfaceError
 from dqlitewire import NodeRole
+from dqlitewire import sanitize_server_text as _sanitize_display_text
 
 __all__ = ["MemoryNodeStore", "NodeInfo", "NodeStore", "YamlNodeStore"]
 
 logger = logging.getLogger(__name__)
+
+# Codepoint cap for payload-derived values embedded in YAML loader
+# ``ClusterError`` diagnostics. The file-size cap
+# (_MAX_YAML_NODE_STORE_BYTES) bounds the overall payload at 1 MiB,
+# but within that budget a single entry can be arbitrarily large; a
+# corrupt or co-tenant-modified store would otherwise produce
+# multi-hundred-KB ``str(ClusterError)`` reaching operator logs.
+# Sized similarly to ``OperationalError._MAX_DISPLAY_MESSAGE`` but
+# tighter (these are individual field values, not whole RPC payloads).
+_MAX_DISPLAY_VALUE = 256
+
+
+def _cap_and_sanitize(value: object, n: int = _MAX_DISPLAY_VALUE) -> str:
+    """Sanitise + length-cap a payload-derived value for embedding in
+    a YAML-loader ``ClusterError`` message.
+
+    Mirrors the per-redirect-message sanitisation discipline at
+    ``cluster.py`` (``sanitize_server_text`` preserves LF/Tab but
+    escapes other control bytes for CWE-117 hardening) and adds a
+    256-codepoint cap so a hostile or corrupt YAML entry cannot
+    inject a multi-hundred-KB diagnostic into the operator log.
+    """
+    s = value if isinstance(value, str) else str(value)
+    s = _sanitize_display_text(s)
+    if len(s) <= n:
+        return s
+    return f"{s[:n]}... [truncated, {len(s) - n} codepoints]"
+
 
 # Upper bound on cancel-storm absorption inside
 # ``YamlNodeStore.set_nodes``'s shield-drain loop. The lock is held
@@ -590,7 +619,9 @@ class YamlNodeStore(NodeStore):
         try:
             raw = yaml.safe_load(text)
         except yaml.YAMLError as e:
-            raise ClusterError(f"YamlNodeStore: malformed YAML in {self._path}: {e}") from e
+            raise ClusterError(
+                f"YamlNodeStore: malformed YAML in {self._path}: {_cap_and_sanitize(e)}"
+            ) from e
         if raw is None:
             return ()
         if not isinstance(raw, list):
@@ -625,7 +656,7 @@ class YamlNodeStore(NodeStore):
             if isinstance(node_id_raw, (bool, float)):
                 raise ClusterError(
                     f"YamlNodeStore: {self._path}[{idx}] 'ID' must be integer "
-                    f"(not float / bool), got {node_id_raw!r}"
+                    f"(not float / bool), got {_cap_and_sanitize(repr(node_id_raw))}"
                 )
             if not isinstance(node_id_raw, int):
                 try:
@@ -633,7 +664,7 @@ class YamlNodeStore(NodeStore):
                 except (TypeError, ValueError) as e:
                     raise ClusterError(
                         f"YamlNodeStore: {self._path}[{idx}] 'ID' must be "
-                        f"integer, got {node_id_raw!r}"
+                        f"integer, got {_cap_and_sanitize(repr(node_id_raw))}"
                     ) from e
             else:
                 node_id = node_id_raw
@@ -667,7 +698,7 @@ class YamlNodeStore(NodeStore):
                 except ValueError as e:
                     raise ClusterError(
                         f"YamlNodeStore: {self._path}[{idx}] 'Role' "
-                        f"integer {role_raw} is not a valid NodeRole"
+                        f"integer {_cap_and_sanitize(role_raw)} is not a valid NodeRole"
                     ) from e
             elif isinstance(role_raw, str):
                 # go-dqlite's ``String()`` emits "voter"/"stand-by"/"spare".
@@ -675,7 +706,8 @@ class YamlNodeStore(NodeStore):
                 if normalised not in _YAML_ROLE_STRING_ALIASES:
                     raise ClusterError(
                         f"YamlNodeStore: {self._path}[{idx}] 'Role' "
-                        f"string {role_raw!r} not one of voter/stand-by/spare"
+                        f"string {_cap_and_sanitize(repr(role_raw))} "
+                        f"not one of voter/stand-by/spare"
                     )
                 role = _YAML_ROLE_STRING_ALIASES[normalised]
             else:
@@ -697,7 +729,7 @@ class YamlNodeStore(NodeStore):
         try:
             return _validate_and_normalise_nodes(result)
         except (TypeError, ValueError) as e:
-            raise ClusterError(f"YamlNodeStore: {self._path}: {e}") from e
+            raise ClusterError(f"YamlNodeStore: {self._path}: {_cap_and_sanitize(e)}") from e
 
     async def get_nodes(self) -> Sequence[NodeInfo]:
         self._check_pid()
