@@ -7,7 +7,7 @@ import os
 import stat
 import tempfile
 import warnings
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, NoReturn, Protocol, final, runtime_checkable
@@ -285,7 +285,9 @@ class MemoryNodeStore(NodeStore):
         self._nodes = _validate_and_normalise_nodes(nodes)
 
 
-def _validate_and_normalise_nodes(nodes: Sequence[NodeInfo]) -> tuple[NodeInfo, ...]:
+def _validate_and_normalise_nodes(
+    nodes: Sequence[NodeInfo] | Iterable[NodeInfo],
+) -> tuple[NodeInfo, ...]:
     """Strip / validate / dedup ``NodeInfo`` entries.
 
     Shared by every node-store entry point that constructs an
@@ -296,6 +298,14 @@ def _validate_and_normalise_nodes(nodes: Sequence[NodeInfo]) -> tuple[NodeInfo, 
     eliminates rule-drift across the four call sites: a future
     address-validation rule (e.g. "reject IPv6 link-local") lands in
     one place.
+
+    Generator-tolerant: callers may pass any ``Iterable[NodeInfo]``
+    (e.g. ``set_nodes(NodeInfo(...) for n in seeds)``). Non-list /
+    non-tuple inputs are materialised into a ``list`` up front so the
+    downstream cap check and iteration both work; this turns the
+    erstwhile bare ``TypeError: object of type 'generator' has no
+    len()`` from ``len(nodes)`` into a clean accept on the happy path
+    and the regular ``ValueError`` on over-cap inputs.
 
     Validation pipeline:
 
@@ -312,6 +322,12 @@ def _validate_and_normalise_nodes(nodes: Sequence[NodeInfo]) -> tuple[NodeInfo, 
     6. Return frozen ``NodeInfo`` tuples with the stripped address so
        downstream lookups by address match.
     """
+    # Materialise non-list/tuple iterables (e.g. generators) up front
+    # so the upfront ``len(nodes)`` cap check and the subsequent
+    # ``for node in nodes`` loop both work. The helper already returns
+    # a tuple at the end, so the materialise is conceptually free.
+    if not isinstance(nodes, (list, tuple)):
+        nodes = list(nodes)
     # Length-cap before per-entry validation so a pathological 1 M-entry
     # input from app-side misuse cannot block the event loop on
     # parse_address loops under the asyncio.Lock held by
