@@ -1644,8 +1644,13 @@ class TestReleaseCancellationPreservesReservation:
     async def test_cancel_during_reset_does_not_leak_reservation(self) -> None:
         """Path B (production-likely): the success branch of
         ``acquire()`` calls ``_release`` → ``_reset_connection`` →
-        ``conn.execute("ROLLBACK")``. If an outer cancellation arrives
-        at the ROLLBACK await, the reservation must still be released.
+        ``conn.execute("ROLLBACK")``. The happy-path release is now
+        shielded (``acquire``'s ``else`` arm wraps it in
+        ``asyncio.shield`` + ``suppress(CancelledError)``), so an outer
+        cancel landing at the release await runs ``_release`` to
+        completion in the background instead of bypassing it. The
+        reservation eventually decrements once the shielded
+        ``_release`` finishes its work.
         """
         pool = ConnectionPool(["localhost:9001"], max_size=1)
 
@@ -1659,13 +1664,19 @@ class TestReleaseCancellationPreservesReservation:
         mock_conn._check_in_use = MagicMock()
         mock_conn._pool_released = False
 
-        async def slow_rollback(sql: str, params=None) -> tuple[int, int]:
+        rollback_started = asyncio.Event()
+        unblock_rollback = asyncio.Event()
+
+        async def gated_rollback(sql: str, params=None) -> tuple[int, int]:
             if "ROLLBACK" in sql:
-                # Suspend long enough for the outer timeout to fire.
-                await asyncio.sleep(10)
+                rollback_started.set()
+                # Wait for the test to unblock so we can simulate the
+                # rollback completing AFTER the outer cancel observer
+                # has run.
+                await unblock_rollback.wait()
             return (0, 0)
 
-        mock_conn.execute = slow_rollback
+        mock_conn.execute = gated_rollback
 
         with patch.object(pool._cluster, "connect", return_value=mock_conn):
             await pool.initialize()
@@ -1677,16 +1688,31 @@ class TestReleaseCancellationPreservesReservation:
                 async with pool.acquire() as conn:
                     conn._in_transaction = True
 
-        # The reservation MUST have been released even though
-        # CancelledError fired during _reset_connection's ROLLBACK.
-        assert pool._size == starting_size - 1, (
-            f"reservation leaked: expected {starting_size - 1}, got {pool._size}"
+        # Wait for the rollback to begin (proves _release entered the
+        # try arm — shield kept it running across the outer cancel).
+        await asyncio.wait_for(rollback_started.wait(), timeout=1.0)
+        # Release the rollback so _release can complete its work.
+        unblock_rollback.set()
+        # Drain pending tasks so the shielded _release finishes and
+        # the conn is returned to the queue.
+        for _ in range(50):
+            if pool._pool.qsize() == 1:
+                break
+            await asyncio.sleep(0.01)
+
+        # Reset succeeded (rollback returned a result, not cancelled),
+        # so the conn is returned to the queue and the reservation
+        # transfers with it. ``_size`` stays at starting_size (the
+        # reservation has not been released — the conn is now idle in
+        # the queue, still counted against the pool's cap). The
+        # invariant: NO leak — the slot is accounted for by the
+        # queued conn, not lost to limbo.
+        assert pool._size == starting_size, (
+            f"reservation accounting mismatch: expected {starting_size}, got {pool._size}"
         )
-        # _pool_released is intentionally NOT asserted: cancellation
-        # arriving mid-close leaves the conn an orphan with the flag
-        # still False, so a holder of the ref can still close it via
-        # ``DqliteConnection.close()``. The pool's only obligation is
-        # the reservation count.
+        assert pool._pool.qsize() == 1, (
+            f"conn should be returned to queue after successful reset; qsize={pool._pool.qsize()}"
+        )
 
         await pool.close()
 

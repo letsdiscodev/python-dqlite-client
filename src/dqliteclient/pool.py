@@ -2271,7 +2271,27 @@ class ConnectionPool:
                         await asyncio.shield(self._release_reservation())
             raise
         else:
-            await self._release(conn)
+            # Shield the happy-path release so a cancel landing at
+            # the await of ``self._release(conn)`` cannot raise BEFORE
+            # ``_release``'s body starts (and therefore bypass its
+            # internal ``try``/``finally`` reservation discipline
+            # entirely). Without the shield, an outer
+            # ``asyncio.timeout`` around ``async with pool.acquire()``
+            # whose body completes normally just as the timeout fires
+            # raises ``CancelledError`` at the bare await — the conn
+            # stays checked out (``_pool_released=False``,
+            # reservation slot held). Mirrors the discipline at the
+            # exception-arm shield above.
+            #
+            # Under shield, an outer cancel still cancels the
+            # caller's await but ``_release`` runs to completion in
+            # the background; the reservation decrement and the
+            # rollback / close eventually happen rather than being
+            # aborted mid-flight. The trade-off (slot release is
+            # asynchronous to the cancel observation) is acceptable
+            # against the alternative of slot leak.
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(self._release(conn))
 
     async def _reset_connection(self, conn: DqliteConnection) -> bool:
         """Roll back any open transaction before returning to pool.
