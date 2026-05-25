@@ -2666,9 +2666,26 @@ class ConnectionPool:
         # ``_close_done`` set but not yet ``set()``) does not block on
         # an Event bound to the parent's loop. Awaiting that Event in
         # the child's fresh loop hangs forever.
+        #
+        # Null parent-loop-bound primitives inherited across the fork
+        # so any later child-side touch trips the canonical
+        # ``is None`` guard rather than asyncio's deep
+        # ``"got Future <Future pending> attached to a different loop"``
+        # diagnostic. Without this, the second-caller arm at the
+        # ``if self._closed:`` early-return above would race the
+        # inherited ``_close_done.wait()`` even though the surrounding
+        # fork short-circuit returns first — defence-in-depth against
+        # any future helper that touches ``_close_done`` /
+        # ``_closed_event`` from the child. Mark ``_drain_complete``
+        # so the second-caller arm's ``_drain_remaining_after_cancel``
+        # branch also short-circuits cleanly; the child cannot
+        # meaningfully drain (the FDs are shared with the parent).
         if _conn_mod.get_current_pid() != self._creator_pid:
             self._closed = True
             self._closed_flag[0] = True
+            self._close_done = None
+            self._closed_event = None
+            self._drain_complete = True
             if self._finalizer is not None:
                 self._finalizer.detach()
                 self._finalizer = None
