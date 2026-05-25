@@ -637,10 +637,24 @@ class YamlNodeStore(NodeStore):
                     f"mapping, got {type(entry).__name__}"
                 )
             # Accept PascalCase (canonical / go-dqlite) and lowercase
-            # (hand-edited) keys.
-            node_id_raw = entry.get("ID", entry.get("id"))
-            address_raw = entry.get("Address", entry.get("address"))
-            role_raw = entry.get("Role", entry.get("role"))
+            # (hand-edited) keys. Use an explicit ``is None`` fallback
+            # instead of ``entry.get(canonical, entry.get(alias))``:
+            # ``dict.get(key, default)`` only honours the default when
+            # ``key`` is MISSING, not when ``key`` is present with an
+            # explicit-``None`` value. A YAML entry with
+            # ``ID: null`` plus ``id: 5`` would otherwise resolve to
+            # ``None`` and trip "missing 'ID'" despite the lowercase
+            # alias providing a value — the documented "lowercase on
+            # read" tolerance would have a silent corner-case.
+            node_id_raw = entry.get("ID")
+            if node_id_raw is None:
+                node_id_raw = entry.get("id")
+            address_raw = entry.get("Address")
+            if address_raw is None:
+                address_raw = entry.get("address")
+            role_raw = entry.get("Role")
+            if role_raw is None:
+                role_raw = entry.get("role")
             if node_id_raw is None:
                 raise ClusterError(f"YamlNodeStore: {self._path}[{idx}] missing 'ID'")
             if address_raw is None:
