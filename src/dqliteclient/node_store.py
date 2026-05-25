@@ -627,7 +627,18 @@ class YamlNodeStore(NodeStore):
                     ) from e
             else:
                 node_id = node_id_raw
-            address = str(address_raw)
+            # Reject non-str at the loader site so the diagnostic
+            # blames the YAML schema (operator-facing fail-fast) rather
+            # than the downstream parse_address rejecting a
+            # ``str(int)`` / ``str(list)`` coercion as malformed
+            # 'host:port'. Mirrors the strict Role arm's
+            # ``else: raise`` discipline.
+            if not isinstance(address_raw, str):
+                raise ClusterError(
+                    f"YamlNodeStore: {self._path}[{idx}] 'Address' must be "
+                    f"str, got {type(address_raw).__name__}"
+                )
+            address = address_raw
             # Role: integer canonical (go-dqlite) OR string alias
             # ("voter"/"stand-by"/"spare") for hand-edited files.
             # Missing -> default Voter (matches the seed-list path
