@@ -1237,12 +1237,24 @@ class ConnectionPool:
         * The lock-held precondition is checked at runtime (NOT via
           ``assert`` — bare ``assert`` is stripped under
           ``python -O``, and this is a real precondition contract on
-          shared-state mutation, not a mypy narrow). A future caller
-          forgetting the lock raises ``AssertionError`` immediately
-          rather than corrupting ``_size`` under contention.
+          shared-state mutation, not a mypy narrow). The check is
+          **best-effort**: ``asyncio.Lock.locked()`` reports whether
+          the lock is held by ANY task, not by the current caller.
+          It catches the "no task holds the lock" misuse but cannot
+          detect a "different task holds the lock, current task does
+          not" violation — ``asyncio.Lock`` has no owner tracking.
+          Callers MUST use ``async with self._lock:
+          ... _release_reservations_locked(n)`` in the same
+          coroutine frame; the AssertionError catches the
+          forgot-to-acquire shape only.
         """
         if not self._lock.locked():
-            raise AssertionError("_release_reservations_locked called without _lock held")
+            raise AssertionError(
+                "_release_reservations_locked called without _lock held by anyone "
+                "(asyncio.Lock has no owner tracking; cannot detect cross-task "
+                "contract violation — callers must use 'async with self._lock' "
+                "in the same coroutine frame)"
+            )
         if not isinstance(n, int) or isinstance(n, bool) or n < 1:
             raise ValueError(f"_release_reservations_locked requires n >= 1 (int), got {n!r}")
         if self._size < n:
