@@ -5,6 +5,7 @@ from typing import Any, ClassVar
 from dqlitewire import DEFAULT_MAX_RAW_MESSAGE as _DEFAULT_MAX_RAW_MESSAGE
 from dqlitewire import ProtocolError as _WireProtocolError
 from dqlitewire import cap_raw_message as _wire_cap_raw_message
+from dqlitewire import sanitize_server_text as _sanitize_server_text
 
 __all__ = [
     "ClusterError",
@@ -198,6 +199,16 @@ class OperationalError(DqliteError):
     untruncated string on ``self.raw_message`` for callers that need
     forensic access. Pickle / ``copy.deepcopy`` stay lossless because
     ``super().__init__`` keeps the raw payload on ``self.args``.
+
+    ``self.message`` is also display-safe: control bytes (CR, NUL,
+    ANSI escape, etc.) are neutralised by ``sanitize_server_text``
+    at construction so a third-party caller raising
+    ``OperationalError(server_text, code)`` directly cannot leak
+    log-injection vectors into ``str(e)``. LF / Tab are intentionally
+    preserved so multi-line server diagnostics render correctly;
+    ``sanitize_for_log`` is the log-callsite helper that additionally
+    escapes those. ``raw_message`` carries the verbatim peer text
+    untouched for forensic recovery.
     """
 
     _MAX_DISPLAY_MESSAGE: ClassVar[int] = 1024
@@ -230,8 +241,22 @@ class OperationalError(DqliteError):
         # previous behaviour (``raw_message`` defaults to ``message``).
         # The ~4 KiB cap on raw_message is applied by ``DqliteError``.
         resolved_raw_message = message if raw_message is None else raw_message
-        if len(message) > self._MAX_DISPLAY_MESSAGE:
-            # ``len(message)`` and the slice cap count Python codepoints,
+        # Display sanitisation: neutralise control / bidi / invisible
+        # bytes in the display field before truncation so the
+        # invariant "``self.message`` is always display-safe" holds at
+        # the class boundary, not at every call site. Every first-
+        # party call site that builds an ``OperationalError`` from a
+        # ``FailureResponse.message`` already pre-sanitises through
+        # ``_sanitize_display_text`` (an alias for the same wire-side
+        # helper); applying it again is idempotent. The defence-in-
+        # depth catches future call sites that forget the helper, and
+        # any third-party caller raising
+        # ``OperationalError(server_text, code)`` directly. LF / Tab
+        # are intentionally preserved; ``sanitize_for_log`` is the
+        # log-callsite helper that additionally escapes those.
+        sanitised = _sanitize_server_text(message)
+        if len(sanitised) > self._MAX_DISPLAY_MESSAGE:
+            # ``len(sanitised)`` and the slice cap count Python codepoints,
             # not UTF-8 bytes. Match the unit in the marker so an
             # operator inspecting a truncated message can compute the
             # original size without converting between units. The
@@ -240,12 +265,12 @@ class OperationalError(DqliteError):
             # forensic-vs-disclosure trade-off (operators want the
             # original size for triage; the marginal info-disclosure of
             # exposing the size class outweighs the loss).
-            overflow = len(message) - self._MAX_DISPLAY_MESSAGE
+            overflow = len(sanitised) - self._MAX_DISPLAY_MESSAGE
             self.message = (
-                f"{message[: self._MAX_DISPLAY_MESSAGE]}... [truncated, {overflow} codepoints]"
+                f"{sanitised[: self._MAX_DISPLAY_MESSAGE]}... [truncated, {overflow} codepoints]"
             )
         else:
-            self.message = message
+            self.message = sanitised
         # Pass the TRUNCATED display ``self.message`` and ``code``
         # through as args so ``self.args == (truncated_message, code)``;
         # pickle / deepcopy reconstruct via
