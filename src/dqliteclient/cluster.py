@@ -29,7 +29,7 @@ from dqliteclient.exceptions import (
 )
 from dqliteclient.node_store import MemoryNodeStore, NodeStore
 from dqliteclient.node_store import NodeInfo as _StoreNodeInfo
-from dqliteclient.protocol import DqliteProtocol
+from dqliteclient.protocol import DqliteProtocol, validate_positive_int_or_none
 from dqliteclient.retry import retry_with_backoff
 from dqlitewire import (
     DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
@@ -449,8 +449,19 @@ class ClusterClient:
         # widened per-read deadline); ``max_total_rows`` and
         # ``max_continuation_frames`` matter for ``dump`` paths
         # carrying multi-GB results.
-        self._max_total_rows = max_total_rows
-        self._max_continuation_frames = max_continuation_frames
+        #
+        # Validate at construction (rather than deferring to
+        # ``DqliteProtocol.__init__`` inside ``_query_leader``) so a
+        # misconfigured value surfaces at the operator's config-load
+        # site instead of as a per-node probe failure deep inside the
+        # first ``find_leader()`` aggregate. Mirrors the discipline at
+        # ``DqliteConnection.__init__`` and the project-canonical
+        # "fail-fast construction" precedent documented at
+        # ``connection.py``'s ``parse_address`` call.
+        self._max_total_rows = validate_positive_int_or_none(max_total_rows, "max_total_rows")
+        self._max_continuation_frames = validate_positive_int_or_none(
+            max_continuation_frames, "max_continuation_frames"
+        )
         # Symmetric inbound + outbound frame cap forwarded to every
         # admin path (``open_admin_connection``) and leader probe
         # (``_query_leader``). ``None`` defers to the wire-layer
@@ -463,6 +474,19 @@ class ClusterClient:
         # DoS hardening measure saw the cap silently bypassed on
         # the admin path (notably ``dump``, where a multi-GB
         # database arrives as one frame per file content).
+        #
+        # Validate at construction mirroring the shape at
+        # ``DqliteProtocol.__init__``: ``None`` defers to the wire-
+        # layer default; any int must be >= 1; ``bool`` rejected
+        # (PEP-484-style — ``True`` is technically int but operators
+        # mean a count, not a flag).
+        if max_message_size is not None:
+            if isinstance(max_message_size, bool) or not isinstance(max_message_size, int):
+                raise TypeError(
+                    f"max_message_size must be int or None, got {type(max_message_size).__name__}"
+                )
+            if max_message_size < 1:
+                raise ValueError(f"max_message_size must be >= 1, got {max_message_size}")
         self._max_message_size = max_message_size
         self._trust_server_heartbeat = trust_server_heartbeat
         self._dial_func: DialFunc | None = dial_func
