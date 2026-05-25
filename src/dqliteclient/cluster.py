@@ -2644,6 +2644,20 @@ class ClusterClient:
         # gate would leave the instance "alive enough" to describe
         # a specific node but "dead" for leader-routed calls.
         self._check_pid()
+        if address is not None:
+            # Defer to the in-tree strict address parser for shape
+            # validation, mirroring :meth:`add_node`. Without this,
+            # a typoed / malformed address (stray whitespace, missing
+            # port, unbracketed IPv6, ``user@host`` shape) reaches
+            # ``open_admin_connection`` and surfaces deep in the dial
+            # path as a ``DqliteConnectionError`` — at a different
+            # site than ``add_node``'s clean ``ValueError``. Catching
+            # at the call site keeps the three per-address admin
+            # methods' operator-facing diagnostics symmetric.
+            try:
+                parse_address(address)
+            except ValueError as exc:
+                raise ValueError(f"describe: invalid address {address!r}: {exc}") from exc
         leader_targeted = address is None
         target = address if address is not None else await self.find_leader()
         try:
@@ -2702,6 +2716,17 @@ class ClusterClient:
         # but the explicit-address arm would otherwise silently
         # succeed in a forked child.
         self._check_pid()
+        if address is not None:
+            # Defer to the in-tree strict address parser for shape
+            # validation, mirroring :meth:`add_node` and the sibling
+            # arm of :meth:`describe`. Catches operator-error-class
+            # input (stray whitespace, missing port, unbracketed IPv6,
+            # ``user@host`` smuggle) at the call site instead of deep
+            # in ``open_admin_connection``'s dial path.
+            try:
+                parse_address(address)
+            except ValueError as exc:
+                raise ValueError(f"set_weight: invalid address {address!r}: {exc}") from exc
         leader_targeted = address is None
         target = address if address is not None else await self.find_leader()
         try:
