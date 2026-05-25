@@ -2454,6 +2454,64 @@ class ConnectionPool:
                 conn._has_untracked_savepoint = False
         return True
 
+    async def _drain_pending_under_shield(self, conn: DqliteConnection) -> None:
+        """Snapshot ``conn._pending_drain`` and absorb it under shield.
+
+        A cancel mid-ROLLBACK has ``_invalidate`` schedule a bounded
+        ``wait_closed`` drain task on the connection. ``close()``
+        normally awaits that task at ``connection.py``'s pending-drain
+        block, but the early-return on ``_pool_released=True`` set by
+        ``_release`` short-circuits past it. Snapshot and shield-await
+        the drain so the reader-task doesn't outlive the connection
+        (no "Task was destroyed but it is pending" on shutdown).
+
+        Mirroring discipline at every ``_release`` exit shape — the
+        finally arm AND the three early-return arms — so a future
+        refactor of ``_close_impl``'s re-snapshot loop cannot silently
+        regress drain hygiene at any one site.
+
+        Absorb the await-side ``CancelledError`` so a fresh outer
+        cancel during release does not tear down the bounded drain
+        (the shield itself protects the inner task; this suppress
+        covers the awaiter-side raise delivered when the surrounding
+        scope is cancelled). Do NOT suppress ``KeyboardInterrupt`` /
+        ``SystemExit`` — those must propagate.
+
+        The Exception arm is belt-and-braces: production drains run
+        inside ``_bounded_drain`` which already wraps in
+        ``suppress(Exception)``. Log the suppressed exception at
+        DEBUG so a future drain bug isn't completely invisible —
+        sibling discipline to ``_drain_idle``'s per-iteration
+        ``logger.debug("close failed", exc_info=True)``.
+
+        Drop the ``not pending.done()`` short-circuit: if the drain
+        task already finished (the recent close-shield change makes
+        this more likely — the ``await asyncio.shield(conn.close())``
+        yields an extra time, giving the drain time to complete
+        before this call site is reached), its ``BaseException``-
+        class exception would otherwise remain unobserved on the
+        task. Awaiting a done task is cheap and propagates the
+        exception through the same except arms.
+        """
+        pending = getattr(conn, "_pending_drain", None)
+        if pending is None:
+            return
+        try:
+            await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # Sanitise the address through the wire helper for
+            # symmetry with the other pool log sites — connection
+            # addresses originate from caller config but a hostile
+            # resolver / forged host entry can still smuggle control
+            # characters via DNS canonicalisation.
+            logger.debug(
+                "pool _release: suppressed pending-drain exception on conn %s",
+                sanitize_for_log(str(getattr(conn, "_address", "?"))),
+                exc_info=True,
+            )
+
     async def _release(self, conn: DqliteConnection) -> None:
         """Return a connection to the pool or close it.
 
@@ -2502,11 +2560,18 @@ class ConnectionPool:
                 # at DEBUG with ``exc_info=True`` (mirrors
                 # ``_initialize_close_unqueued``).
                 await self._close_best_effort(conn, "release-closed")
+                # Drain ``_pending_drain`` BEFORE setting
+                # ``_pool_released=True`` so the close-side drain is
+                # observed regardless of whether ``_close_impl``'s
+                # internal re-snapshot loop reached it. See
+                # ``_drain_pending_under_shield`` for rationale.
+                await self._drain_pending_under_shield(conn)
                 conn._pool_released = True
                 return
 
             if not await self._reset_connection(conn):
                 await self._close_best_effort(conn, "release-reset-rolled-back")
+                await self._drain_pending_under_shield(conn)
                 conn._pool_released = True
                 return
 
@@ -2519,6 +2584,7 @@ class ConnectionPool:
             # symmetry fix.
             if self._closed:
                 await self._close_best_effort(conn, "release-post-reset-closed")
+                await self._drain_pending_under_shield(conn)
                 conn._pool_released = True
                 return
 
@@ -2565,64 +2631,13 @@ class ConnectionPool:
                 # None.
                 #
                 # Drain ``_pending_drain`` BEFORE setting
-                # ``_pool_released=True``: a cancel mid-ROLLBACK has
-                # ``_invalidate`` schedule a bounded ``wait_closed``
-                # drain task on the connection. ``close()`` would
-                # normally await that task at ``connection.py``'s
-                # pending-drain block, but the early-return on
-                # ``_pool_released=True`` we set below short-circuits
-                # past it. Snapshot and shield-await the drain here so
-                # the reader-task doesn't outlive the connection (no
-                # "Task was destroyed but it is pending" on shutdown).
-                pending = getattr(conn, "_pending_drain", None)
-                if pending is not None:
-                    # Absorb the await-side CancelledError so a fresh
-                    # outer cancel during release does not tear down
-                    # the bounded drain (the shield itself protects
-                    # the inner task; this suppress covers the
-                    # awaiter-side raise delivered when the
-                    # surrounding scope is cancelled). Do NOT suppress
-                    # KeyboardInterrupt / SystemExit — those must
-                    # propagate.
-                    #
-                    # The Exception arm is belt-and-braces: production
-                    # drains run inside ``_bounded_drain`` which
-                    # already wraps in ``suppress(Exception)``. Log
-                    # the suppressed exception at DEBUG so a future
-                    # drain bug isn't completely invisible — sibling
-                    # discipline to ``_drain_idle``'s per-iteration
-                    # ``logger.debug("close failed", exc_info=True)``.
-                    #
-                    # Drop the ``not pending.done()`` short-circuit:
-                    # if the drain task already finished (the recent
-                    # close-shield change makes this more likely — the
-                    # ``await asyncio.shield(conn.close())`` yields an
-                    # extra time, giving the drain time to complete
-                    # before we reach this finally), its
-                    # ``BaseException``-class exception would otherwise
-                    # remain unobserved on the task. Awaiting a done
-                    # task is cheap and propagates the exception
-                    # through the same except arms; the only
-                    # observable difference is that a done task with a
-                    # ``BaseException`` now correctly re-raises out of
-                    # this scope instead of triggering "Task exception
-                    # was never retrieved" at GC.
-                    try:
-                        await asyncio.shield(pending)
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception:
-                        # Sanitise the address through the wire helper
-                        # for symmetry with the other pool log sites —
-                        # connection addresses originate from caller
-                        # config but a hostile resolver / forged host
-                        # entry can still smuggle control characters
-                        # via DNS canonicalisation.
-                        logger.debug(
-                            "pool _release: suppressed pending-drain exception on conn %s",
-                            sanitize_for_log(str(getattr(conn, "_address", "?"))),
-                            exc_info=True,
-                        )
+                # ``_pool_released=True``. Centralised in
+                # ``_drain_pending_under_shield`` so all four exit
+                # shapes (this finally + the three early-return arms
+                # above) share the same drain discipline regardless
+                # of any future refactor of ``_close_impl``'s
+                # re-snapshot loop.
+                await self._drain_pending_under_shield(conn)
                 conn._pool_released = True
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.shield(self._release_reservation())
