@@ -8,6 +8,7 @@ from dqlitewire import cap_raw_message as _wire_cap_raw_message
 from dqlitewire import sanitize_server_text as _sanitize_server_text
 
 __all__ = [
+    "AmbiguousCommitError",
     "ClusterError",
     "ClusterPolicyError",
     "DataError",
@@ -304,3 +305,35 @@ class OperationalError(DqliteError):
         # wrapped. ``code`` is unconditionally set on this class so
         # the suffix always renders.
         return f"{type(self).__name__}({self.message!r}, code={self.code!r})"
+
+
+class AmbiguousCommitError(OperationalError):
+    """COMMIT mid-flight failure with genuinely unknown server-side
+    state.
+
+    Raised by :meth:`DqliteConnection.transaction` when the COMMIT
+    statement was sent but the reply was lost / interrupted /
+    delivered with a non-deterministic code (transport failure,
+    cancellation, ``LEADER_ERROR_CODES``-class reply indicating a
+    leader flip mid-COMMIT). The Raft log entry MAY have been
+    replicated to the new leader's quorum before the failure, OR the
+    failure may have occurred before the entry was appended; the
+    client cannot tell from the wire alone.
+
+    The class inherits from :class:`OperationalError` so existing
+    ``except OperationalError:`` arms continue to catch it. New
+    callers that want to discriminate the in-doubt commit shape from
+    deterministic-rollback failures (which leave the server in a
+    known no-tx state and the connection healthy) branch on
+    ``isinstance(exc, AmbiguousCommitError)``.
+
+    Callers retrying after this error MUST treat any retry as
+    at-least-once — use idempotent DML (``INSERT OR REPLACE``,
+    UPDATE keyed on a unique constraint) or perform an out-of-band
+    state check before retry. The connection has been invalidated
+    by ``transaction()``'s ambiguous-commit handler; the next
+    operation on it will dial fresh.
+
+    Mirrors :class:`dqlitedbapi.exceptions.AmbiguousCommitError` —
+    the dbapi layer's surface for the same wire-level event.
+    """

@@ -35,6 +35,7 @@ from dqliteclient.connection import (
     validate_timeout,
 )
 from dqliteclient.exceptions import (
+    AmbiguousCommitError,
     ClusterError,
     ClusterPolicyError,
     DataError,
@@ -84,6 +85,7 @@ __all__ = [
     "DEFAULT_CLOSE_TIMEOUT_SECONDS",
     "DEFAULT_MAX_MESSAGE_SIZE",
     "DEFAULT_TIMEOUT_SECONDS",
+    "AmbiguousCommitError",
     "ClusterClient",
     "ClusterError",
     "ClusterPolicyError",

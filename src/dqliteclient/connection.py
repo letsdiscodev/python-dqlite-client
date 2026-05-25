@@ -35,6 +35,7 @@ from dqliteclient._dial import (
     open_connection,
 )
 from dqliteclient.exceptions import (
+    AmbiguousCommitError,
     DataError,
     DqliteConnectionError,
     InterfaceError,
@@ -3410,6 +3411,35 @@ class DqliteConnection:
                     # triggered the invalidation, instead of
                     # dropping ``__cause__`` on the floor.
                     self._invalidate(exc)
+                    # ``CancelledError`` / ``KeyboardInterrupt`` /
+                    # ``SystemExit`` MUST propagate verbatim — they
+                    # carry structured-concurrency semantics that
+                    # asyncio relies on (TaskGroup teardown,
+                    # signal-handler exit). Promoting them to a new
+                    # exception class would break those contracts.
+                    # For all other ambiguous shapes (transport
+                    # errors, non-rollback OperationalError codes
+                    # like LEADER_ERROR_CODES), surface the
+                    # in-doubt commit as a distinct subclass so
+                    # retry middleware can branch on
+                    # ``isinstance(exc, AmbiguousCommitError)`` and
+                    # treat the retry as at-least-once. The original
+                    # exception chain is preserved via ``from exc``;
+                    # the new exception is a subclass of
+                    # ``OperationalError`` so legacy
+                    # ``except OperationalError:`` arms continue to
+                    # catch it. Mirrors the dbapi-side
+                    # ``AmbiguousCommitError`` already shipped.
+                    if not isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+                        raw = getattr(exc, "raw_message", None) or str(exc)
+                        code = getattr(exc, "code", None) or 0
+                        raise AmbiguousCommitError(
+                            f"COMMIT mid-flight failure; server-side commit state "
+                            f"is unknown (may or may not have been applied and "
+                            f"replicated): {exc}",
+                            code,
+                            raw_message=raw,
+                        ) from exc
             else:
                 # Body raised before COMMIT; try to roll back.
                 #
