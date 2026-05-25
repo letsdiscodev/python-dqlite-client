@@ -195,33 +195,63 @@ async def retry_with_backoff[T](
             # Deterministic-failure subclass of a retryable family —
             # retrying would just reproduce it. Re-raise immediately.
             raise
+        except BaseExceptionGroup as bg:
+            # PEP 654: ``func`` that wraps work in ``asyncio.TaskGroup``
+            # (or any structured-concurrency primitive that re-raises
+            # children as a group) escapes the leaf ``retryable_exceptions``
+            # arm below because ``BaseExceptionGroup`` is not a subclass
+            # of the leaf classes. Unwrap with ``split`` so a group whose
+            # every leaf is retryable participates in the retry loop —
+            # mirrors the recursive-unwrap discipline at
+            # ``_run_protocol``'s cancel-detection arm.
+            #
+            # Fail-fast on a mixed group containing any excluded leaf
+            # so a deterministic failure does not get masked as
+            # transient.
+            excluded_matched, _ = bg.split(excluded_exceptions)
+            if excluded_matched is not None:
+                raise
+            # Retryable group: every leaf must match the retryable set
+            # for the retry to be safe. ``unmatched is not None`` means
+            # at least one leaf is neither retryable nor excluded — a
+            # genuinely unexpected exception class slipping through;
+            # do not silently retry on it.
+            matched, unmatched = bg.split(retryable_exceptions)
+            if unmatched is not None or matched is None:
+                raise
+            last_error = matched
+            history.append(matched)
         except retryable_exceptions as e:
             last_error = e
             history.append(e)
 
-            if attempt == max_attempts - 1:
-                break
-            # Budget check BEFORE scheduling the sleep: if we're out
-            # of time, re-raise the last error now rather than burn
-            # another backoff.
-            if deadline is not None and loop.time() >= deadline:
-                break
+        # Shared retry-loop continuation reached from both the
+        # ``BaseExceptionGroup`` arm and the leaf ``retryable_exceptions``
+        # arm. Either set ``last_error`` and ``history`` before falling
+        # through here.
+        if attempt == max_attempts - 1:
+            break
+        # Budget check BEFORE scheduling the sleep: if we're out
+        # of time, re-raise the last error now rather than burn
+        # another backoff.
+        if deadline is not None and loop.time() >= deadline:
+            break
 
-            # Calculate delay with exponential backoff
-            delay = min(base_delay * (2**attempt), max_delay)
+        # Calculate delay with exponential backoff
+        delay = min(base_delay * (2**attempt), max_delay)
 
-            # Add jitter, then re-clamp so max_delay stays a hard ceiling.
-            # ``_retry_random`` (SystemRandom) is used over ``random.uniform``
-            # to keep forked workers' jitter draws independent — see the
-            # module-level comment on ``_retry_random``.
-            if jitter > 0:
-                delay = min(delay * (1 + _retry_random.uniform(-jitter, jitter)), max_delay)
+        # Add jitter, then re-clamp so max_delay stays a hard ceiling.
+        # ``_retry_random`` (SystemRandom) is used over ``random.uniform``
+        # to keep forked workers' jitter draws independent — see the
+        # module-level comment on ``_retry_random``.
+        if jitter > 0:
+            delay = min(delay * (1 + _retry_random.uniform(-jitter, jitter)), max_delay)
 
-            # Clamp the sleep so it never straddles the deadline.
-            if deadline is not None:
-                delay = min(delay, max(0.0, deadline - loop.time()))
+        # Clamp the sleep so it never straddles the deadline.
+        if deadline is not None:
+            delay = min(delay, max(0.0, deadline - loop.time()))
 
-            await asyncio.sleep(delay)
+        await asyncio.sleep(delay)
 
     # last_error is non-None here: the break on the final attempt only
     # runs after ``last_error = e`` executes, and max_attempts < 1 is
