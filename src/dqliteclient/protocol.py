@@ -517,7 +517,22 @@ class DqliteProtocol:
     async def get_leader(self) -> tuple[int, str]:
         """Request leader information.
 
-        Returns (node_id, address).
+        Returns ``(node_id, address)``. The ``(0, "")`` "no leader
+        known" shape is passed through verbatim — callers normalise it
+        upstream — but the malformed ``(0, nonempty)`` shape is
+        rejected here as a ``ProtocolError``: upstream
+        ``raft_leader`` pairs id and address (both filled, or both
+        zero/NULL) so ``(0, addr)`` is either a confused or hostile
+        peer. Guarding at the wire layer is symmetric with sibling
+        RPC defences (e.g. ``prepare``'s ``db_id`` mismatch) and
+        means third-party callers of ``DqliteProtocol`` get the same
+        defence as the cluster-layer wrappers.
+
+        The mirror shape ``(N, "")`` is NOT raised here. The cluster
+        wrappers want to log the ``RAFT_NOMEM`` transient with the
+        per-address context that the protocol layer lacks before
+        normalising to "no leader known"; moving the raise up would
+        lose that breadcrumb.
         """
         async with self._lock:
             request = LeaderRequest()
@@ -533,6 +548,20 @@ class DqliteProtocol:
             if not isinstance(response, LeaderResponse):
                 raise ProtocolError(
                     f"Expected LeaderResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
+
+            if response.node_id == 0 and response.address:
+                # ``raft_leader`` never emits ``node_id=0`` paired
+                # with a non-empty address; a peer returning this is
+                # either confused or hostile. Reject at the wire
+                # layer so any consumer of LEADER replies — including
+                # third-party callers wiring ``DqliteProtocol``
+                # directly into custom probes — gets the defence.
+                raise ProtocolError(
+                    f"server returned address "
+                    f"{_sanitize_display_text(response.address)!r} "
+                    f"with node_id=0; expected both or neither"
+                    f"{self._addr_suffix()}"
                 )
 
             return response.node_id, response.address
