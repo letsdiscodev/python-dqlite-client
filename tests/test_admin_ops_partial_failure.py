@@ -66,6 +66,7 @@ async def test_add_node_assign_failure_propagates_and_invalidates_leader_cache()
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.add = AsyncMock()  # ADD lands
     fake_proto.assign = AsyncMock(
         side_effect=OperationalError("transient leader-flip on assign", 1)
@@ -113,6 +114,7 @@ async def test_add_node_partial_failure_recovery_via_assign_role_converges() -> 
     # Phase 1: add_node with ADD-success / ASSIGN-failure.
     fake_proto_phase1 = MagicMock()
     fake_proto_phase1.handshake = AsyncMock()
+    fake_proto_phase1.negotiate_protocol_only = AsyncMock()
     fake_proto_phase1.add = AsyncMock()
     fake_proto_phase1.assign = AsyncMock(side_effect=OperationalError("assign failed", 1))
     fake_open_phase1, _ = _patch_admin_connection()
@@ -133,6 +135,7 @@ async def test_add_node_partial_failure_recovery_via_assign_role_converges() -> 
     # documented recovery path.
     fake_proto_phase2 = MagicMock()
     fake_proto_phase2.handshake = AsyncMock()
+    fake_proto_phase2.negotiate_protocol_only = AsyncMock()
     fake_proto_phase2.assign = AsyncMock()  # this time, succeeds
     fake_open_phase2, _ = _patch_admin_connection()
 

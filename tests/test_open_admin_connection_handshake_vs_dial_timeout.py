@@ -75,7 +75,10 @@ async def test_handshake_stall_uses_distinct_error_message() -> None:
     with (
         patch("dqliteclient.cluster.open_connection", new=fake_open_connection),
         patch(
-            "dqliteclient.cluster.DqliteProtocol.handshake",
+            # open_admin_connection migrated from the full handshake
+            # to the lighter negotiate_protocol_only (go-parity);
+            # stall the version-negotiation step instead.
+            "dqliteclient.cluster.DqliteProtocol.negotiate_protocol_only",
             new=stall_handshake,
         ),
         pytest.raises(DqliteConnectionError) as exc_info,

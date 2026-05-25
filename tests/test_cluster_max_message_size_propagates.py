@@ -77,6 +77,9 @@ async def test_open_admin_connection_forwards_max_message_size() -> None:
         async def handshake(self) -> None:
             pass
 
+        async def negotiate_protocol_only(self) -> None:
+            pass
+
     with (
         patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
         patch("dqliteclient.cluster.DqliteProtocol", FakeProto),

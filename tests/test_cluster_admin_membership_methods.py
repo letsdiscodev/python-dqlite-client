@@ -62,6 +62,7 @@ async def test_leader_info_returns_leader_info_dataclass() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.get_leader = AsyncMock(return_value=(7, "node7:9001"))
     fake_open, _ = _patch_admin_connection(fake_proto)
 
@@ -83,6 +84,7 @@ async def test_leader_info_returns_none_for_no_leader_known() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.get_leader = AsyncMock(return_value=(0, ""))
     fake_open, _ = _patch_admin_connection(fake_proto)
 
@@ -117,6 +119,7 @@ async def test_add_node_default_role_spare_no_assign_followup() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.add = AsyncMock()
     fake_proto.assign = AsyncMock()
     fake_open, _ = _patch_admin_connection(fake_proto)
@@ -140,6 +143,7 @@ async def test_add_node_voter_role_runs_assign_followup() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.add = AsyncMock()
     fake_proto.assign = AsyncMock()
     fake_open, _ = _patch_admin_connection(fake_proto)
@@ -188,6 +192,7 @@ async def test_add_node_propagates_server_rejection() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.add = AsyncMock(side_effect=OperationalError("id already in cluster", 1))
     fake_open, _ = _patch_admin_connection(fake_proto)
 
@@ -209,6 +214,7 @@ async def test_assign_role_dispatches_with_args() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.assign = AsyncMock()
     fake_open, _ = _patch_admin_connection(fake_proto)
 
@@ -242,6 +248,7 @@ async def test_remove_node_dispatches_with_node_id() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.remove = AsyncMock()
     fake_open, _ = _patch_admin_connection(fake_proto)
 
@@ -273,6 +280,7 @@ async def test_describe_returns_node_metadata_dataclass() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_response = MagicMock()
     fake_response.failure_domain = 42
     fake_response.weight = 7
@@ -298,6 +306,7 @@ async def test_describe_explicit_address_skips_leader_lookup() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_response = MagicMock()
     fake_response.failure_domain = 1
     fake_response.weight = 2
@@ -325,6 +334,7 @@ async def test_set_weight_dispatches_with_value() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.weight = AsyncMock()
     fake_open, _ = _patch_admin_connection(fake_proto)
 
@@ -344,6 +354,7 @@ async def test_set_weight_explicit_address_skips_leader_lookup() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.weight = AsyncMock()
     fake_open, _ = _patch_admin_connection(fake_proto)
 
@@ -378,6 +389,7 @@ async def test_dump_returns_files_dict() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     files = {"main": b"x" * 4096, "main-wal": b"y" * 8}
     fake_proto.dump = AsyncMock(return_value=files)
     fake_open, _ = _patch_admin_connection(fake_proto)
@@ -427,6 +439,7 @@ async def test_describe_closes_writer_on_exit() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_response = MagicMock()
     fake_response.failure_domain = 1
     fake_response.weight = 2

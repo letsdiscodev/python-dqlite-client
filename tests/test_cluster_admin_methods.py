@@ -69,6 +69,7 @@ async def test_cluster_info_returns_node_list_from_leader() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.cluster = AsyncMock(return_value=nodes)
     # Re-confirm leadership round-trip on the no-flip happy path.
     fake_proto.get_leader = AsyncMock(return_value=(1, "node1:9001"))
@@ -108,6 +109,7 @@ async def test_cluster_info_propagates_operational_error_from_leader() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.cluster = AsyncMock(side_effect=OperationalError("shutting down", 1))
     fake_proto.get_leader = AsyncMock(return_value=(1, "node1:9001"))
 
@@ -133,6 +135,7 @@ async def test_transfer_leadership_sends_request_with_target_id() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.transfer = AsyncMock()
 
     fake_open, _ = _patch_admin_connection(fake_proto)
@@ -195,6 +198,7 @@ async def test_transfer_leadership_propagates_server_rejection() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.transfer = AsyncMock(side_effect=OperationalError("target is not a voter", 1))
 
     fake_open, _ = _patch_admin_connection(fake_proto)
@@ -219,6 +223,7 @@ async def test_admin_connection_closes_writer_on_normal_exit() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.cluster = AsyncMock(return_value=[])
     fake_proto.get_leader = AsyncMock(return_value=(1, "node1:9001"))
 
@@ -242,6 +247,7 @@ async def test_admin_connection_closes_writer_on_protocol_error() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.transfer = AsyncMock(side_effect=OperationalError("rejected", 1))
 
     fake_open, writer = _patch_admin_connection(fake_proto)

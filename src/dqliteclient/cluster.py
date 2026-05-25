@@ -2952,7 +2952,24 @@ class ClusterClient:
                     # ``finally`` is the only place the writer can be
                     # closed; nulling here would orphan the writer on
                     # the success path.
-                    await protocol.handshake()
+                    #
+                    # Speak only the 8-byte version on direct-admin
+                    # paths. Mirrors go-dqlite's ``client.New`` /
+                    # ``NewDirectConnector.Connect``
+                    # (``client/client.go:56-75``,
+                    # ``internal/protocol/connector.go:316-337``)
+                    # which send the version write and stop there.
+                    # ``ClientRequest`` registration costs an extra
+                    # RTT and allocates a server-side
+                    # ``g->client_id`` slot retained until TCP close;
+                    # no admin RPC on this protocol (``add``,
+                    # ``remove``, ``assign``, ``transfer``,
+                    # ``describe``, ``weight``, ``dump``, ``cluster``,
+                    # ``get_leader``) reads ``self._client_id``, so
+                    # the registration is pure waste under monitoring
+                    # stampedes. Sibling ``_query_leader`` already
+                    # uses the same lighter discipline.
+                    await protocol.negotiate_protocol_only()
             except TimeoutError as e:
                 # Outer ``attempt_timeout`` fired AFTER the dial
                 # completed — i.e. the handshake stalled. Emit a

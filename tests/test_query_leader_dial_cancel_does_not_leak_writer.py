@@ -160,18 +160,23 @@ def test_open_admin_connection_writer_owned_by_outer_finally() -> None:
     """
     src = _source_of("open_admin_connection")
     proto_pos = src.find("DqliteProtocol(")
-    handshake_pos = src.find("await protocol.handshake")
+    # open_admin_connection migrated from the full handshake() to the
+    # lighter negotiate_protocol_only() (go-parity with
+    # NewDirectConnector.Connect); the writer-ownership invariant the
+    # original pin targets is unchanged.
+    negotiate_pos = src.find("await protocol.negotiate_protocol_only")
     assert proto_pos != -1
-    assert handshake_pos != -1
+    assert negotiate_pos != -1
     # No `writer = None` between DqliteProtocol(...) and
-    # `await protocol.handshake` — that's the load-bearing
+    # `await protocol.negotiate_protocol_only` — that's the load-bearing
     # divergence.
-    between = src[proto_pos:handshake_pos]
+    between = src[proto_pos:negotiate_pos]
     assert "writer = None" not in between, (
         "open_admin_connection must NOT null writer between the "
-        "DqliteProtocol(...) hand-off and the handshake — the protocol "
-        "is yielded (not stored), so the outer finally is the only "
-        "drain path. Nulling here would orphan the writer on success."
+        "DqliteProtocol(...) hand-off and the version negotiation — "
+        "the protocol is yielded (not stored), so the outer finally "
+        "is the only drain path. Nulling here would orphan the writer "
+        "on success."
     )
 
 

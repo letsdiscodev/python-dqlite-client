@@ -37,6 +37,7 @@ async def test_open_admin_connection_yields_handshaken_protocol() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     reader = MagicMock()
     writer = MagicMock()
     writer.close = MagicMock()
@@ -52,7 +53,7 @@ async def test_open_admin_connection_yields_handshaken_protocol() -> None:
         async with cluster.open_admin_connection("localhost:9001") as proto:
             assert proto is fake_proto
 
-    fake_proto.handshake.assert_awaited_once()
+    fake_proto.negotiate_protocol_only.assert_awaited_once()
     writer.close.assert_called_once()
 
 
@@ -66,6 +67,7 @@ async def test_open_admin_connection_closes_writer_on_exception() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     reader = MagicMock()
     writer = MagicMock()
     writer.close = MagicMock()

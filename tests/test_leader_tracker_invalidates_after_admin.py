@@ -43,6 +43,7 @@ async def test_transfer_leadership_invalidates_last_known_leader() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.transfer = AsyncMock()
 
     patches = _patch_admin(cluster, fake_proto)
@@ -62,6 +63,7 @@ async def test_remove_node_invalidates_last_known_leader() -> None:
     cluster = _make_cluster_with_cached_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.remove = AsyncMock()
 
     patches = _patch_admin(cluster, fake_proto)
@@ -85,6 +87,7 @@ async def test_add_node_invalidates_last_known_leader() -> None:
     cluster = _make_cluster_with_cached_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.add = AsyncMock()
     fake_proto.assign = AsyncMock()
 
@@ -109,6 +112,7 @@ async def test_assign_role_invalidates_last_known_leader() -> None:
     cluster = _make_cluster_with_cached_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.assign = AsyncMock()
 
     patches = _patch_admin(cluster, fake_proto)
@@ -136,6 +140,7 @@ async def test_set_weight_preserves_last_known_leader_on_success() -> None:
     cached = cluster._get_last_known_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.weight = AsyncMock()
 
     patches = _patch_admin(cluster, fake_proto)
@@ -163,6 +168,7 @@ async def test_transfer_leadership_invalidates_cache_on_failure() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.transfer = AsyncMock(
         side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
     )
@@ -190,6 +196,7 @@ async def test_add_node_invalidates_cache_on_failure() -> None:
     cluster = _make_cluster_with_cached_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.add = AsyncMock()  # ADD succeeds
     fake_proto.assign = AsyncMock(
         side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
@@ -232,6 +239,7 @@ async def test_cluster_info_invalidates_cache_on_failure() -> None:
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     # Re-confirm leadership round-trip succeeds; the failure surfaces
     # from the subsequent ``cluster()`` call (the wire RPC).
     fake_proto.get_leader = AsyncMock(return_value=(1, "node1:9001"))
@@ -261,6 +269,7 @@ async def test_leader_info_invalidates_cache_on_failure() -> None:
     cluster = _make_cluster_with_cached_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.get_leader = AsyncMock(
         side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
     )
@@ -289,6 +298,7 @@ async def test_dump_invalidates_cache_on_failure() -> None:
     cluster = _make_cluster_with_cached_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.dump = AsyncMock(
         side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
     )
@@ -317,6 +327,7 @@ async def test_describe_no_address_invalidates_cache_on_failure() -> None:
     cluster = _make_cluster_with_cached_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.describe = AsyncMock(
         side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
     )
@@ -346,6 +357,7 @@ async def test_describe_with_specific_address_preserves_cache_on_failure() -> No
     cluster = _make_cluster_with_cached_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
+    fake_proto.negotiate_protocol_only = AsyncMock()
     fake_proto.describe = AsyncMock(
         side_effect=OperationalError("peer rejected", code=1, raw_message="peer rejected")
     )
