@@ -1429,8 +1429,20 @@ class ClusterClient:
         store rather than ``await self._node_store.get_nodes()``
         directly, so future code paths inherit the snapshot
         discipline.
+
+        Bound the store call by ``dial_timeout`` so a misbehaving
+        third-party (etcd-/consul-backed) store cannot pin
+        ``find_leader`` indefinitely. Symmetric with the
+        ``asyncio.timeout`` envelope around every other awaitable in
+        ``cluster.py`` (``_query_leader``, ``_verify_redirect``, the
+        cached-fast-path probe). In-tree stores return synchronously
+        so the wrap is a no-op for them; the bound matters only for
+        third-party implementations whose ``get_nodes`` does
+        blocking I/O. Mirrors go-dqlite's ``NodeStore.Get(ctx)``
+        contract.
         """
-        return tuple(await self._node_store.get_nodes())
+        async with asyncio.timeout(self._dial_timeout):
+            return tuple(await self._node_store.get_nodes())
 
     async def _query_leader(
         self, address: str, *, trust_server_heartbeat: bool = False
