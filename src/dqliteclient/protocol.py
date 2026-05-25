@@ -397,6 +397,19 @@ class DqliteProtocol:
             client_id = secrets.randbits(63) or 1
         # Send protocol version + client registration together
         request = ClientRequest(client_id=client_id)
+        # Record the negotiated id BEFORE the wire write so the
+        # ``FailureResponse`` arm below has the slot-allocation
+        # breadcrumb available. Upstream ``handle_client``
+        # (``gateway.c:300-309``) writes ``g->client_id =
+        # request.id`` BEFORE composing the response, so by the time
+        # any FailureResponse reaches us the server-side per-gateway
+        # slot has already been allocated. Reclamation happens at
+        # TCP close (the caller's ``_abort_protocol`` drives this
+        # via ``writer.close() + wait_closed``); surfacing the id in
+        # the exception message means an operator triaging a
+        # handshake failure can correlate the server-side trace
+        # without walking back to ``gateway.c``.
+        self._client_id = client_id
         await self._send(self._encoder.encode_handshake() + self._encoder.encode(request))
 
         # Read welcome response
@@ -434,7 +447,9 @@ class DqliteProtocol:
             # handshake failure carries a server-supplied SQLite
             # code — operational, not protocol-shape.
             raise OperationalError(
-                f"Handshake failed: [{response.code}] {self._failure_text(response)}",
+                f"Handshake failed (server-side client slot may be allocated "
+                f"as id={client_id}; reclaimed on TCP close): "
+                f"[{response.code}] {self._failure_text(response)}",
                 response.code,
                 raw_message=response.message,
             )
@@ -444,7 +459,6 @@ class DqliteProtocol:
                 f"Expected WelcomeResponse, got {type(response).__name__}{self._addr_suffix()}"
             )
 
-        self._client_id = client_id
         self._heartbeat_timeout = response.heartbeat_timeout
         # Surface the three diagnostic edge cases the wire layer accepts
         # but cannot remediate from the client side. Each is non-fatal
