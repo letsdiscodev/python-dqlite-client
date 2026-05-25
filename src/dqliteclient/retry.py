@@ -268,13 +268,25 @@ async def retry_with_backoff[T](
 
         await asyncio.sleep(delay)
 
-    # last_error is non-None here: the break on the final attempt only
-    # runs after ``last_error = e`` executes, and max_attempts < 1 is
-    # rejected above. The assert pins the loop invariant for mypy
-    # without runtime cost on production paths (a stripped-by-O assert
-    # would still leave the invariant intact at this point because the
-    # break path always sets last_error first).
-    assert last_error is not None
+    # last_error is non-None here: every ``break`` inside the retry
+    # loop runs AFTER ``last_error = e`` in the relevant except arm,
+    # and ``max_attempts < 1`` is rejected at the top of the helper.
+    # Surface a defensive ``RuntimeError`` rather than ``assert``: a
+    # bare ``assert`` is stripped under ``python -O`` / ``-OO``, which
+    # leaves the only run-time check on the invariant absent on
+    # operator-optimised deployments. A future refactor that broke
+    # the loop-structure invariant (e.g. adding a ``break`` before
+    # ``last_error = e``) would otherwise ship ``raise None`` →
+    # confusing ``TypeError: exceptions must derive from
+    # BaseException`` with no link back to the actual retry context.
+    # mypy narrows from the if-raise form just as well as from
+    # ``assert``.
+    if last_error is None:
+        raise RuntimeError(
+            f"retry_with_backoff: internal invariant violated — exited "
+            f"retry loop with last_error=None (max_attempts={max_attempts}, "
+            f"history_len={len(history)}). This is a bug in the retry helper."
+        )
     if len(history) > 1:
         # Chain prior-attempt failures so a forensic walker can see
         # the full timeline rather than only the last error. Mirrors
