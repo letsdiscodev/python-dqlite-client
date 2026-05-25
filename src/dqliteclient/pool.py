@@ -2499,7 +2499,21 @@ class ConnectionPool:
         try:
             await asyncio.shield(pending)
         except asyncio.CancelledError:
-            pass
+            # PEP 654 / asyncio cancel bookkeeping: balance the
+            # cancelling-count for the cancel we just absorbed so
+            # outer ``asyncio.TaskGroup`` / custom supervisors that
+            # gate on ``Task.cancelling()`` see an accurate count.
+            # Without this, the absorbed cancel leaves
+            # ``cancelling()`` inflated — any later code that
+            # branches on the count (TaskGroup's "all children
+            # cancelled" detection, asyncio.timeout's "did we
+            # cancel?" probe) sees one more than was actually issued.
+            # ``current_task()`` is None only in synchronous test
+            # harnesses; guard with a None-check so the bookkeeping
+            # is a no-op there.
+            current = asyncio.current_task()
+            if current is not None:
+                current.uncancel()
         except Exception:
             # Sanitise the address through the wire helper for
             # symmetry with the other pool log sites — connection
