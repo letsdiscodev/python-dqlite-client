@@ -614,10 +614,20 @@ class YamlNodeStore(NodeStore):
                 raise ClusterError(f"YamlNodeStore: {self._path}[{idx}] missing 'ID'")
             if address_raw is None:
                 raise ClusterError(f"YamlNodeStore: {self._path}[{idx}] missing 'Address'")
-            # Reject bool BEFORE int(): bool is an int subclass in
-            # Python and ``int(True) == 1`` would silently coerce a
-            # ``True``-typed YAML value into node_id 1.
-            if isinstance(node_id_raw, bool) or not isinstance(node_id_raw, int):
+            # Reject bool and float BEFORE int(): both have a
+            # silent-coerce trap — ``int(True) == 1`` would convert a
+            # ``True``-typed YAML value into node_id 1, and
+            # ``int(3.7) == 3`` would silently truncate a float
+            # ID (or ``int(0.5) == 0`` would land on the "no node"
+            # sentinel). PyYAML parses bare YAML integers as Python
+            # ``int`` already, so the only legitimate fall-through
+            # into the ``int()`` arm is a string ID like ``"5"``.
+            if isinstance(node_id_raw, (bool, float)):
+                raise ClusterError(
+                    f"YamlNodeStore: {self._path}[{idx}] 'ID' must be integer "
+                    f"(not float / bool), got {node_id_raw!r}"
+                )
+            if not isinstance(node_id_raw, int):
                 try:
                     node_id = int(node_id_raw)
                 except (TypeError, ValueError) as e:
