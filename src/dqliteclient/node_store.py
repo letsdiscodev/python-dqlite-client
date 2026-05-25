@@ -63,11 +63,13 @@ class NodeInfo:
     ``ClusterClient.find_leader`` sorts voters first before probing."""
 
     def __post_init__(self) -> None:
-        # Validate role at construction time so a caller-built
-        # ``NodeInfo`` carrying a bogus role can't reach the wire-
-        # encoder and silently emit an unrecognised value onto the
-        # wire. Mirrors the wire-side
-        # ``dqlitewire.messages.responses.NodeInfo.__post_init__``.
+        # Validate role + node_id at construction time so a caller-built
+        # ``NodeInfo`` carrying a degenerate value can't reach the
+        # wire-encoder. Mirrors the wire-side
+        # ``dqlitewire.messages.responses.NodeInfo.__post_init__`` for
+        # ``role`` and ``cluster._validate_node_id`` /
+        # ``node_store._load_yaml`` for ``node_id``.
+        #
         # ``IntEnum`` accepts ``NodeRole(0)`` etc. but not
         # ``NodeRole(999)``, so coerce bare ints into the enum and let
         # ``ValueError`` from the constructor surface as a constructor-
@@ -81,6 +83,18 @@ class NodeInfo:
                     f"0 (VOTER), 1 (STANDBY), 2 (SPARE)"
                 ) from e
             object.__setattr__(self, "role", coerced)
+        # ``node_id`` mirrors ``cluster._validate_node_id``: reject
+        # ``bool`` (int subclass), non-int, and ``< 1``. Node id ``0``
+        # is the upstream "no node" sentinel
+        # (``LeaderResponse.node_id == 0`` means "no leader known"),
+        # so it cannot be a real cluster member. Rejecting at the
+        # dataclass boundary keeps the diagnostic at the construction
+        # site instead of being deferred to the next membership-change
+        # RPC or the server reply.
+        if isinstance(self.node_id, bool) or not isinstance(self.node_id, int):
+            raise TypeError(f"NodeInfo.node_id must be int, got {type(self.node_id).__name__}")
+        if self.node_id < 1:
+            raise ValueError(f"NodeInfo.node_id must be >= 1, got {self.node_id}")
 
 
 @runtime_checkable
