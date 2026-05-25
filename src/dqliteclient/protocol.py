@@ -227,6 +227,29 @@ class DqliteProtocol:
         # is authoritative. Opt-in protects operators whose timeout is
         # a latency-SLO boundary from server-induced amplification.
         self._trust_server_heartbeat = trust_server_heartbeat
+        # Serialise wire-touching RPCs. The dqlite server does not
+        # support concurrent requests on a single connection — two
+        # concurrent ``Call``s on the same protocol interleave their
+        # writes on the shared writer and their reads on the shared
+        # decoder, surfacing as a malformed-frame ``ProtocolError`` or
+        # codec poisoning several round-trips later with no breadcrumb
+        # pointing at the concurrency violation. Mirrors go-dqlite's
+        # ``Protocol.mu sync.Mutex`` at ``internal/protocol/protocol.go:15-30``
+        # ("We need to take a lock since the dqlite server currently
+        # does not support concurrent requests.").
+        #
+        # In-tree callers (``DqliteConnection.execute`` /
+        # ``query_sql`` / admin) hold ``_in_use`` one layer up which
+        # guards the same race; the protocol-layer lock closes the gap
+        # for third-party callers that import ``DqliteProtocol``
+        # directly and share an instance across tasks. ``_send`` /
+        # ``_read_*`` are called from inside locked methods so do not
+        # need their own acquisition.
+        #
+        # ``handshake`` / ``negotiate_protocol_only`` are connect-time
+        # methods called from a single coroutine before the protocol
+        # is published anywhere; they intentionally skip the lock.
+        self._lock = asyncio.Lock()
 
     def __reduce__(self) -> NoReturn:
         # Wraps a live ``asyncio.StreamReader`` / ``StreamWriter``
@@ -496,22 +519,23 @@ class DqliteProtocol:
 
         Returns (node_id, address).
         """
-        request = LeaderRequest()
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = LeaderRequest()
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, LeaderResponse):
-            raise ProtocolError(
-                f"Expected LeaderResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, LeaderResponse):
+                raise ProtocolError(
+                    f"Expected LeaderResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
-        return response.node_id, response.address
+            return response.node_id, response.address
 
     async def cluster(self) -> list[NodeInfo]:
         """Request the cluster's node list.
@@ -526,22 +550,23 @@ class DqliteProtocol:
         Any node can answer this — the cluster view is replicated —
         but the typical caller asks the leader for the freshest view.
         """
-        request = ClusterRequest(format=1)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = ClusterRequest(format=1)
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, ServersResponse):
-            raise ProtocolError(
-                f"Expected ServersResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, ServersResponse):
+                raise ProtocolError(
+                    f"Expected ServersResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
-        return response.nodes
+            return response.nodes
 
     async def add(self, node_id: int, address: str) -> None:
         """Add a node to the cluster (Raft membership change).
@@ -554,20 +579,21 @@ class DqliteProtocol:
         ``Client.Add``. Per upstream semantics, ADD lands the node as
         ``NodeRole.SPARE``; promote with :meth:`assign` after.
         """
-        request = AddRequest(node_id=node_id, address=address)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = AddRequest(node_id=node_id, address=address)
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, EmptyResponse):
-            raise ProtocolError(
-                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, EmptyResponse):
+                raise ProtocolError(
+                    f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
     async def assign(self, node_id: int, role: NodeRole) -> None:
         """Assign (or change) a node's role.
@@ -579,20 +605,21 @@ class DqliteProtocol:
 
         Mirrors go-dqlite's ``client.go::EncodeAssign``.
         """
-        request = AssignRequest(node_id=node_id, role=role)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = AssignRequest(node_id=node_id, role=role)
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, EmptyResponse):
-            raise ProtocolError(
-                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, EmptyResponse):
+                raise ProtocolError(
+                    f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
     async def remove(self, node_id: int) -> None:
         """Remove a node from the cluster (Raft membership change).
@@ -604,20 +631,21 @@ class DqliteProtocol:
 
         Mirrors go-dqlite's ``client.go::EncodeRemove``.
         """
-        request = RemoveRequest(node_id=node_id)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = RemoveRequest(node_id=node_id)
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, EmptyResponse):
-            raise ProtocolError(
-                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, EmptyResponse):
+                raise ProtocolError(
+                    f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
     async def describe(self) -> MetadataResponse:
         """Describe the connected node's metadata.
@@ -632,22 +660,23 @@ class DqliteProtocol:
 
         Mirrors go-dqlite's ``client.go::EncodeDescribe``.
         """
-        request = DescribeRequest(format=0)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = DescribeRequest(format=0)
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, MetadataResponse):
-            raise ProtocolError(
-                f"Expected MetadataResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, MetadataResponse):
+                raise ProtocolError(
+                    f"Expected MetadataResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
-        return response
+            return response
 
     async def weight(self, weight: int) -> None:
         """Set the connected node's weight.
@@ -661,20 +690,21 @@ class DqliteProtocol:
 
         Mirrors go-dqlite's ``client.go::EncodeWeight``.
         """
-        request = WeightRequest(weight=weight)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = WeightRequest(weight=weight)
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, EmptyResponse):
-            raise ProtocolError(
-                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, EmptyResponse):
+                raise ProtocolError(
+                    f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
     async def dump(self, database: str) -> dict[str, bytes]:
         """Dump a database to ``{filename: bytes}``.
@@ -688,22 +718,23 @@ class DqliteProtocol:
 
         Mirrors go-dqlite's ``client.go::EncodeDump``.
         """
-        request = DumpRequest(name=database)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = DumpRequest(name=database)
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, FilesResponse):
-            raise ProtocolError(
-                f"Expected FilesResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, FilesResponse):
+                raise ProtocolError(
+                    f"Expected FilesResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
-        return response.files
+            return response.files
 
     async def transfer(self, target_node_id: int) -> None:
         """Request leadership transfer to ``target_node_id``.
@@ -724,103 +755,107 @@ class DqliteProtocol:
 
         Mirrors the spec-level admin operation ``go-dqlite/client.Transfer``.
         """
-        request = TransferRequest(target_node_id=target_node_id)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = TransferRequest(target_node_id=target_node_id)
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, EmptyResponse):
-            raise ProtocolError(
-                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, EmptyResponse):
+                raise ProtocolError(
+                    f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
     async def open_database(self, name: str, flags: int = 0, vfs: str = "") -> int:
         """Open a database.
 
         Returns the database ID.
         """
-        request = OpenRequest(name=name, flags=flags, vfs=vfs)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = OpenRequest(name=name, flags=flags, vfs=vfs)
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, DbResponse):
-            raise ProtocolError(
-                f"Expected DbResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, DbResponse):
+                raise ProtocolError(
+                    f"Expected DbResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
-        return response.db_id
+            return response.db_id
 
     async def prepare(self, db_id: int, sql: str) -> tuple[int, int]:
         """Prepare a SQL statement.
 
         Returns (stmt_id, num_params).
         """
-        request = PrepareRequest(db_id=db_id, sql=sql)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = PrepareRequest(db_id=db_id, sql=sql)
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, StmtResponse):
-            raise ProtocolError(
-                f"Expected StmtResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, StmtResponse):
+                raise ProtocolError(
+                    f"Expected StmtResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
-        # Defense-in-depth: confirm the server's StmtResponse echoes
-        # the db_id we asked it to prepare against. A mismatch would
-        # mean the server's prepared-statement registry has drifted
-        # from the client's view, and any future exec/finalize
-        # against the returned stmt_id would target a different
-        # database. Surface this as a ProtocolError so the
-        # connection is invalidated rather than silently routing
-        # writes against the wrong DB.
-        if response.db_id != db_id:
-            # Prefix with the canonical ``WIRE_DECODE_FAILED_PREFIX``
-            # phrase so SA's ``is_disconnect`` substring matcher routes
-            # this through the pool-invalidate path. Without the
-            # prefix, the registry-drift event would surface as a
-            # non-disconnect ProtocolError and the SA pool would keep
-            # the broken slot. The prefix matches the wire-decode
-            # invalidation wired into
-            # ``sqlalchemy-dqlite._dqlite_disconnect_messages``.
-            raise ProtocolError(
-                f"{WIRE_DECODE_FAILED_PREFIX}: StmtResponse db_id {response.db_id} "
-                f"does not match requested db_id {db_id}{self._addr_suffix()}"
-            )
+            # Defense-in-depth: confirm the server's StmtResponse echoes
+            # the db_id we asked it to prepare against. A mismatch would
+            # mean the server's prepared-statement registry has drifted
+            # from the client's view, and any future exec/finalize
+            # against the returned stmt_id would target a different
+            # database. Surface this as a ProtocolError so the
+            # connection is invalidated rather than silently routing
+            # writes against the wrong DB.
+            if response.db_id != db_id:
+                # Prefix with the canonical ``WIRE_DECODE_FAILED_PREFIX``
+                # phrase so SA's ``is_disconnect`` substring matcher routes
+                # this through the pool-invalidate path. Without the
+                # prefix, the registry-drift event would surface as a
+                # non-disconnect ProtocolError and the SA pool would keep
+                # the broken slot. The prefix matches the wire-decode
+                # invalidation wired into
+                # ``sqlalchemy-dqlite._dqlite_disconnect_messages``.
+                raise ProtocolError(
+                    f"{WIRE_DECODE_FAILED_PREFIX}: StmtResponse db_id {response.db_id} "
+                    f"does not match requested db_id {db_id}{self._addr_suffix()}"
+                )
 
-        return response.stmt_id, response.num_params
+            return response.stmt_id, response.num_params
 
     async def finalize(self, db_id: int, stmt_id: int) -> None:
         """Finalize (close) a prepared statement."""
-        request = FinalizeRequest(db_id=db_id, stmt_id=stmt_id)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = FinalizeRequest(db_id=db_id, stmt_id=stmt_id)
+            await self._send(self._encoder.encode(request))
 
-        response = await self._read_response()
+            response = await self._read_response()
 
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
-            )
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
 
-        if not isinstance(response, EmptyResponse):
-            raise ProtocolError(
-                f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            if not isinstance(response, EmptyResponse):
+                raise ProtocolError(
+                    f"Expected EmptyResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
 
     async def _interrupt(self, db_id: int) -> None:
         """Ask the server to stop producing further rows for this db_id.
@@ -848,120 +883,115 @@ class DqliteProtocol:
             is a future-streaming-support feature that is deliberately
             out of scope for the current synchronous-drain client.
 
-        .. warning::
+        .. note::
 
-            ``interrupt`` has no internal concurrency guard at the
-            protocol layer — it writes to the shared ``_writer`` and
-            reads from the shared decoder without any lock. The
-            ``DqliteConnection.execute`` / ``query_sql`` callers at
-            the level above hold ``_in_use``, so two callers there
-            cannot interleave. But ``interrupt`` itself is reachable
-            via the private ``conn._protocol`` path. External callers
-            using it MUST follow this exact ordering:
-
-            1. cancel the outer task that owns the in-flight stmt,
-            2. **await** the cancelled task to completion so the
-               reader half has fully exited (a bare ``cancel()`` does
-               not block — the cancelled task may still have a
-               pending ``_read_response`` queued),
-            3. only then invoke ``interrupt(db_id)``.
-
-            Skipping (2) races the cancelled task's read against
-            ``interrupt``'s read on the shared decoder and produces
-            wire desync.
+            ``interrupt`` is serialised behind the protocol-layer
+            ``self._lock`` together with all other wire-touching RPCs.
+            An ``interrupt`` issued while another task holds the lock
+            (e.g. is in the middle of ``query_sql``) queues until that
+            RPC completes, which is the correct ordering — the
+            in-flight read drains its own response before
+            ``interrupt`` writes its INTERRUPT frame. Callers no
+            longer need to cancel-and-await the in-flight task
+            manually before invoking ``interrupt``; the lock enforces
+            the ordering automatically. (For abortive cancellation
+            mid-RPC, ``DqliteConnection._invalidate`` is the
+            higher-level escape hatch: it tears down the protocol
+            without waiting for in-flight reads.)
         """
-        request = InterruptRequest(db_id=db_id)
-        await self._send(self._encoder.encode(request))
+        async with self._lock:
+            request = InterruptRequest(db_id=db_id)
+            await self._send(self._encoder.encode(request))
 
-        # Drain: swallow any trailing continuation frames, break when
-        # EmptyResponse arrives. Bound by the single operation deadline
-        # so a non-responsive server cannot stall this forever, and by
-        # the max_continuation_frames cap so a slow-dripping server
-        # cannot pin the client on per-frame decode work inside that
-        # deadline window (same rationale as _drain_continuations).
-        #
-        # Loop-till-EmptyResponse mirrors Go's ``Protocol.Interrupt``
-        # (``/tmp/go-dqlite/internal/protocol/protocol.go:103-113``).
-        # The gateway dispatches INTERRUPT one of two ways
-        # (``dqlite-upstream/src/gateway.c:1366-1390``):
-        #
-        # 1. If a request is still in flight (``g->req != NULL``) when
-        #    the INTERRUPT lands, the dispatcher calls ``interrupt(g)``
-        #    (sets ``cancellation_requested`` / aborts ``leader_exec``)
-        #    and the in-flight RPC's done-callback emits the response
-        #    — RESULT or FAILURE for EXEC, EMPTY for cancelled QUERY,
-        #    plus any in-flight ROWS continuation frames already queued.
-        #    No separate EMPTY for the INTERRUPT itself in this path.
-        # 2. If the in-flight RPC's done-callback has ALREADY fired
-        #    (``g->req = NULL`` per ``gateway.c:536`` for EXEC,
-        #    ``:780`` for QUERY) before the INTERRUPT is dispatched,
-        #    the dispatcher falls through to ``handle_interrupt``
-        #    (``gateway.c:952-960``) which DOES emit a separate EMPTY
-        #    for the INTERRUPT ack. Wire then carries
-        #    ``[RESULT-or-ROWS-stream, EMPTY]`` — the prior RPC's
-        #    response followed by the INTERRUPT's own EMPTY.
-        #
-        # Treating RESULT as the terminal would consume case (2)'s
-        # prior-RPC frame and leave the trailing EMPTY in the decoder
-        # buffer, poisoning the next RPC on the connection. Drain
-        # through RESULT (and ROWS) and only exit on EMPTY — same
-        # discipline as Go.
-        deadline = self._operation_deadline()
-        frames = 0
-        while True:
-            # Cap is checked BEFORE the read so the documented bound
-            # ``N`` allows AT MOST ``N`` non-EMPTY frames (a check
-            # after the read would fire AFTER reading the (N+1)-th).
-            if (
-                self._max_continuation_frames is not None
-                and frames >= self._max_continuation_frames
-            ):
-                raise ProtocolError(
-                    f"Interrupt drain exceeded max_continuation_frames cap "
-                    f"({self._max_continuation_frames}); server may be "
-                    f"slow-dripping rows{self._addr_suffix()}."
-                )
-            response = await self._read_response(deadline=deadline, allow_trailing=True)
-            if isinstance(response, EmptyResponse):
-                return
-            if isinstance(response, FailureResponse):
-                # FAILURE is terminal: the C server replaces the EMPTY
-                # ack with FAILURE on the interrupt-during-EXEC abort
-                # path (``handle_exec_done_cb`` calls ``exec_failure``
-                # at ``gateway.c:542-544`` when ``raft_status != 0``).
-                # There is no FAILURE-then-EMPTY pair because the
-                # failure callback nulls ``g->req`` before the
-                # dispatcher could read the next request.
-                raise OperationalError(
-                    self._failure_text(response), response.code, raw_message=response.message
-                )
-            # ROWS and RESULT are drain-through frames in the
-            # interrupt context. ROWS is the in-flight QUERY's
-            # continuation stream; RESULT is the in-flight EXEC's
-            # terminal — either way, the EMPTY for the INTERRUPT ack
-            # is the next frame and we keep reading. Other message
-            # types indicate stream desync.
-            if not isinstance(response, (RowsResponse, ResultResponse)):
-                raise ProtocolError(
-                    f"Expected EmptyResponse after Interrupt, got "
-                    f"{type(response).__name__}{self._addr_suffix()}"
-                )
-            # No-progress check is RowsResponse-specific: a server
-            # emitting empty rows frames with has_more=True before
-            # EmptyResponse would consume up to
-            # ``max_continuation_frames`` iterations of decode work,
-            # mirroring the slow-frame DoS shape the query path
-            # already defends against. ResultResponse has no
-            # ``has_more`` field — RESULT is a single frame per
-            # in-flight RPC and the cap below counts it.
-            if isinstance(response, RowsResponse) and not response.rows and response.has_more:
-                raise ProtocolError(
-                    f"ROWS continuation made no progress during INTERRUPT "
-                    f"drain: frame had 0 rows and has_more=True"
-                    f"{self._addr_suffix()}"
-                )
-            frames += 1
-            # Fall through: keep reading until EmptyResponse arrives.
+            # Drain: swallow any trailing continuation frames, break when
+            # EmptyResponse arrives. Bound by the single operation deadline
+            # so a non-responsive server cannot stall this forever, and by
+            # the max_continuation_frames cap so a slow-dripping server
+            # cannot pin the client on per-frame decode work inside that
+            # deadline window (same rationale as _drain_continuations).
+            #
+            # Loop-till-EmptyResponse mirrors Go's ``Protocol.Interrupt``
+            # (``/tmp/go-dqlite/internal/protocol/protocol.go:103-113``).
+            # The gateway dispatches INTERRUPT one of two ways
+            # (``dqlite-upstream/src/gateway.c:1366-1390``):
+            #
+            # 1. If a request is still in flight (``g->req != NULL``) when
+            #    the INTERRUPT lands, the dispatcher calls ``interrupt(g)``
+            #    (sets ``cancellation_requested`` / aborts ``leader_exec``)
+            #    and the in-flight RPC's done-callback emits the response
+            #    — RESULT or FAILURE for EXEC, EMPTY for cancelled QUERY,
+            #    plus any in-flight ROWS continuation frames already queued.
+            #    No separate EMPTY for the INTERRUPT itself in this path.
+            # 2. If the in-flight RPC's done-callback has ALREADY fired
+            #    (``g->req = NULL`` per ``gateway.c:536`` for EXEC,
+            #    ``:780`` for QUERY) before the INTERRUPT is dispatched,
+            #    the dispatcher falls through to ``handle_interrupt``
+            #    (``gateway.c:952-960``) which DOES emit a separate EMPTY
+            #    for the INTERRUPT ack. Wire then carries
+            #    ``[RESULT-or-ROWS-stream, EMPTY]`` — the prior RPC's
+            #    response followed by the INTERRUPT's own EMPTY.
+            #
+            # Treating RESULT as the terminal would consume case (2)'s
+            # prior-RPC frame and leave the trailing EMPTY in the decoder
+            # buffer, poisoning the next RPC on the connection. Drain
+            # through RESULT (and ROWS) and only exit on EMPTY — same
+            # discipline as Go.
+            deadline = self._operation_deadline()
+            frames = 0
+            while True:
+                # Cap is checked BEFORE the read so the documented bound
+                # ``N`` allows AT MOST ``N`` non-EMPTY frames (a check
+                # after the read would fire AFTER reading the (N+1)-th).
+                if (
+                    self._max_continuation_frames is not None
+                    and frames >= self._max_continuation_frames
+                ):
+                    raise ProtocolError(
+                        f"Interrupt drain exceeded max_continuation_frames cap "
+                        f"({self._max_continuation_frames}); server may be "
+                        f"slow-dripping rows{self._addr_suffix()}."
+                    )
+                response = await self._read_response(deadline=deadline, allow_trailing=True)
+                if isinstance(response, EmptyResponse):
+                    return
+                if isinstance(response, FailureResponse):
+                    # FAILURE is terminal: the C server replaces the EMPTY
+                    # ack with FAILURE on the interrupt-during-EXEC abort
+                    # path (``handle_exec_done_cb`` calls ``exec_failure``
+                    # at ``gateway.c:542-544`` when ``raft_status != 0``).
+                    # There is no FAILURE-then-EMPTY pair because the
+                    # failure callback nulls ``g->req`` before the
+                    # dispatcher could read the next request.
+                    raise OperationalError(
+                        self._failure_text(response), response.code, raw_message=response.message
+                    )
+                # ROWS and RESULT are drain-through frames in the
+                # interrupt context. ROWS is the in-flight QUERY's
+                # continuation stream; RESULT is the in-flight EXEC's
+                # terminal — either way, the EMPTY for the INTERRUPT ack
+                # is the next frame and we keep reading. Other message
+                # types indicate stream desync.
+                if not isinstance(response, (RowsResponse, ResultResponse)):
+                    raise ProtocolError(
+                        f"Expected EmptyResponse after Interrupt, got "
+                        f"{type(response).__name__}{self._addr_suffix()}"
+                    )
+                # No-progress check is RowsResponse-specific: a server
+                # emitting empty rows frames with has_more=True before
+                # EmptyResponse would consume up to
+                # ``max_continuation_frames`` iterations of decode work,
+                # mirroring the slow-frame DoS shape the query path
+                # already defends against. ResultResponse has no
+                # ``has_more`` field — RESULT is a single frame per
+                # in-flight RPC and the cap below counts it.
+                if isinstance(response, RowsResponse) and not response.rows and response.has_more:
+                    raise ProtocolError(
+                        f"ROWS continuation made no progress during INTERRUPT "
+                        f"drain: frame had 0 rows and has_more=True"
+                        f"{self._addr_suffix()}"
+                    )
+                frames += 1
+                # Fall through: keep reading until EmptyResponse arrives.
 
     async def exec_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
@@ -973,22 +1003,25 @@ class DqliteProtocol:
         a single RESULT with sqlite3_changes() of the last statement only —
         rows_affected is NOT a sum across statements.
         """
-        request = ExecSqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
-        await self._send(self._encoder.encode(request))
-
-        response = await self._read_response()
-
-        if isinstance(response, FailureResponse):
-            raise OperationalError(
-                self._failure_text(response), response.code, raw_message=response.message
+        async with self._lock:
+            request = ExecSqlRequest(
+                db_id=db_id, sql=sql, params=params if params is not None else []
             )
+            await self._send(self._encoder.encode(request))
 
-        if not isinstance(response, ResultResponse):
-            raise ProtocolError(
-                f"Expected ResultResponse, got {type(response).__name__}{self._addr_suffix()}"
-            )
+            response = await self._read_response()
 
-        return response.last_insert_id, response.rows_affected
+            if isinstance(response, FailureResponse):
+                raise OperationalError(
+                    self._failure_text(response), response.code, raw_message=response.message
+                )
+
+            if not isinstance(response, ResultResponse):
+                raise ProtocolError(
+                    f"Expected ResultResponse, got {type(response).__name__}{self._addr_suffix()}"
+                )
+
+            return response.last_insert_id, response.rows_affected
 
     async def _send_query(
         self, db_id: int, sql: str, params: Sequence[Any] | None
@@ -1097,11 +1130,12 @@ class DqliteProtocol:
         local row list is discarded. The connection is invalidated so
         callers don't accidentally reuse it with torn protocol state.
         """
-        response, deadline = await self._send_query(db_id, sql, params)
-        column_names = list(response.column_names)
-        column_types = [int(t) for t in response.column_types]
-        all_rows, all_row_types = await self._drain_continuations(response, deadline)
-        return column_names, column_types, all_row_types, all_rows
+        async with self._lock:
+            response, deadline = await self._send_query(db_id, sql, params)
+            column_names = list(response.column_names)
+            column_types = [int(t) for t in response.column_types]
+            all_rows, all_row_types = await self._drain_continuations(response, deadline)
+            return column_names, column_types, all_row_types, all_rows
 
     async def query_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
@@ -1114,11 +1148,12 @@ class DqliteProtocol:
         Use :meth:`query_sql_typed` to also get per-column ``ValueType``
         tags.
         """
-        response, deadline = await self._send_query(db_id, sql, params)
-        column_names = response.column_names
-        all_rows, _ = await self._drain_continuations(response, deadline)
+        async with self._lock:
+            response, deadline = await self._send_query(db_id, sql, params)
+            column_names = response.column_names
+            all_rows, _ = await self._drain_continuations(response, deadline)
 
-        return column_names, all_rows
+            return column_names, all_rows
 
     async def _send(self, frame: bytes) -> None:
         """Write a frame and drain, wrapping transport errors as DqliteConnectionError.
