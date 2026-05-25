@@ -501,6 +501,31 @@ class YamlNodeStore(NodeStore):
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
+        """Construct a ``YamlNodeStore`` rooted at ``path``.
+
+        Eager-loads the file via blocking ``os.read`` + ``yaml.safe_load``
+        on the calling thread so a malformed file surfaces a
+        ``ClusterError`` at construction (operator-facing) rather than
+        at first ``get_nodes``.
+
+        Construction cost / event-loop caveat
+        -------------------------------------
+
+        The disk load can stall for tens to hundreds of milliseconds
+        on a slow / contended disk (NAS, encrypted volume, full-disk
+        SSD GC pause) for a near-cap store. The write path
+        (``set_nodes``) dispatches through ``asyncio.to_thread`` to
+        keep the loop responsive; the synchronous ``__init__`` does
+        NOT, so a coroutine that constructs a ``YamlNodeStore``
+        inline freezes every other coroutine on the loop for the
+        read duration. Constructing the store at process start
+        (before the loop runs) is safe.
+
+        Async-context callers should prefer the
+        :meth:`YamlNodeStore.create` factory, which performs the
+        disk-load via ``asyncio.to_thread`` so the loop keeps
+        serving while the read happens.
+        """
         # Verify PyYAML is importable so a malformed install raises
         # at construction (operator-facing) rather than at first
         # ``get_nodes``. Do NOT cache the module reference on
@@ -529,6 +554,38 @@ class YamlNodeStore(NodeStore):
         # reconstruct from the configuration in the target process
         # so it re-reads the YAML file and binds its own lock.
         self._creator_pid = os.getpid()
+
+    @classmethod
+    async def create(cls, path: str | os.PathLike[str]) -> "YamlNodeStore":
+        """Async-safe constructor: load via :func:`asyncio.to_thread`.
+
+        Recommended for async callers. The disk read (up to 1 MiB)
+        and ``yaml.safe_load`` parse run on a worker thread so the
+        event loop continues serving other coroutines for the read
+        duration. A near-cap store on contended I/O can otherwise
+        freeze the loop for tens to hundreds of milliseconds.
+
+        Mirrors the write-side discipline (``set_nodes`` already
+        dispatches ``_write_atomic_sync`` via ``asyncio.to_thread``)
+        — the read path was the lone synchronous-in-init gap.
+        """
+        # Path-validation, PyYAML probe, lock bind, and the
+        # ``_creator_pid`` capture are cheap; do them on the loop
+        # thread. The blocking ``_load_from_disk`` call is what
+        # gets dispatched to the worker.
+        try:
+            import yaml as _yaml  # noqa: F401  - import-time presence check only
+        except ImportError as e:
+            raise ImportError(
+                "YamlNodeStore requires PyYAML; install with "
+                "'pip install python-dqlite-client[yaml-store]'"
+            ) from e
+        store = cls.__new__(cls)
+        store._path = Path(path)
+        store._lock = asyncio.Lock()
+        store._nodes = await asyncio.to_thread(store._load_from_disk)
+        store._creator_pid = os.getpid()
+        return store
 
     def _check_pid(self) -> None:
         if _conn_mod.get_current_pid() != self._creator_pid:
