@@ -1513,6 +1513,7 @@ class ClusterClient:
             # the writer presence instead.
             if writer is not None:
                 writer.close()
+
                 # close() is fire-and-forget; without the bounded
                 # wait_closed() the transport sits in FIN-WAIT until the
                 # OS reclaims it, which adds up under heavy leader-probe
@@ -1547,17 +1548,23 @@ class ClusterClient:
                 # Bounded-tail invariant: when the outer await asyncio.shield
                 # is itself cancelled, ``inner_drain`` continues running for
                 # up to ``_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS`` (100 ms)
-                # before self-terminating via the inner ``wait_for``. Under
-                # leader-probe stampede this leaves a 100 ms tail of
-                # background work surviving outer-cancel shutdown — bounded
-                # by the slot count and the per-drain deadline; intentional
-                # to avoid socket leaks under cancel.
-                inner_drain: asyncio.Task[None] = asyncio.ensure_future(
-                    asyncio.wait_for(
-                        writer.wait_closed(),
-                        timeout=_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS,
-                    )
-                )
+                # before self-terminating via the inner ``asyncio.timeout``
+                # cancel scope. Under leader-probe stampede this leaves a
+                # 100 ms tail of background work surviving outer-cancel
+                # shutdown — bounded by the slot count and the per-drain
+                # deadline; intentional to avoid socket leaks under cancel.
+                #
+                # Use ``asyncio.timeout`` cancel-scope semantics inside
+                # the inner Task rather than ``asyncio.wait_for`` so a
+                # future refactor that gives ``wait_closed()`` a return
+                # value does not silently lose it on outer cancel.
+                # Mirrors the discipline at ``protocol.py::_send`` and
+                # ``_read_data``.
+                async def _drain() -> None:
+                    async with asyncio.timeout(_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS):
+                        await writer.wait_closed()
+
+                inner_drain: asyncio.Task[None] = asyncio.ensure_future(_drain())
                 inner_drain.add_done_callback(_observe_drain_exception)
                 with contextlib.suppress(OSError, TimeoutError):
                     await asyncio.shield(inner_drain)
@@ -2883,12 +2890,18 @@ class ClusterClient:
         finally:
             if writer is not None:
                 writer.close()
-                inner_drain: asyncio.Task[None] = asyncio.ensure_future(
-                    asyncio.wait_for(
-                        writer.wait_closed(),
-                        timeout=_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS,
-                    )
-                )
+
+                # Use ``asyncio.timeout`` cancel-scope semantics inside
+                # the inner Task rather than ``asyncio.wait_for`` so a
+                # future refactor that gives ``wait_closed()`` a return
+                # value does not silently lose it on outer cancel.
+                # Mirrors the discipline at ``protocol.py::_send`` and
+                # ``_read_data``.
+                async def _drain() -> None:
+                    async with asyncio.timeout(_LEADER_PROBE_DRAIN_TIMEOUT_SECONDS):
+                        await writer.wait_closed()
+
+                inner_drain: asyncio.Task[None] = asyncio.ensure_future(_drain())
                 inner_drain.add_done_callback(_observe_drain_exception)
                 with contextlib.suppress(OSError, TimeoutError):
                     await asyncio.shield(inner_drain)

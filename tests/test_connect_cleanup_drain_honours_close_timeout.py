@@ -30,7 +30,7 @@ async def test_connect_cleanup_uses_configured_close_timeout() -> None:
 
     real_proto = conn_mod.DqliteProtocol  # type: ignore[attr-defined]
     real_open = asyncio.open_connection
-    real_wait_for = asyncio.wait_for
+    real_timeout = asyncio.timeout
 
     def broken_protocol_init(*args: object, **kwargs: object) -> None:
         raise RuntimeError("protocol construction blew up")
@@ -39,15 +39,15 @@ async def test_connect_cleanup_uses_configured_close_timeout() -> None:
         def __init__(self, *a: object, **kw: object) -> None:
             broken_protocol_init()
 
-    captured_timeouts: list[float] = []
+    captured_timeouts: list[float | None] = []
 
-    async def spy_wait_for(aw, timeout):
+    def spy_timeout(timeout: float | None):
         captured_timeouts.append(timeout)
-        return await real_wait_for(aw, timeout=timeout)
+        return real_timeout(timeout)
 
     conn_mod.DqliteProtocol = _BrokenProtocol  # type: ignore[assignment,attr-defined]
     asyncio.open_connection = fake_open_connection  # type: ignore[assignment]
-    conn_mod.asyncio.wait_for = spy_wait_for  # type: ignore[attr-defined]
+    conn_mod.asyncio.timeout = spy_timeout  # type: ignore[attr-defined]
 
     try:
         with pytest.raises(RuntimeError, match="protocol construction"):
@@ -55,10 +55,12 @@ async def test_connect_cleanup_uses_configured_close_timeout() -> None:
     finally:
         conn_mod.DqliteProtocol = real_proto  # type: ignore[attr-defined]
         asyncio.open_connection = real_open
-        conn_mod.asyncio.wait_for = real_wait_for  # type: ignore[attr-defined]
+        conn_mod.asyncio.timeout = real_timeout  # type: ignore[attr-defined]
 
-    # At least one wait_for call should carry the configured close_timeout.
-    assert captured_timeouts, "expected wait_for to run during cleanup"
+    # At least one asyncio.timeout call should carry the configured
+    # close_timeout. The cleanup drain migrated from asyncio.wait_for
+    # to asyncio.timeout (cancel-scope semantics).
+    assert captured_timeouts, "expected asyncio.timeout to run during cleanup"
     assert 2.0 in captured_timeouts, (
         "protocol-construction cleanup must honour self._close_timeout; "
         f"got timeouts {captured_timeouts}"

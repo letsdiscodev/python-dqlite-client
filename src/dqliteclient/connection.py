@@ -1821,9 +1821,20 @@ class DqliteConnection:
                 # instead of hiding them. Mirrors the project-canonical
                 # shape at ``ClusterClient._query_leader``'s finally
                 # arm and ``open_admin_connection``'s drain.
-                inner_drain: asyncio.Task[None] = asyncio.ensure_future(
-                    asyncio.wait_for(writer.wait_closed(), timeout=self._close_timeout)
-                )
+                #
+                # Use ``asyncio.timeout`` cancel-scope semantics inside
+                # the inner Task rather than ``asyncio.wait_for`` so a
+                # future refactor that gives ``wait_closed()`` a
+                # return value does not silently lose it on outer
+                # cancel. Mirrors the discipline at
+                # ``protocol.py::_send`` and ``_read_data``.
+                close_timeout = self._close_timeout
+
+                async def _drain() -> None:
+                    async with asyncio.timeout(close_timeout):
+                        await writer.wait_closed()
+
+                inner_drain: asyncio.Task[None] = asyncio.ensure_future(_drain())
                 # Local import to avoid an import cycle at module
                 # load — ``dqliteclient.cluster`` imports
                 # ``dqliteclient.connection``.
@@ -2092,9 +2103,19 @@ class DqliteConnection:
         # ``_observe_drain_exception``) ensures the eventual drain
         # exception is observed and not surfaced as a "Task exception
         # was never retrieved" warning.
-        inner_drain: asyncio.Task[None] = asyncio.ensure_future(
-            asyncio.wait_for(protocol.wait_closed(), timeout=self._close_timeout)
-        )
+        #
+        # Use ``asyncio.timeout`` cancel-scope semantics inside the
+        # inner Task rather than ``asyncio.wait_for`` so a future
+        # refactor that gives ``wait_closed()`` a return value does
+        # not silently lose it on outer cancel. Mirrors the discipline
+        # at ``protocol.py::_send`` and ``_read_data``.
+        close_timeout = self._close_timeout
+
+        async def _drain() -> None:
+            async with asyncio.timeout(close_timeout):
+                await protocol.wait_closed()
+
+        inner_drain: asyncio.Task[None] = asyncio.ensure_future(_drain())
         # Local import to avoid an import cycle at module load —
         # ``dqliteclient.cluster`` imports ``dqliteclient.connection``.
         from dqliteclient.cluster import _observe_drain_exception
@@ -2148,9 +2169,19 @@ class DqliteConnection:
         # (the project-canonical ``_observe_drain_exception``) ensures
         # the eventual drain exception is observed and not surfaced as
         # a ``"Task exception was never retrieved"`` warning.
-        inner_drain: asyncio.Task[None] = asyncio.ensure_future(
-            asyncio.wait_for(protocol.wait_closed(), timeout=self._close_timeout)
-        )
+        #
+        # Use ``asyncio.timeout`` cancel-scope semantics inside the
+        # inner Task rather than ``asyncio.wait_for`` so a future
+        # refactor that gives ``wait_closed()`` a return value does
+        # not silently lose it on outer cancel. Mirrors the discipline
+        # at ``protocol.py::_send`` and ``_read_data``.
+        close_timeout = self._close_timeout
+
+        async def _drain() -> None:
+            async with asyncio.timeout(close_timeout):
+                await protocol.wait_closed()
+
+        inner_drain: asyncio.Task[None] = asyncio.ensure_future(_drain())
         # Local import to avoid an import cycle at module load —
         # ``dqliteclient.cluster`` imports ``dqliteclient.connection``.
         from dqliteclient.cluster import _observe_drain_exception
@@ -2373,10 +2404,15 @@ class DqliteConnection:
             except RuntimeError:
                 pass
             else:
-
+                # Use ``asyncio.timeout`` cancel-scope semantics
+                # rather than ``asyncio.wait_for`` so a future refactor
+                # that gives ``wait_closed()`` a return value does not
+                # silently lose it on outer cancel. Mirrors the
+                # discipline at ``protocol.py::_send`` and ``_read_data``.
                 async def _bounded_drain() -> None:
                     with contextlib.suppress(Exception):
-                        await asyncio.wait_for(proto.wait_closed(), timeout=self._close_timeout)
+                        async with asyncio.timeout(self._close_timeout):
+                            await proto.wait_closed()
 
                 # If a prior ``_invalidate`` already published a
                 # pending-drain task, cancel-and-detach it before

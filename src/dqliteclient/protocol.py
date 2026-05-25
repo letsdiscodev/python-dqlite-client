@@ -1148,9 +1148,12 @@ class DqliteProtocol:
             # than ``asyncio.wait_for`` so an outer cancel landing
             # while ``drain()`` is in flight does not discard the
             # writer's high-water-mark future. Mirrors the discipline
-            # at the sibling dial / connect / admin sites
+            # at the sibling dial / connect / admin / close sites
             # (``cluster.py::_query_leader``, ``cluster.py::
-            # open_admin_connection``, ``connection.py::_connect_impl``).
+            # open_admin_connection``, ``connection.py::_connect_impl``,
+            # ``connection.py::_close_impl``,
+            # ``connection.py::_abort_protocol``,
+            # ``connection.py::_invalidate``).
             # ``drain()`` returns ``None`` so the result-discard concern
             # does not apply to ``_send`` today — the migration is
             # sibling-parity defence so a future refactor that adds a
