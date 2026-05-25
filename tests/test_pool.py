@@ -710,13 +710,29 @@ class TestConnectionPool:
         await pool.close()
 
     async def test_drain_idle_cancellation_does_not_inflate_size(self) -> None:
-        """If _drain_idle() is cancelled during conn.close(), _size must still decrement."""
+        """If _drain_idle() is cancelled during conn.close(), _size eventually
+        decrements once any abandoned-drain orphans complete.
+
+        ``_drain_idle``'s TimeoutError arm defers the slot release to a
+        ``_release_after_drain`` follow-up so the documented ``max_size``
+        invariant holds while the orphan close is still running. Once
+        each orphan finishes, its slot is released — the steady-state
+        invariant remains ``_size == queue size + abandoned-orphan
+        count``, converging to ``_size == queue size`` once the
+        orphans complete.
+        """
         import asyncio
 
         pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=5)
         pool._initialized = True
 
-        # Create mock connections with a slow close that can be cancelled
+        # Connections whose close() blocks until the test releases the
+        # event. Without the event, slow_close would sleep 10s and leak
+        # the orphan into the next test. With the event, we can drive
+        # the orphan to completion deterministically after the cancel,
+        # then assert the deferred slot release fired.
+        unblock = asyncio.Event()
+
         for _ in range(3):
             mock_conn = MagicMock()
             mock_conn.is_connected = True
@@ -725,8 +741,8 @@ class TestConnectionPool:
             mock_conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
             mock_conn._check_in_use = MagicMock()
 
-            async def slow_close():
-                await asyncio.sleep(10)
+            async def slow_close() -> None:
+                await unblock.wait()
 
             mock_conn.close = slow_close
             await pool._pool.put(mock_conn)
@@ -742,13 +758,22 @@ class TestConnectionPool:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        # Connections that were dequeued but not decremented due to CancelledError
-        # during close() cause _size inflation. The invariant is:
-        # _size == number of connections still in the queue
+        # Release the orphan close()s. The ``_release_after_drain``
+        # follow-up tasks await each orphan and then decrement _size,
+        # so _size converges to the queue size once everything
+        # finishes.
+        unblock.set()
+        for _ in range(50):
+            remaining = pool._pool.qsize()
+            if pool._size == remaining:
+                break
+            await asyncio.sleep(0.01)
+
         remaining = pool._pool.qsize()
         assert pool._size == remaining, (
             f"_size ({pool._size}) != queue size ({remaining}). "
-            f"CancelledError during conn.close() skipped _size decrement."
+            f"After orphan drains finish, deferred slot releases should "
+            f"have converged the count."
         )
 
     async def test_pool_close_cancellation_does_not_inflate_size(self) -> None:

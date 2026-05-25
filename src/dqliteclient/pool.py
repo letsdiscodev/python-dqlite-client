@@ -1278,6 +1278,30 @@ class ConnectionPool:
         if decremented:
             self._signal_state_change()
 
+    async def _release_after_drain(self, drain_task: asyncio.Task[None]) -> None:
+        """Await an abandoned drain task, then release its slot.
+
+        Called from ``_drain_idle``'s ``TimeoutError`` arm when the
+        per-iteration shielded close exceeded the cap. Decrementing
+        ``_size`` immediately would let the next ``acquire()`` dial a
+        replacement while the orphan transport is still open —
+        transiently exceeding the documented ``max_size`` cap by the
+        number of in-flight orphans. Holding the slot until the
+        orphan completes preserves the invariant.
+
+        ``suppress(BaseException)`` covers CancelledError /
+        KeyboardInterrupt / SystemExit so the helper always proceeds
+        to ``_release_reservation`` — leaving the slot reserved
+        forever would worse than briefly delaying its release. The
+        original ``conn.close()`` exception (if any) is observed by
+        the done-callback ``_observe_drain_exception`` attached at
+        the call site.
+        """
+        with contextlib.suppress(BaseException):
+            await drain_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(self._release_reservation())
+
     def _get_closed_event(self) -> asyncio.Event:
         """Lazily create the closed Event bound to the running loop.
 
@@ -1345,6 +1369,13 @@ class ConnectionPool:
                     # without monkey-patching ``asyncio.Queue`` itself.
                     # Verified by code review, not coverage.
                     break
+                # Track whether the slot release was deferred to the
+                # ``_release_after_drain`` follow-up task (set by the
+                # TimeoutError arm below). Initialised here in the
+                # outer-try scope so the finally arm can always read
+                # it, even if a pre-wait_for raise short-circuits the
+                # inner try.
+                drain_deferred = False
                 try:
                     # Clear ``_pool_released`` BEFORE close so the
                     # close path actually runs. The release flag is
@@ -1434,11 +1465,33 @@ class ConnectionPool:
                         # The done-callback above observes the eventual
                         # task exception (if any), so no
                         # "Task exception was never retrieved" warning.
+                        #
+                        # Defer the slot release until the orphan drain
+                        # task actually completes. The pre-fix behaviour
+                        # decremented ``_size`` immediately in the
+                        # finally, while the inner ``conn.close()``
+                        # task kept running — a subsequent ``acquire()``
+                        # could see ``_size < max_size`` and dial a new
+                        # connection, transiently exceeding the
+                        # documented ``max_size`` cap until the orphan
+                        # completed. Schedule a follow-up coroutine
+                        # that awaits the orphan and then runs
+                        # ``_release_reservation``; the slot stays
+                        # reserved across the orphan's lifetime so the
+                        # ``max_size`` invariant holds end-to-end.
                         logger.warning(
                             "pool: close() on idle connection %s exceeded "
                             "per-iteration drain cap; abandoning to continue queue",
                             sanitize_for_log(str(getattr(conn, "_address", "?"))),
                         )
+                        drain_deferred = True
+                        # Restore ``_pool_released`` BEFORE scheduling
+                        # the deferred release so a stale-reference
+                        # caller's close() falls through the documented
+                        # early-return (same contract as the immediate
+                        # finally arm below).
+                        conn._pool_released = True
+                        asyncio.ensure_future(self._release_after_drain(inner_drain))
                 except Exception:
                     # Transport-level failures (BrokenPipeError, OSError, our
                     # own DqliteConnectionError) are absorbed so drain can
@@ -1452,24 +1505,25 @@ class ConnectionPool:
                         exc_info=True,
                     )
                 finally:
-                    # Restore ``_pool_released`` so a stale-reference
-                    # caller (e.g. a weakref proxy held from before
-                    # the drain) attempting close() again hits the
-                    # documented "user-side close on a checked-in
-                    # conn is a no-op" early-return. Functionally
-                    # safe today (``_protocol`` is None after close,
-                    # so a second close falls through harmlessly),
-                    # but the contract that "True ⇔ pool owns the
-                    # close path" is restored — brittle to refactor
-                    # otherwise.
-                    conn._pool_released = True
-                    # Shield the reservation decrement against outer cancel:
-                    # an ``asyncio.timeout`` around ``pool.close()`` can fire
-                    # during ``_release_reservation``'s lock acquire; without
-                    # the shield, _size drifts above actual capacity. Sibling
-                    # to the exception-path shield at ``acquire()``.
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await asyncio.shield(self._release_reservation())
+                    if not drain_deferred:
+                        # Restore ``_pool_released`` so a stale-reference
+                        # caller (e.g. a weakref proxy held from before
+                        # the drain) attempting close() again hits the
+                        # documented "user-side close on a checked-in
+                        # conn is a no-op" early-return. Functionally
+                        # safe today (``_protocol`` is None after close,
+                        # so a second close falls through harmlessly),
+                        # but the contract that "True ⇔ pool owns the
+                        # close path" is restored — brittle to refactor
+                        # otherwise.
+                        conn._pool_released = True
+                        # Shield the reservation decrement against outer cancel:
+                        # an ``asyncio.timeout`` around ``pool.close()`` can fire
+                        # during ``_release_reservation``'s lock acquire; without
+                        # the shield, _size drifts above actual capacity. Sibling
+                        # to the exception-path shield at ``acquire()``.
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.shield(self._release_reservation())
         finally:
             # Multi-connection-leak guard: the per-iteration shield
             # protects an in-flight close, but a cancel propagating out
@@ -1520,6 +1574,11 @@ class ConnectionPool:
             # ``_drain_idle`` and the two ``_put_back_or_release_late_winner``
             # close arms.
             conn._pool_released = False
+            # Same drain_deferred tracking as ``_drain_idle``: set by
+            # the TimeoutError arm below to defer the slot release
+            # until the orphan drain finishes. Initialised in the
+            # outer-try scope so the finally can always read it.
+            drain_deferred = False
             try:
                 # Shield the close so a KeyboardInterrupt / SystemExit
                 # (or a fresh cancel delivered through the lock acquire
@@ -1566,6 +1625,15 @@ class ConnectionPool:
                         "remaining queue",
                         sanitize_for_log(str(getattr(conn, "_address", "?"))),
                     )
+                    # Defer the slot release until the orphan drain
+                    # finishes, mirroring ``_drain_idle``'s
+                    # TimeoutError arm. Preserves the ``max_size``
+                    # invariant: a concurrent ``acquire()`` cannot
+                    # dial a replacement while the orphan transport
+                    # is still open.
+                    drain_deferred = True
+                    conn._pool_released = True
+                    asyncio.ensure_future(self._release_after_drain(inner_drain))
             except Exception:
                 logger.debug(
                     "pool: cleanup-after-cancel close() on %s failed",
@@ -1573,13 +1641,14 @@ class ConnectionPool:
                     exc_info=True,
                 )
             finally:
-                # Restore the flag for contract symmetry with
-                # ``_drain_idle``: any stale-reference second close()
-                # falls through the documented early-return rather
-                # than re-running close on a dead conn.
-                conn._pool_released = True
-                with contextlib.suppress(asyncio.CancelledError):
-                    await asyncio.shield(self._release_reservation())
+                if not drain_deferred:
+                    # Restore the flag for contract symmetry with
+                    # ``_drain_idle``: any stale-reference second close()
+                    # falls through the documented early-return rather
+                    # than re-running close on a dead conn.
+                    conn._pool_released = True
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(self._release_reservation())
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[DqliteConnection]:
