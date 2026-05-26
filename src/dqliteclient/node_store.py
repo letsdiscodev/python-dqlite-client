@@ -10,7 +10,7 @@ import warnings
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, NoReturn, Protocol, final, runtime_checkable
+from typing import Any, Final, NoReturn, Protocol, final, runtime_checkable
 
 from dqliteclient import connection as _conn_mod
 from dqliteclient.exceptions import ClusterError, InterfaceError
@@ -809,21 +809,47 @@ class YamlNodeStore(NodeStore):
     async def _write_and_publish(
         self,
         normalised: tuple[NodeInfo, ...],
-        text: str,
+        payload: list[dict[str, Any]],
     ) -> None:
-        """Atomically commit ``text`` to disk and publish the
+        """Atomically commit ``payload`` to disk and publish the
         ``normalised`` membership in memory.
+
+        ``yaml.safe_dump`` runs inside the worker thread together with
+        the disk ritual so the loop thread never pays the
+        serialisation cost — the docstring on ``_write_atomic_sync``
+        treats ``safe_dump`` as part of the offloaded work, and
+        keeping the two together honours that contract for
+        large-cluster payloads (a 1000-node cluster pays ~10 ms of
+        pure-Python YAML emit; offloading keeps the loop responsive
+        during that window in addition to the much slower fsync
+        barrier).
 
         Called by :meth:`set_nodes` wrapped in :func:`asyncio.shield`
         so a cancel arriving between the worker-thread return and
         the in-memory assignment cannot leave disk and ``self._nodes``
         divergent — see the long-form note at the call site.
         """
-        await asyncio.to_thread(self._write_atomic_sync, text)
+        await asyncio.to_thread(self._serialise_and_write_sync, payload)
         # Store the canonical (validated, deduped) tuple in memory so
         # get_nodes returns the same shape that _load_from_disk would
         # surface after restart.
         self._nodes = normalised
+
+    def _serialise_and_write_sync(self, payload: list[dict[str, Any]]) -> None:
+        """Serialise ``payload`` to YAML text and write it via the
+        atomic-rename ritual. Synchronous body of the worker hop
+        dispatched by :meth:`_write_and_publish`.
+
+        ``yaml`` is imported inside the worker rather than relying
+        on a module-level import so the entry point stays
+        self-contained and the optional-PyYAML discipline shared
+        with :meth:`_load_from_disk` is preserved. PyYAML caches
+        the import after first use; per-call cost is negligible.
+        """
+        import yaml
+
+        text = yaml.safe_dump(payload, default_flow_style=False, sort_keys=False)
+        self._write_atomic_sync(text)
 
     def _write_atomic_sync(self, text: str) -> None:
         """Synchronous body of the atomic-rename ritual.
@@ -902,7 +928,6 @@ class YamlNodeStore(NodeStore):
         # writers racing the load -> serialise -> write sequence
         # would lose one update. asyncio.Lock keeps the in-process
         # last-writer-wins ordering deterministic.
-        import yaml
 
         # Manual ``acquire`` / ``release`` (rather than ``async with``)
         # so the lock is held across the shielded inner write even
@@ -938,15 +963,17 @@ class YamlNodeStore(NodeStore):
                 }
                 for n in normalised
             ]
-            text = yaml.safe_dump(payload, default_flow_style=False, sort_keys=False)
-            # Dispatch the sync I/O ritual (yaml.safe_dump's tempfile
-            # write, fsync, rename, parent-dir fsync, unlink cleanup)
-            # to a worker thread so the event loop stays responsive
-            # during the disk barrier. Without this, a slow fsync
-            # (NAS / encrypted volume / SSD GC pause) freezes every
-            # coroutine on the loop for the duration — RPC timeouts
-            # cannot fire, heartbeat windows expire silently, pool
-            # acquirers parked on _pool.get cannot wake.
+            # Dispatch YAML serialisation + sync I/O ritual
+            # (yaml.safe_dump, tempfile write, fsync, rename,
+            # parent-dir fsync, unlink cleanup) to a worker thread so
+            # the event loop stays responsive. Without the offload, a
+            # slow fsync (NAS / encrypted volume / SSD GC pause) freezes
+            # every coroutine on the loop for the duration — RPC
+            # timeouts cannot fire, heartbeat windows expire silently,
+            # pool acquirers parked on _pool.get cannot wake. The
+            # serialisation step is cheap CPU (~10 µs/node) but moves
+            # with the rest of the ritual so a large-cluster payload
+            # does not stall the loop before the worker hop.
             #
             # Shield the to_thread await + in-memory assignment
             # together: asyncio cannot abort the worker thread mid-
@@ -959,7 +986,7 @@ class YamlNodeStore(NodeStore):
             # divergent for the lifetime of the process. The shield
             # bundles the commit so the cancel only re-raises after
             # both sides have been updated.
-            inner = asyncio.ensure_future(self._write_and_publish(normalised, text))
+            inner = asyncio.ensure_future(self._write_and_publish(normalised, payload))
             try:
                 await asyncio.shield(inner)
             except asyncio.CancelledError:

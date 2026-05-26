@@ -49,8 +49,15 @@ async def test_set_nodes_cap_fire_reloads_in_memory_snapshot_from_disk(
     # resolving (we got cancelled first).
     parked = asyncio.Event()
 
-    async def _write_then_park(nodes: tuple[NodeInfo, ...], text: str) -> None:
-        # Drive the on-disk write synchronously, then park.
+    async def _write_then_park(
+        nodes: tuple[NodeInfo, ...], payload: list[dict[str, object]]
+    ) -> None:
+        # Drive the on-disk write synchronously, then park. The store's
+        # real ``_write_and_publish`` now takes the raw payload and
+        # serialises inside the worker thread; mirror that signature.
+        import yaml
+
+        text = yaml.safe_dump(payload, default_flow_style=False, sort_keys=False)
         await asyncio.to_thread(lambda: (tmp_path / "nodes.yaml").write_text(text))
         # Now the disk has the new payload. self._nodes is still old.
         # Park so the cancel storm catches us with disk ahead.
