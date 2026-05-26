@@ -1136,7 +1136,15 @@ class DqliteProtocol:
                 f"reduce result size or raise the cap on the connection/pool."
             )
         all_rows = list(initial.rows)
-        all_row_types: list[list[int]] = [[int(t) for t in rt] for rt in initial.row_types]
+        # ``ValueType`` is an ``IntEnum`` (subclass of ``int``); the
+        # wire layer already returns IntEnum members and downstream
+        # consumers do dict lookups by int value, so a per-cell
+        # ``int(t)`` is a runtime no-op that allocates a fresh ``int``
+        # per cell. A shallow ``list(rt)`` skips the per-cell cost.
+        # The outer list still needs copying because the wire layer's
+        # row-type lists are not safe to alias into our cumulative
+        # buffer.
+        all_row_types: list[list[int]] = [list(rt) for rt in initial.row_types]
         response = initial
         frames = 1  # the initial frame counts
         while response.has_more:
@@ -1172,8 +1180,19 @@ class DqliteProtocol:
                     f"reduce result size or raise the cap on the connection/pool."
                 )
             all_rows.extend(next_response.rows)
-            all_row_types.extend([int(t) for t in rt] for rt in next_response.row_types)
+            all_row_types.extend(list(rt) for rt in next_response.row_types)
             response = next_response
+            # Cooperative loop yield. ``await self._read_continuation``
+            # above does NOT yield to the loop scheduler when the next
+            # frame is already buffered in the StreamReader — asyncio's
+            # ``read*`` returns synchronously on that fast path. Without
+            # this explicit yield, a fast-burst server that prefetches
+            # many small frames pins the loop for the entire drain,
+            # starving sibling coroutines (heartbeat probes, pool
+            # acquirers, SA do_ping keepalives). The per-iteration
+            # ``sleep(0)`` cost is sub-microsecond and dominated by the
+            # per-frame decode work upstream.
+            await asyncio.sleep(0)
         return all_rows, all_row_types
 
     async def query_sql_typed(
