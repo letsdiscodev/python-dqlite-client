@@ -1055,6 +1055,14 @@ class DqliteProtocol:
                         f"{self._addr_suffix()}"
                     )
                 frames += 1
+                # Cooperative loop yield. ``await self._read_response(...)``
+                # above does NOT yield to the loop scheduler when frames
+                # are already buffered in the StreamReader. Without an
+                # explicit yield, an INTERRUPT against a pre-buffered
+                # ROWS / RESULT stream monopolises the loop for the
+                # full drain — same prefetched-frame hazard as
+                # ``_drain_continuations``.
+                await asyncio.sleep(0)
                 # Fall through: keep reading until EmptyResponse arrives.
 
     async def exec_sql(
