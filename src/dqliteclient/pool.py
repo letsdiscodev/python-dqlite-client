@@ -2904,8 +2904,6 @@ class ConnectionPool:
                 self._pool.qsize(),
                 max(self._size - self._pool.qsize(), 0),
             )
-            if self._closed_event is not None:
-                self._closed_event.set()
             await self._drain_idle()
             # Drain completed normally. Set BEFORE the finally so a
             # cancel landing between the drain return and the flag
@@ -2913,6 +2911,17 @@ class ConnectionPool:
             # then run the best-effort sweep above.
             self._drain_complete = True
         finally:
+            # Wake parked acquirers AND announce close-completion.
+            # Both event-sets live in finally so a ``BaseException``
+            # landing between ``self._closed = True`` and the
+            # event-set lines (signal-handler delivery on a bytecode
+            # check, a synthetic raise from a sibling, etc.) cannot
+            # leave acquirers parked on ``_closed_event.wait()``
+            # until their per-iteration acquire timeout fires.
+            # Symmetric with ``_close_done.set()`` which adopted the
+            # same finally-placement for the same rationale.
+            if self._closed_event is not None:
+                self._closed_event.set()
             self._close_done.set()
             # Drop the signalled-and-now-useless wakeup event
             # so it can be GC'd alongside the pool's other
