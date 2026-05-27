@@ -1642,9 +1642,14 @@ class ConnectionPool:
             # the next dead-conn detect, or ``pool.close()``.
             if not deadline_exit:
                 with contextlib.suppress(asyncio.CancelledError):
-                    await asyncio.shield(self._drain_remaining_after_cancel())
+                    # Forward the same deadline so the
+                    # cancel-recovery sweep honours the aggregate
+                    # close-budget; without this the recovery arm
+                    # re-amplifies the gap the main-loop deadline
+                    # was meant to bound.
+                    await asyncio.shield(self._drain_remaining_after_cancel(deadline=deadline))
 
-    async def _drain_remaining_after_cancel(self) -> None:
+    async def _drain_remaining_after_cancel(self, *, deadline: float | None = None) -> None:
         """Best-effort sweep for connections still in the queue after
         the main drain loop exited (typically via outer cancel).
 
@@ -1654,8 +1659,30 @@ class ConnectionPool:
         does not abort the cleanup of the rest. Re-entry from a second
         ``close()`` caller is safe — the queue empties on the first
         sweep and subsequent calls find ``self._pool.empty() is True``.
+
+        Optional ``deadline`` (monotonic ``loop.time()`` value): when
+        the running loop's clock advances past it, the sweep stops
+        attempting further connections. The check is between
+        iterations so an already-started per-connection close still
+        gets its per-iteration cap. Mirrors the discipline at
+        ``_drain_idle``. Callers from ``pool.close()`` pass an
+        aggregate close-budget deadline so the SIGTERM contract is
+        honoured end-to-end (cancel-recovery arm cannot extend close
+        past the operator's budget).
         """
+        loop = asyncio.get_running_loop()
         while not self._pool.empty():
+            if deadline is not None and loop.time() >= deadline:
+                # Aggregate deadline exceeded between iterations.
+                # The remaining queue stays for the next caller
+                # (next ``pool.close()`` re-entry, or the
+                # post-close finalizer). Mirrors ``_drain_idle``'s
+                # between-iteration deadline gate.
+                logger.debug(
+                    "pool: _drain_remaining_after_cancel deadline "
+                    "exhausted between iterations; abandoning"
+                )
+                return
             try:
                 conn = self._pool.get_nowait()
             except asyncio.QueueEmpty:  # pragma: no cover
@@ -2898,7 +2925,15 @@ class ConnectionPool:
             # being silently broken.
             if not self._drain_complete:
                 with contextlib.suppress(asyncio.CancelledError):
-                    await asyncio.shield(self._drain_remaining_after_cancel())
+                    # Mirror the first-caller's close-budget shape so
+                    # the second-caller's sweep cannot extend past
+                    # the same aggregate envelope.
+                    second_close_deadline = asyncio.get_running_loop().time() + (
+                        self._close_timeout * self._max_size * _DRAIN_PER_CONN_CAP_MULTIPLIER
+                    )
+                    await asyncio.shield(
+                        self._drain_remaining_after_cancel(deadline=second_close_deadline)
+                    )
             return
         # Publish the drain-done event BEFORE flipping the closed flag
         # so any second caller observing ``_closed=True`` is guaranteed
@@ -2928,7 +2963,24 @@ class ConnectionPool:
                 self._pool.qsize(),
                 max(self._size - self._pool.qsize(), 0),
             )
-            await self._drain_idle()
+            # Aggregate close-budget deadline. Bounds the drain at the
+            # documented worst-case shape (``close_timeout × max_size
+            # × _DRAIN_PER_CONN_CAP_MULTIPLIER``) — same envelope the
+            # operator would compose manually around ``pool.close()``
+            # via ``asyncio.timeout``. Without this gate, a queue of
+            # stuck-close peers (leader-flip mid-shutdown, half-closed
+            # sockets whose ``wait_closed`` never returns) keeps the
+            # close path waiting the full
+            # ``N × per_iter_cap`` even though the operator's
+            # ``close_timeout`` was sized per-peer, not per-batch. The
+            # cancel-recovery arm in ``_drain_idle`` forwards the same
+            # deadline so an outer cancel still truncates predictably
+            # rather than re-amplifying via
+            # ``_drain_remaining_after_cancel``.
+            close_deadline = asyncio.get_running_loop().time() + (
+                self._close_timeout * self._max_size * _DRAIN_PER_CONN_CAP_MULTIPLIER
+            )
+            await self._drain_idle(deadline=close_deadline)
             # Drain completed normally. Set BEFORE the finally so a
             # cancel landing between the drain return and the flag
             # assignment leaves ``_drain_complete=False`` — siblings
