@@ -2240,7 +2240,7 @@ class ClusterClient:
         if effective_policy is None:
             return nodes
         filtered: list[_WireNodeInfo] = []
-        for node in nodes:
+        for i, node in enumerate(nodes):
             if effective_policy(node.address):
                 filtered.append(node)
             else:
@@ -2256,6 +2256,20 @@ class ClusterClient:
                     node.node_id,
                     node.role.name,
                 )
+            # Cooperative loop yield. The wire cap on
+            # ``ServersResponse.nodes`` is ``_MAX_NODE_COUNT``
+            # (10_000 in ``dqlitewire.messages.responses``). A
+            # hostile or buggy leader returning a node-list close
+            # to that cap would otherwise pin the loop here for
+            # tens of milliseconds — the default policy calls
+            # ``parse_address`` + ``ipaddress.ip_address`` per
+            # node (tens of microseconds each on commodity
+            # hardware). Yield every K so the burst does not
+            # monopolise the loop. K reuses the find-leader
+            # probe-task yield constant so an operator tuning
+            # one knob doesn't end up out of sync with the other.
+            if (i + 1) % _PROBE_TASK_CREATE_YIELD_EVERY == 0:
+                await asyncio.sleep(0)
         return filtered
 
     async def transfer_leadership(self, target_node_id: int) -> None:
