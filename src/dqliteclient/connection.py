@@ -2277,8 +2277,19 @@ class DqliteConnection:
         # the shielded await, a NEW cancel landed and must propagate.
         self_task = asyncio.current_task()
         cancelling_before = self_task.cancelling() if self_task is not None else 0
+        # Hoist the close coroutine into an explicit Task with a
+        # done-callback observer BEFORE shielding so an outer cancel
+        # landing mid-await does not orphan the implicit Task that
+        # ``asyncio.shield`` would create from a bare coroutine —
+        # that orphan would surface as "Task exception was never
+        # retrieved" at GC. Same pattern as
+        # ``cluster.py::_observe_drain_exception``.
+        from dqliteclient.cluster import _observe_drain_exception
+
+        close_task = asyncio.ensure_future(self.close())
+        close_task.add_done_callback(_observe_drain_exception)
         try:
-            await asyncio.shield(self.close())
+            await asyncio.shield(close_task)
         except asyncio.CancelledError:
             cancelling_after = self_task.cancelling() if self_task is not None else 0
             if cancelling_after > cancelling_before:
