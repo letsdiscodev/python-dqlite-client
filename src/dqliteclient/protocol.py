@@ -93,6 +93,66 @@ _READ_CHUNK_SIZE: Final[int] = 4096
 # ``__init__.py``.
 _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS: Final[float] = 300.0
 
+# Encode-offload threshold for ``_send_request``. Requests whose
+# projected encoded body size meets or exceeds this value are
+# encoded on a worker thread via ``asyncio.to_thread`` so the
+# multi-MiB BLOB / TEXT param memcpy chain in ``encode_blob`` +
+# ``encode_params_tuple`` does not freeze the event loop. Sized
+# to amortise the ~50 µs thread-hop cost (~5× hop overhead at
+# 256 KiB) while still catching every multi-MiB shape. Sits in
+# the band documented across prior-art encoders (aiohttp 4 KiB
+# compression gate, psycopg3 128 KiB COPY buffer, asyncpg
+# 512 KiB COPY chunk). Heartbeats / admin RPCs / fixed-shape
+# requests stay in-loop because their projected size is well
+# under this threshold.
+_ENCODE_OFFLOAD_THRESHOLD: Final[int] = 256 * 1024
+
+
+def _decode_dump_response_sync(frame_bytes: bytes, decoder: MessageDecoder) -> Message:
+    """Sync body of the ``dump`` off-loop decode hop.
+
+    Runs ``decoder.decode_bytes(frame_bytes)`` on a worker thread
+    so the multi-MiB ``bytes(view[offset:offset+size])`` per-file
+    memcpy in :meth:`FilesResponse.decode_body` does not freeze
+    the event loop. Mirrors the in-tree ``YamlNodeStore.set_nodes``
+    ``asyncio.to_thread`` discipline — admin-class operations
+    whose payload is multi-MiB by design always offload
+    unconditionally rather than threshold-gating.
+    """
+    return decoder.decode_bytes(frame_bytes)
+
+
+def _estimate_request_body_size(request: object) -> int:
+    """Cheap loop-thread pre-estimate of the encoded body size.
+
+    Walks ``request.params`` (present on ``ExecRequest`` /
+    ``QueryRequest`` / ``ExecSqlRequest`` / ``QuerySqlRequest``)
+    and sums per-param sizes. Returns ``0`` for request types
+    without a ``params`` attribute, which keeps every admin /
+    handshake / fixed-shape RPC on the fast in-loop path.
+
+    Pessimistic for ``str`` params: uses ``len(value) * 4`` to
+    upper-bound UTF-8 expansion without materialising the encoded
+    form. Underestimating would silently keep a multi-MiB TEXT
+    param on the loop; over-estimating only triggers the offload
+    earlier, paying at most a single ~50 µs hop on a payload that
+    is anyway near the threshold.
+    """
+    params = getattr(request, "params", None)
+    if not params:
+        return 0
+    total = 0
+    for value in params:
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            total += len(value)
+        elif isinstance(value, str):
+            total += len(value) * 4
+        # Numeric / bool / None params contribute < 16 bytes each on
+        # the wire (uint64 / int64 / double / NULL sentinel); ignored
+        # here as negligible vs the threshold.
+    return total
+
+
 # Default cap on inbound message-frame size, re-exported from the wire
 # layer's ``ReadBuffer.DEFAULT_MAX_MESSAGE_SIZE`` (64 MiB). Promoted to
 # a module-level constant so the propagation through DqliteProtocol /
@@ -550,7 +610,7 @@ class DqliteProtocol:
         """
         async with self._lock:
             request = LeaderRequest()
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -595,7 +655,7 @@ class DqliteProtocol:
         """
         async with self._lock:
             request = ClusterRequest(format=1)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -624,7 +684,7 @@ class DqliteProtocol:
         """
         async with self._lock:
             request = AddRequest(node_id=node_id, address=address)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -650,7 +710,7 @@ class DqliteProtocol:
         """
         async with self._lock:
             request = AssignRequest(node_id=node_id, role=role)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -676,7 +736,7 @@ class DqliteProtocol:
         """
         async with self._lock:
             request = RemoveRequest(node_id=node_id)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -705,7 +765,7 @@ class DqliteProtocol:
         """
         async with self._lock:
             request = DescribeRequest(format=0)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -735,7 +795,7 @@ class DqliteProtocol:
         """
         async with self._lock:
             request = WeightRequest(weight=weight)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -760,12 +820,29 @@ class DqliteProtocol:
         client memory.
 
         Mirrors go-dqlite's ``client.go::EncodeDump``.
+
+        The :class:`FilesResponse` decode runs on a worker thread
+        via ``asyncio.to_thread`` because the per-file
+        ``bytes(view[offset:offset+size])`` materialise is
+        multi-MiB by design (the database file + WAL sidecar
+        commonly total tens of MiB). Mirrors the in-tree
+        ``YamlNodeStore.set_nodes`` discipline — admin-class
+        operations whose payload is multi-MiB by design always
+        offload unconditionally rather than threshold-gating.
+        The wire-receive + hostile-server trailing-frame check
+        stay on the loop thread (see :meth:`_read_message_bytes`).
         """
         async with self._lock:
             request = DumpRequest(name=database)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
-            response = await self._read_response()
+            frame_bytes = await self._read_message_bytes()
+            try:
+                response = await asyncio.to_thread(
+                    _decode_dump_response_sync, frame_bytes, self._decoder
+                )
+            except _WireProtocolError as e:
+                raise ProtocolError(f"{WIRE_DECODE_FAILED_PREFIX}{self._addr_suffix()}: {e}") from e
 
             if isinstance(response, FailureResponse):
                 raise OperationalError(
@@ -800,7 +877,7 @@ class DqliteProtocol:
         """
         async with self._lock:
             request = TransferRequest(target_node_id=target_node_id)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -835,7 +912,7 @@ class DqliteProtocol:
         """
         async with self._lock:
             request = OpenRequest(name=name, flags=flags, vfs=vfs)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -865,7 +942,7 @@ class DqliteProtocol:
         """
         async with self._lock:
             request = PrepareRequest(db_id=db_id, sql=sql)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -907,7 +984,7 @@ class DqliteProtocol:
         """Finalize (close) a prepared statement."""
         async with self._lock:
             request = FinalizeRequest(db_id=db_id, stmt_id=stmt_id)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -965,7 +1042,7 @@ class DqliteProtocol:
         """
         async with self._lock:
             request = InterruptRequest(db_id=db_id)
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             # Drain: swallow any trailing continuation frames, break when
             # EmptyResponse arrives. Bound by the single operation deadline
@@ -1079,7 +1156,7 @@ class DqliteProtocol:
             request = ExecSqlRequest(
                 db_id=db_id, sql=sql, params=params if params is not None else []
             )
-            await self._send(self._encoder.encode(request))
+            await self._send_request(request)
 
             response = await self._read_response()
 
@@ -1104,7 +1181,7 @@ class DqliteProtocol:
         for any other unexpected message type.
         """
         request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
-        await self._send(self._encoder.encode(request))
+        await self._send_request(request)
 
         deadline = self._operation_deadline()
         response = await self._read_response(deadline=deadline)
@@ -1261,6 +1338,79 @@ class DqliteProtocol:
             all_rows, _ = await self._drain_continuations(response, deadline)
 
             return column_names, all_rows
+
+    async def _read_message_bytes(self, deadline: float | None = None) -> bytes:
+        """Read the next complete frame as raw bytes WITHOUT
+        type-dispatched decode.
+
+        Used by the dump path so the multi-MiB
+        ``FilesResponse.decode_body`` per-file memcpy chain can run
+        off-loop via ``asyncio.to_thread``. The wire-receive half
+        stays on the loop thread; only the bytes-to-message
+        materialise hops off.
+
+        Preserves the hostile-server trailing-frames hardening from
+        :meth:`_read_response`: ``FilesResponse`` / ``FailureResponse``
+        are both terminal per the wire spec, so a trailing buffered
+        frame after either is a protocol violation. The check fires
+        on the loop thread BEFORE the off-loop decode begins so the
+        hostile-server vector (a peer coalescing a fake follow-on
+        frame after ``FilesResponse``) is rejected pre-offload.
+        """
+        from dqlitewire.constants import ResponseType
+
+        if deadline is None:
+            deadline = self._operation_deadline()
+        try:
+            while not self._decoder.has_message():
+                data = await self._read_data(deadline=deadline)
+                self._decoder.feed(data)
+                await asyncio.sleep(0)
+            frame_bytes = self._decoder._buffer.read_message()
+        except _WireProtocolError as e:
+            raise ProtocolError(f"{WIRE_DECODE_FAILED_PREFIX}{self._addr_suffix()}: {e}") from e
+        if frame_bytes is None:  # pragma: no cover
+            raise ProtocolError(f"Failed to read message bytes{self._addr_suffix()}")
+        # ``msg_type`` lives at byte offset 4 of the header per the
+        # 5-byte layout (size_words[0:4] + msg_type[4] +
+        # schema_version[5]). ROWS is the only response type with
+        # legitimate trailing-frame semantics; everything else is
+        # terminal. Mirrors the ``_read_response`` post-decode
+        # hostile-server check at the same call surface.
+        msg_type = frame_bytes[4]
+        if msg_type != ResponseType.ROWS and self._decoder.has_message():
+            raise ProtocolError(
+                f"Server emitted extra response after message type "
+                f"{msg_type}{self._addr_suffix()} — protocol "
+                f"violation, invalidating connection"
+            )
+        return frame_bytes
+
+    async def _send_request(self, request: Message) -> None:
+        """Encode ``request`` and send via :meth:`_send`.
+
+        Threshold-gates the encode: when the projected encoded body
+        size meets or exceeds ``_ENCODE_OFFLOAD_THRESHOLD`` the
+        encode runs on a worker thread via ``asyncio.to_thread``
+        so a multi-MiB BLOB / TEXT param does not freeze the
+        event loop during the four-pass memcpy chain in
+        ``encode_blob`` + ``encode_params_tuple``. Smaller
+        requests stay in-loop to avoid the ~50 µs thread-hop
+        cost on the hot path.
+
+        Mirrors the in-tree ``YamlNodeStore.set_nodes``
+        ``asyncio.to_thread`` discipline. Used by every
+        single-request call site in this module EXCEPT the two
+        handshake sites (which prepend raw version bytes and
+        bundle a tiny ``ClientRequest`` into one TCP segment by
+        design — see ``negotiate_protocol_only`` and
+        ``handshake``).
+        """
+        if _estimate_request_body_size(request) >= _ENCODE_OFFLOAD_THRESHOLD:
+            frame = await asyncio.to_thread(self._encoder.encode, request)
+        else:
+            frame = self._encoder.encode(request)
+        await self._send(frame)
 
     async def _send(self, frame: bytes) -> None:
         """Write a frame and drain, wrapping transport errors as DqliteConnectionError.
