@@ -1095,8 +1095,15 @@ class ConnectionPool:
             except asyncio.CancelledError:
                 # Outer cancel propagated through the shielded close
                 # boundary (the close still completes via the shield).
-                # Continue closing the remaining survivors before
-                # letting the cancel resume.
+                # The cancel signal is intentionally NOT re-raised
+                # after the loop — survivor cleanup is best-effort,
+                # and ``initialize`` treats the absorb as completing
+                # the drain leg cleanly. The broader cancellation
+                # discipline is handled at the caller's frame via
+                # ``Task.cancelling()`` bookkeeping (see
+                # ``DqliteConnection.__aexit__`` for the same
+                # idiom). Pinned by
+                # ``test_pool_initialize_unqueued_survivor_cancel.py``.
                 logger.debug(
                     "pool.initialize: cancel during unqueued-survivor close",
                     exc_info=True,
