@@ -107,6 +107,27 @@ _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS: Final[float] = 300.0
 # under this threshold.
 _ENCODE_OFFLOAD_THRESHOLD: Final[int] = 256 * 1024
 
+# Decode-offload threshold for ``_read_response``. Frames whose
+# total wire size meets or exceeds this value are decoded on a
+# worker thread via ``asyncio.to_thread`` so the per-row + per-cell
+# walk in ``RowsResponse.decode_body`` does not freeze the loop.
+# A 100k-row × 32-col RowsResponse (~25 MiB body) otherwise pins
+# the loop for hundreds of ms. The threshold matches
+# ``_ENCODE_OFFLOAD_THRESHOLD`` so both directions amortise the
+# ~50 µs thread-hop overhead at the same payload boundary.
+# CPython's GIL release every ``sys.setswitchinterval`` (~5 ms by
+# default) inside the worker thread gives the loop thread natural
+# scheduling slices during the off-loop decode — comparable to a
+# cooperative ``await asyncio.sleep(0)`` every ~5 ms of decode
+# work without the API redesign a two-tier sync-generator
+# approach would require. Mirrors the in-tree dump-decode +
+# send-encode offload pattern. NOTE: the latency guarantee is
+# coarser than an in-loop generator (5 ms granularity vs.
+# sub-ms with explicit yields); callers needing sub-5-ms
+# scheduling SLA would still benefit from a two-tier sync
+# generator + per-K-rows ``await asyncio.sleep(0)`` shape.
+_DECODE_OFFLOAD_THRESHOLD: Final[int] = 256 * 1024
+
 
 def _decode_dump_response_sync(frame_bytes: bytes, decoder: MessageDecoder) -> Message:
     """Sync body of the ``dump`` off-loop decode hop.
@@ -1339,7 +1360,12 @@ class DqliteProtocol:
 
             return column_names, all_rows
 
-    async def _read_message_bytes(self, deadline: float | None = None) -> bytes:
+    async def _read_message_bytes(
+        self,
+        deadline: float | None = None,
+        *,
+        allow_trailing: bool = False,
+    ) -> bytes:
         """Read the next complete frame as raw bytes WITHOUT
         type-dispatched decode.
 
@@ -1347,15 +1373,19 @@ class DqliteProtocol:
         ``FilesResponse.decode_body`` per-file memcpy chain can run
         off-loop via ``asyncio.to_thread``. The wire-receive half
         stays on the loop thread; only the bytes-to-message
-        materialise hops off.
+        materialise hops off. Also used by :meth:`_read_response`
+        to threshold-gate the response decode.
 
         Preserves the hostile-server trailing-frames hardening from
-        :meth:`_read_response`: ``FilesResponse`` / ``FailureResponse``
-        are both terminal per the wire spec, so a trailing buffered
-        frame after either is a protocol violation. The check fires
-        on the loop thread BEFORE the off-loop decode begins so the
-        hostile-server vector (a peer coalescing a fake follow-on
-        frame after ``FilesResponse``) is rejected pre-offload.
+        the prior in-line shape: every dqlite response other than
+        ``RowsResponse`` is terminal per the wire spec, so a
+        trailing buffered frame after a non-Rows response is a
+        protocol violation. The check fires on the loop thread
+        BEFORE the off-loop decode begins so the hostile-server
+        vector (a peer coalescing a fake follow-on frame) is
+        rejected pre-offload. ``allow_trailing=True`` opts out
+        (the INTERRUPT-drain caller deliberately expects two
+        frames in sequence).
         """
         from dqlitewire.constants import ResponseType
 
@@ -1375,10 +1405,10 @@ class DqliteProtocol:
         # 5-byte layout (size_words[0:4] + msg_type[4] +
         # schema_version[5]). ROWS is the only response type with
         # legitimate trailing-frame semantics; everything else is
-        # terminal. Mirrors the ``_read_response`` post-decode
+        # terminal. Mirrors the prior ``_read_response`` post-decode
         # hostile-server check at the same call surface.
         msg_type = frame_bytes[4]
-        if msg_type != ResponseType.ROWS and self._decoder.has_message():
+        if not allow_trailing and msg_type != ResponseType.ROWS and self._decoder.has_message():
             raise ProtocolError(
                 f"Server emitted extra response after message type "
                 f"{msg_type}{self._addr_suffix()} — protocol "
@@ -1666,9 +1696,40 @@ class DqliteProtocol:
             # using ``read_continuation`` directly; the fallback
             # picks up the connection's operation timeout.
             deadline = self._operation_deadline()
+        from dqlitewire.constants import WORD_SIZE
+
         try:
             while True:
-                result = self._decoder.decode_continuation()
+                # Threshold-gated decode offload (mirror of
+                # ``_read_response``). Peek the pending header to
+                # decide whether to offload via
+                # ``asyncio.to_thread``. ``decode_continuation``
+                # is stateful (consumes from the buffer, updates
+                # per-stream counters), so it MUST be called as a
+                # unit — the protocol's ``_lock`` guarantees no
+                # concurrent decoder access from a sibling
+                # coroutine while the worker thread holds it.
+                # Best-effort header peek to decide on offload.
+                # Wrapped in try/except so stub decoders /
+                # MagicMock fakes used by tests (which don't
+                # implement the wire-layer buffer API) fall back
+                # cleanly to the in-loop decode path.
+                try:
+                    pending = self._decoder._buffer.peek_header()
+                    pending_size = 8 + pending[0] * WORD_SIZE if pending is not None else 0
+                    # MagicMock arithmetic does NOT raise — it
+                    # returns another MagicMock that then breaks
+                    # the ``>=`` comparison below. Coerce non-int
+                    # values to 0 so stub-decoder tests fall
+                    # through to the in-loop path.
+                    if not isinstance(pending_size, int):
+                        pending_size = 0
+                except (AttributeError, TypeError, IndexError):
+                    pending_size = 0
+                if pending_size >= _DECODE_OFFLOAD_THRESHOLD:
+                    result = await asyncio.to_thread(self._decoder.decode_continuation)
+                else:
+                    result = self._decoder.decode_continuation()
                 if isinstance(result, EmptyResponse):
                     raise ProtocolError(
                         "Unexpected EmptyResponse during ROWS continuation"
@@ -1772,7 +1833,43 @@ class DqliteProtocol:
                 # under a fast-burst server / buffer-limit bump.
                 await asyncio.sleep(0)
 
-            message = self._decoder.decode()
+            # Threshold-gated decode offload. ``_decoder.decode``
+            # is stateful (sets ``_continuation_expected``,
+            # per-stream counters, column-name snapshots), so it
+            # MUST be called as a unit — splitting into
+            # ``read_message`` + ``decode_bytes`` skips the
+            # continuation-state setup the streaming path needs.
+            # Peek the header to size-gate the offload: large
+            # RowsResponse frames decode on a worker thread so
+            # the per-row + per-cell walk does not freeze the
+            # loop. CPython's GIL release every
+            # ``sys.setswitchinterval`` (~5 ms by default) inside
+            # the worker gives the loop thread natural scheduling
+            # slices during the off-loop decode. The protocol's
+            # ``_lock`` ensures only one coroutine touches the
+            # decoder at a time, so calling ``decode`` from a
+            # worker thread is safe.
+            from dqlitewire.constants import WORD_SIZE
+
+            # Best-effort header peek to decide on offload. Wrapped
+            # in try/except so stub decoders / MagicMock fakes used
+            # by tests (which don't implement the wire-layer buffer
+            # API) fall back cleanly to the in-loop decode path.
+            try:
+                pending = self._decoder._buffer.peek_header()
+                pending_size = 8 + pending[0] * WORD_SIZE if pending is not None else 0
+                # MagicMock arithmetic does NOT raise — it returns
+                # another MagicMock that then breaks the ``>=``
+                # comparison below. Coerce non-int values to 0 so
+                # stub-decoder tests fall through to the in-loop path.
+                if not isinstance(pending_size, int):
+                    pending_size = 0
+            except (AttributeError, TypeError, IndexError):
+                pending_size = 0
+            if pending_size >= _DECODE_OFFLOAD_THRESHOLD:
+                message = await asyncio.to_thread(self._decoder.decode)
+            else:
+                message = self._decoder.decode()
         except _WireProtocolError as e:
             raise ProtocolError(f"{WIRE_DECODE_FAILED_PREFIX}{self._addr_suffix()}: {e}") from e
 
@@ -1790,24 +1887,13 @@ class DqliteProtocol:
         # one response. If the decoder still has another frame
         # buffered after extracting a non-RowsResponse, the server
         # emitted extra bytes (or two coalesced replies arrived in
-        # one TCP segment). Without this check the leftover frame
-        # would be consumed as the response to the NEXT user request,
-        # producing a misleading ``OperationalError`` against an
-        # unrelated operation. Raise ``ProtocolError`` here so
-        # ``_run_protocol`` invalidates the connection and the pool
-        # discards the slot.
+        # one TCP segment). Raise ``ProtocolError`` here so
+        # ``_run_protocol`` invalidates the connection.
         #
         # ``RowsResponse`` is the sole exception: continuation frames
         # for a single Rows result legitimately carry across multiple
-        # decode steps. The continuation drain path does its own
-        # has_message-aware iteration.
-        #
-        # ``allow_trailing=True`` is the INTERRUPT-drain caller's
-        # explicit opt-out (see docstring): the drain context
-        # legitimately expects multiple frames in sequence (RESULT
-        # from the just-completed EXEC, then EMPTY for the INTERRUPT
-        # ack — gateway.c re-dispatches via ``handle_interrupt`` when
-        # ``g->req == NULL`` at the time the INTERRUPT lands).
+        # decode steps. ``allow_trailing=True`` is the INTERRUPT
+        # drain caller's explicit opt-out.
         if (
             not allow_trailing
             and not isinstance(message, RowsResponse)
