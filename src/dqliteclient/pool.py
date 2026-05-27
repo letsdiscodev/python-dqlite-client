@@ -891,14 +891,25 @@ class ConnectionPool:
                                 type(exc).__name__,
                                 sanitize_for_log(str(exc)),
                             )
-                        for conn in successes:
-                            try:
-                                await conn.close()
-                            except _POOL_CLEANUP_EXCEPTIONS:
-                                logger.debug(
-                                    "pool.initialize: partial-cleanup close error",
-                                    exc_info=True,
-                                )
+                        # Route the success-cleanup walk through the
+                        # canonical shielded helper so an outer cancel
+                        # landing mid-walk does NOT orphan the
+                        # remaining survivors. The prior shape's bare
+                        # ``await conn.close()`` propagated the cancel
+                        # immediately, leaking ``len(successes) -
+                        # walk_index - 1`` live transports (open
+                        # sockets, registered ``weakref.finalize``,
+                        # reader Task, server-side session) AND
+                        # supplanted the ``failures[0]`` cause with
+                        # the cancel. The helper's per-iter
+                        # ``asyncio.shield`` + ``CancelledError``
+                        # absorb runs the walk to completion so
+                        # ``raise failures[0]`` below carries the
+                        # actual initialise failure cause instead of
+                        # the late cancel. Symmetric with the
+                        # already-hardened ``_initialize_close_unqueued``
+                        # call further down the same ``finally`` chain.
+                        await self._initialize_close_unqueued(successes)
                         # Preserve the single-failure narrow type so
                         # callers doing ``except DqliteConnectionError``
                         # continue to match. For multiple distinct

@@ -112,7 +112,11 @@ class TestInitializePartialCleanupSwallowsCloseError:
             await pool.initialize()
 
         assert survivor.close_called >= 1, "survivor close was never attempted"
-        assert any("partial-cleanup close error" in rec.message for rec in caplog.records), (
+        # The success-cleanup walk is now routed through
+        # ``_initialize_close_unqueued`` (canonical shielded helper),
+        # which logs under the "unqueued-survivor close error" key.
+        # The historical "partial-cleanup close error" key is gone.
+        assert any("unqueued-survivor close error" in rec.message for rec in caplog.records), (
             f"expected DEBUG record; got {[r.message for r in caplog.records]!r}"
         )
 
