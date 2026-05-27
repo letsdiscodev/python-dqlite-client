@@ -1090,8 +1090,30 @@ class ClusterClient:
             # full-cluster redirect stampede the verify fan-out can
             # briefly exceed the slot count.
             sem_acquired = False
-            await semaphore.acquire()
-            sem_acquired = True
+            try:
+                await semaphore.acquire()
+                sem_acquired = True
+            except (KeyboardInterrupt, SystemExit):
+                # A signal-handler raise (synthetic ``KeyboardInterrupt``,
+                # ``SystemExit``, or a cross-thread
+                # ``PyErr_SetAsyncExc``) landing on the bytecode
+                # boundary between ``acquire()`` returning and the
+                # ``sem_acquired = True`` store would otherwise leave
+                # the permit decremented while the outer ``finally``'s
+                # ``if sem_acquired:`` guard misfires — leaking one
+                # permit per occurrence. With
+                # ``_concurrent_leader_conns=10`` (default) a handful
+                # of these wedge the whole sweep. Release defensively
+                # before re-raising; ``ValueError`` is suppressed for
+                # the (impossible-in-practice but cheap-to-guard) case
+                # where the signal beat the decrement and the release
+                # would over-credit. Mirrors the threading-lock
+                # discipline at ``dqlitedbapi.connection``'s
+                # ``_loop_lock`` acquire arm.
+                if not sem_acquired:
+                    with contextlib.suppress(ValueError):
+                        semaphore.release()
+                raise
             try:
                 try:
                     # ``async with asyncio.timeout(...)`` (cancel-scope
