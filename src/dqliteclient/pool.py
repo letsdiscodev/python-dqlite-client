@@ -592,6 +592,20 @@ class ConnectionPool:
         self._closed = False
         self._closed_event: asyncio.Event | None = None
         self._close_done: asyncio.Event | None = None
+        # Strong-ref set for fire-and-forget background tasks
+        # (currently the ``_release_after_drain`` follow-ups from the
+        # cancel-drain paths). The stdlib asyncio docs warn:
+        # "Save a reference to the result of [create_task /
+        # ensure_future] to avoid a task disappearing mid-execution."
+        # The follow-up holds its own strong reference to the
+        # ``inner_drain`` it awaits, so the chain stays rooted under
+        # normal operation. The hazard surfaces only under loop
+        # teardown / engine.dispose() while the orphan is mid-flight:
+        # GC can reclaim the follow-up before ``_release_reservation``
+        # runs, leaking the reservation slot. Holding a strong ref
+        # in this set closes that window; the done-callback discards
+        # the entry so the set stays bounded.
+        self._background_tasks: set[asyncio.Task[None]] = set()
         # Distinguish "first caller exited the drain phase" (signalled
         # via ``_close_done.set()`` in the close finally, so siblings
         # do not deadlock under cancel) from "drain ran to completion".
@@ -1539,7 +1553,14 @@ class ConnectionPool:
                         # early-return (same contract as the immediate
                         # finally arm below).
                         conn._pool_released = True
-                        asyncio.ensure_future(self._release_after_drain(inner_drain))
+                        # Stdlib advisory: hold a strong reference to
+                        # the fire-and-forget task so GC cannot
+                        # reclaim it mid-flight during loop teardown.
+                        _release_task = asyncio.ensure_future(
+                            self._release_after_drain(inner_drain)
+                        )
+                        self._background_tasks.add(_release_task)
+                        _release_task.add_done_callback(self._background_tasks.discard)
                 except Exception:
                     # Transport-level failures (BrokenPipeError, OSError, our
                     # own DqliteConnectionError) are absorbed so drain can
@@ -1681,7 +1702,12 @@ class ConnectionPool:
                     # is still open.
                     drain_deferred = True
                     conn._pool_released = True
-                    asyncio.ensure_future(self._release_after_drain(inner_drain))
+                    # Stdlib advisory: hold a strong reference to
+                    # the fire-and-forget task so GC cannot reclaim
+                    # it mid-flight during loop teardown.
+                    _release_task = asyncio.ensure_future(self._release_after_drain(inner_drain))
+                    self._background_tasks.add(_release_task)
+                    _release_task.add_done_callback(self._background_tasks.discard)
             except Exception:
                 logger.debug(
                     "pool: cleanup-after-cancel close() on %s failed",
