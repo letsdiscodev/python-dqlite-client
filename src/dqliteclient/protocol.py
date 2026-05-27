@@ -1529,6 +1529,22 @@ class DqliteProtocol:
                     return result
                 data = await self._read_data(deadline=deadline)
                 self._decoder.feed(data)
+                # Cooperative loop yield. ``await self._read_data``
+                # above does NOT yield to the loop scheduler when the
+                # next chunk is already buffered in the StreamReader
+                # (asyncio's ``read*`` returns synchronously on that
+                # fast path), and the per-iteration work is bounded
+                # today only by asyncio's ``_DEFAULT_LIMIT = 64 KiB``
+                # — a private implementation detail, not a contract.
+                # A fast-burst server prefetching a multi-MiB
+                # continuation body would otherwise pin the loop for
+                # the whole feed, starving sibling coroutines
+                # (heartbeat probes, pool acquirers, do_ping). The
+                # per-iteration ``sleep(0)`` cost is sub-microsecond
+                # and dominated by the upstream decode work.
+                # Symmetric with the sibling
+                # ``_drain_continuations`` per-frame yield.
+                await asyncio.sleep(0)
         except _WireServerFailure as e:
             # Server-authored failure mid-stream: surface the SQLite code
             # so sqlalchemy's is_disconnect and dbapi's code-to-exception
@@ -1596,6 +1612,15 @@ class DqliteProtocol:
             while not self._decoder.has_message():
                 data = await self._read_data(deadline=deadline)
                 self._decoder.feed(data)
+                # Cooperative loop yield (see _read_continuation for
+                # full rationale). Bounds the per-message read-and-
+                # feed loop's loop-monopolisation window: asyncio's
+                # StreamReader buffer limit caps iteration count at
+                # ~16 today, but that bound is a private
+                # implementation detail. Defensive yield keeps the
+                # message-read path from starving sibling coroutines
+                # under a fast-burst server / buffer-limit bump.
+                await asyncio.sleep(0)
 
             message = self._decoder.decode()
         except _WireProtocolError as e:
