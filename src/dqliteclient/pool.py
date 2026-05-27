@@ -1138,8 +1138,21 @@ class ConnectionPool:
         running through cancel (like ``_initialize_close_unqueued``'s
         per-conn walk) handle that arm explicitly.
         """
+        # Schedule the inner close as an explicit Task with the
+        # canonical ``_observe_drain_exception`` done-callback BEFORE
+        # awaiting the shielded handle. The prior shape
+        # (``await asyncio.shield(conn.close())``) wrapped the bare
+        # coroutine in an implicit Task; if the outer await was
+        # cancelled, the implicit Task was left running unobserved
+        # and any eventual non-``_POOL_CLEANUP_EXCEPTIONS`` raise
+        # surfaced as "Task exception was never retrieved" at GC.
+        # Mirrors the canonical pattern at the ``_drain_idle``
+        # per-iteration site below and at
+        # ``connection.py``'s ``_abort_protocol``.
+        close_task = asyncio.ensure_future(conn.close())
+        close_task.add_done_callback(_observe_drain_exception)
         try:
-            await asyncio.shield(conn.close())
+            await asyncio.shield(close_task)
         except _POOL_CLEANUP_EXCEPTIONS:
             logger.debug("pool.%s: close error", site, exc_info=True)
 
