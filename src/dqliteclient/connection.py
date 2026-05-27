@@ -1028,6 +1028,30 @@ def _connection_unclosed_warning(
     connected_flag: list[bool],
     address: str,
     creator_pid: int,
+    *,
+    # Kwarg-default capture of the stdlib module globals the body
+    # dereferences. ``Py_FinalizeEx`` phase 3 nulls module globals
+    # via ``PyImport_Cleanup``; without the capture a finalize
+    # callback that fires after this module's globals were nulled
+    # would raise ``TypeError`` from the first call into
+    # ``warnings.warn`` / ``contextlib.suppress`` /
+    # ``sanitize_for_log`` and surface as an unraisable-hook
+    # traceback that drowns out the actual shutdown signal. Mirrors
+    # the discipline already applied to
+    # ``dqlitedbapi.connection._cleanup_loop_thread`` and to the
+    # async sibling ``_async_unclosed_warning``.
+    #
+    # ``get_current_pid`` is INTENTIONALLY NOT captured: existing
+    # fork-pid tests patch the module-level name via
+    # ``unittest.mock.patch``, and a kwarg-default capture would
+    # freeze the production value past the patch. The runtime
+    # dereference below is wrapped in a ``try`` block so the
+    # shutdown-time ``TypeError`` is absorbed silently — same
+    # precedent as ``_cleanup_loop_thread`` in
+    # ``dqlitedbapi.connection``.
+    _warnings: Any = warnings,
+    _contextlib: Any = contextlib,
+    _sanitize_for_log: Any = sanitize_for_log,
 ) -> None:
     """Emit a ``ResourceWarning`` when a ``DqliteConnection`` is
     GC'd without ``await close()``.
@@ -1059,20 +1083,33 @@ def _connection_unclosed_warning(
     ``RuntimeError`` suppress narrows interpreter-shutdown races
     (the warnings module may have been torn down by GC).
     """
-    if get_current_pid() != creator_pid:
-        # Forked child. Skip — the parent owns the lifecycle.
+    if _warnings is None or _contextlib is None or _sanitize_for_log is None:
+        # Phase-3 teardown left one of the captured module
+        # references nulled; bail silently rather than raise into
+        # the GC finalize machinery.
+        return
+    # Read ``get_current_pid`` from module globals at call time so
+    # the test fixture's ``patch("dqliteclient.connection."
+    # "get_current_pid", ...)`` is observed. ``try`` absorbs the
+    # shutdown-time ``TypeError`` ('NoneType' is not callable) so a
+    # phase-3 teardown does not surface as an unraisable hook.
+    try:
+        if get_current_pid() != creator_pid:
+            # Forked child. Skip — the parent owns the lifecycle.
+            return
+    except Exception:
         return
     if closed_flag[0] or not connected_flag[0]:
         return
-    with contextlib.suppress(RuntimeError):
+    with _contextlib.suppress(RuntimeError):
         # Sanitise the address before interpolation: a custom
         # ``dial_func`` that bypassed ``parse_address`` could
         # otherwise carry LF / U+2028 into journald via the
         # ResourceWarning emission and split the record.
         # Defence-in-depth matching the ``__repr__`` discipline on
         # this class (CWE-117).
-        warnings.warn(
-            f"DqliteConnection(address={sanitize_for_log(str(address))!r}) "
+        _warnings.warn(
+            f"DqliteConnection(address={_sanitize_for_log(str(address))!r}) "
             f"was garbage-collected without await close(). Call "
             f"``await conn.close()`` explicitly to release the "
             f"underlying socket promptly.",

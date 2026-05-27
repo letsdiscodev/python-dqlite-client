@@ -165,6 +165,28 @@ def _pool_unclosed_warning(
     reserved_flag: list[bool],
     queue: "asyncio.Queue[DqliteConnection] | None" = None,
     creator_pid: int | None = None,
+    *,
+    # Kwarg-default capture of the stdlib module globals the body
+    # dereferences. ``Py_FinalizeEx`` phase 3 nulls module globals
+    # via ``PyImport_Cleanup``; without the capture a finalize
+    # callback that fires after the module's globals were nulled
+    # would raise ``TypeError`` from the first call into
+    # ``warnings.warn`` / ``contextlib.suppress`` and surface as
+    # an unraisable-hook traceback that drowns out the actual
+    # shutdown signal. Mirrors the discipline already applied to
+    # ``dqlitedbapi.connection._cleanup_loop_thread`` and the
+    # other unclosed-warning finalizers in this codebase.
+    #
+    # ``get_current_pid`` is INTENTIONALLY NOT captured: existing
+    # fork-pid tests patch the module-level name via
+    # ``unittest.mock.patch``, and a kwarg-default capture would
+    # freeze the production value past the patch. The runtime
+    # dereference below is wrapped in a ``try`` block so the
+    # shutdown-time ``TypeError`` is absorbed silently — same
+    # precedent as ``_cleanup_loop_thread`` in
+    # ``dqlitedbapi.connection``.
+    _warnings: Any = warnings,
+    _contextlib: Any = contextlib,
 ) -> None:
     """Emit a ``ResourceWarning`` when a ``ConnectionPool`` is GC'd
     without ``await close()``.
@@ -209,14 +231,28 @@ def _pool_unclosed_warning(
     minimum-change fix preferred by reviewer over a private-deque
     hop or a parallel-set bookkeeping rewrite.
     """
-    if creator_pid is not None and get_current_pid() != creator_pid:
-        # Forked child. Skip — the parent owns the lifecycle.
+    if _warnings is None or _contextlib is None:
+        # Phase-3 teardown left one of the captured module
+        # references nulled; bail silently rather than raise into
+        # the GC finalize machinery.
         return
+    if creator_pid is not None:
+        # Read ``get_current_pid`` from module globals at call time
+        # so the test fixture's ``patch("dqliteclient.pool."
+        # "get_current_pid", ...)`` is observed. ``try`` absorbs
+        # the shutdown-time ``TypeError`` so a phase-3 teardown
+        # does not surface as an unraisable hook.
+        try:
+            if get_current_pid() != creator_pid:
+                # Forked child. Skip — the parent owns the lifecycle.
+                return
+        except Exception:
+            return
     if closed_flag[0] or not reserved_flag[0]:
         return
     queued_count: int | None = None
     if queue is not None:
-        with contextlib.suppress(Exception):
+        with _contextlib.suppress(Exception):
             queued_count = queue.qsize()
     if queued_count is not None and queued_count > 0:
         message = (
@@ -231,8 +267,8 @@ def _pool_unclosed_warning(
             "queued connections may have leaked their transports. Call "
             "``await pool.close()`` explicitly to release them promptly."
         )
-    with contextlib.suppress(RuntimeError):
-        warnings.warn(
+    with _contextlib.suppress(RuntimeError):
+        _warnings.warn(
             message,
             ResourceWarning,
             stacklevel=2,
