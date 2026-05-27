@@ -277,14 +277,18 @@ class TestConnectionPool:
         assert any("pool.close: draining" in m for m in messages)
 
     async def test_initialize_size_resets_if_put_raises(self) -> None:
-        """``_size`` must stay consistent with the actual pool membership
-        even if a non-_POOL_CLEANUP_EXCEPTIONS error escapes during the
-        put-to-queue phase of initialize(). Today the decrement only
-        runs inside the ``if failures:`` branch — so a raise from
-        ``self._pool.put`` (or an outer ``CancelledError`` mid-loop)
-        leaks the reservation and a subsequent ``initialize()`` retry
-        climbs toward ``_max_size`` without ever creating real
-        connections.
+        """``_size`` must stay consistent with the actual pool
+        membership even if a non-_POOL_CLEANUP_EXCEPTIONS error
+        escapes during the Phase C publish step. The Phase C
+        exception arm releases the reservation and routes the
+        unpublished successes through the shielded close helper so
+        a subsequent ``initialize()`` retry starts from zero rather
+        than climbing toward ``_max_size`` against a stale counter.
+
+        The prior shape patched ``_pool.put`` (async) because the
+        old put-loop ran one await per success; the new Phase C
+        runs ``put_nowait`` under the lock atomically, so the
+        equivalent injection point is ``put_nowait``.
         """
         pool = ConnectionPool(["localhost:9001"], min_size=2, max_size=5)
 
@@ -297,7 +301,7 @@ class TestConnectionPool:
 
         with (
             patch.object(pool._cluster, "connect", side_effect=fake_create),
-            patch.object(pool._pool, "put", side_effect=RuntimeError("synthetic")),
+            patch.object(pool._pool, "put_nowait", side_effect=RuntimeError("synthetic")),
             pytest.raises(RuntimeError, match="synthetic"),
         ):
             await pool.initialize()

@@ -617,6 +617,17 @@ class ConnectionPool:
         # "queue drained" promise is upheld.
         self._drain_complete: bool = False
         self._initialized = False
+        # 3-phase initialize coordination. ``_initializing`` flips True
+        # under ``_lock`` for the duration of Phase A → Phase C and
+        # gates secondary callers on ``_initialize_done_event``. The
+        # event is freshly allocated by the first caller in Phase A
+        # and nulled after Phase C / failure-finally fires. Both
+        # fields are also nulled by the close()-side fork shortcut so
+        # a child-side ``initialize()`` does not park on a loop-bound
+        # ``asyncio.Event`` inherited from the parent. Mirrors the
+        # ``_close_done`` / ``_closed_event`` discipline.
+        self._initializing: bool = False
+        self._initialize_done_event: asyncio.Event | None = None
         # Fork-after-init is unsupported: pooled connections hold
         # shared TCP sockets and asyncio primitives bound to the
         # parent's loop. Store the creator pid so cross-fork
@@ -767,298 +778,297 @@ class ConnectionPool:
                 f"current pid {_conn_mod.get_current_pid()})"
             )
         self._check_loop_binding()
-        # Hold the lock across the gather so a second concurrent
-        # initialize() call observes _initialized=True after the first
-        # completes and returns without re-creating.
+        # 3-phase coordination:
+        #   Phase A — bookkeeping under ``_lock``, no awaits inside.
+        #             First caller flips ``_initializing``, creates
+        #             ``_initialize_done_event``, reserves ``_size``.
+        #             Secondary callers observe ``_initializing`` and
+        #             park on the event OUTSIDE the lock.
+        #   Phase B — gather lock-free so concurrent ``acquire()``
+        #             callers can make progress against partially-warmed
+        #             pool state instead of parking on ``_lock`` for the
+        #             full warm-up dial.
+        #   Phase C — re-acquire ``_lock`` briefly to publish results
+        #             (``put_nowait`` is safe because the queue's
+        #             maxsize is ``max_size >= min_size``), set
+        #             ``_initialized``, signal+null the event, clear
+        #             ``_initializing``. No awaits inside.
+        # Mirrors the ``psycopg_pool.AsyncConnectionPool`` open()/wait()
+        # + ``_pool_full_event`` discipline.
         async with self._lock:
             if self._initialized:
                 return
-            if self._min_size > 0:
-                logger.debug("pool.initialize: requesting %d connections", self._min_size)
+            if self._initializing:
+                # Secondary caller: snapshot the event under the lock
+                # so the first caller's Phase C null-out can't race
+                # us. Drop the lock before awaiting — the first
+                # caller will set the event from its own Phase C /
+                # failure-finally arm under its own lock window.
+                evt = self._initialize_done_event
+            else:
+                if self._closed:
+                    raise DqliteConnectionError(f"Pool is closed (id={id(self)})")
+                if self._min_size <= 0:
+                    # No warm-up needed — flip the flag under the
+                    # lock and return. No event needed because no
+                    # secondary caller can observe ``_initializing``.
+                    self._initialized = True
+                    return
+                self._initializing = True
+                self._initialize_done_event = asyncio.Event()
                 self._size += self._min_size
                 if self._size > 0:
                     self._reserved_flag[0] = True
-                # Count reservations that still need to be released. Each
-                # successful put into the pool queue "commits" one slot
-                # (the connection stays and must remain counted in
-                # _size), so unqueued shrinks per iteration. On any
-                # abort the finally below releases exactly ``unqueued``
-                # slots — the ones that never made it to the queue —
-                # and closes the unqueued survivors.
-                unqueued = self._min_size
-                unqueued_survivors: list[DqliteConnection] = []
-                # Build child tasks explicitly (not via the ``gather`` *
-                # expression form) so a CancelledError raised out of
-                # ``gather`` itself — outer ``asyncio.timeout`` / a
-                # TaskGroup sibling failure / ``task.cancel()`` —
-                # leaves the finally with a handle on every child's
-                # ``_result``. The expression form discards the
-                # already-completed children's results into the
-                # gather's local frame; once gather raises, those
-                # results are unreachable and the live conns are
-                # orphaned (transports leaked until GC).
-                #
-                # This is the symmetric resource-discipline fix to
-                # the prior ``_size`` accounting fix that moved the
-                # bookkeeping into the finally; the connection-close
-                # sweep now does the same by walking the explicit
-                # task list.
-                # Build ``create_tasks`` INSIDE the try frame so a
-                # BaseException landing mid-construction (synthetic
-                # KeyboardInterrupt, outer cancel in the bytecode
-                # window before the ``try:``) keeps every
-                # already-created task tracked: the ``finally:`` walks
-                # the partial list via the ``gather_returned`` flag
-                # below, cancels survivors, and closes their
-                # connections. Pre-fix the comprehension ran outside
-                # the try frame; a BaseException there orphaned the
-                # live tasks (loop-bound primitives and transports
-                # leaked until GC). Mirrors the cluster-side hardening
-                # at ``_find_leader_impl`` and the pool-acquire
-                # discipline applied earlier on the acquire path that
-                # established the project pattern of building the task
-                # set inside the try frame whose finally cancels and
-                # gathers them.
-                create_tasks: list[asyncio.Task[DqliteConnection]] = []
-                # Track whether ``gather`` returned normally; if it
-                # raised CancelledError, the post-gather assignment
-                # to ``unqueued_survivors`` (and the put-loop's pop)
-                # never ran, so the finally must walk the explicit
-                # task list to recover completed children's
-                # results. When gather DID return normally, the
-                # existing pop-based discipline already tracked the
-                # un-queued tail precisely; walking tasks again
-                # would re-add already-queued conns and double-close.
-                gather_returned = False
-                try:
-                    for _ in range(self._min_size):
-                        create_tasks.append(asyncio.create_task(self._create_connection()))
-                    # Create min_size connections concurrently so startup
-                    # latency doesn't scale with min_size × per-connect RTT.
-                    results = await asyncio.gather(
-                        *create_tasks,
-                        return_exceptions=True,
+                evt = None
+        if evt is not None:
+            # Secondary caller path: park on the event without holding
+            # the lock so the first caller's Phase B gather is not
+            # blocked. After wake, recurse to honour the documented
+            # idempotence contract — the first caller may have hit a
+            # close-race or a warm-up failure that leaves
+            # ``_initialized`` False (and the second caller's
+            # ``initialize()`` is allowed to retry, per
+            # ``test_initialize_retryable_after_failure``). The
+            # recursion is structurally bounded: each iteration either
+            # short-circuits on ``_initialized=True`` / raises on
+            # ``_closed=True`` (immediate exit) or wins the
+            # first-caller race in Phase A and runs its own warm-up.
+            # An unbounded retry loop is only reachable if every
+            # warm-up keeps failing AND every secondary caller keeps
+            # retrying — which is the documented behaviour, not a
+            # hazard.
+            await evt.wait()
+            return await self.initialize()
+        logger.debug("pool.initialize: requesting %d connections", self._min_size)
+        # Count reservations that still need to be released. Each
+        # successful Phase C ``put_nowait`` "commits" one slot
+        # (the connection stays and must remain counted in
+        # ``_size``). On any abort the failure-finally below releases
+        # exactly ``unqueued`` slots — the ones that never made it
+        # to the queue — and closes the unqueued survivors.
+        unqueued = self._min_size
+        unqueued_survivors: list[DqliteConnection] = []
+        # Build child tasks explicitly (not via the ``gather`` *
+        # expression form) so a CancelledError raised out of
+        # ``gather`` itself — outer ``asyncio.timeout`` / a
+        # TaskGroup sibling failure / ``task.cancel()`` — leaves
+        # the finally with a handle on every child's ``_result``.
+        # The expression form discards the already-completed
+        # children's results into the gather's local frame; once
+        # gather raises, those results are unreachable and the live
+        # conns are orphaned (transports leaked until GC).
+        #
+        # Build ``create_tasks`` INSIDE the try frame so a
+        # BaseException landing mid-construction (synthetic
+        # KeyboardInterrupt, outer cancel in the bytecode window
+        # before the ``try:``) keeps every already-created task
+        # tracked: the ``finally:`` walks the partial list via the
+        # ``gather_returned`` flag below, cancels survivors, and
+        # closes their connections. Pre-fix the comprehension ran
+        # outside the try frame; a BaseException there orphaned
+        # the live tasks (loop-bound primitives and transports
+        # leaked until GC). Mirrors the cluster-side hardening at
+        # ``_find_leader_impl`` and the pool-acquire discipline.
+        create_tasks: list[asyncio.Task[DqliteConnection]] = []
+        # Track whether ``gather`` returned normally; if it raised
+        # CancelledError, the post-gather assignment to
+        # ``unqueued_survivors`` and the put-loop never ran, so the
+        # finally must walk the explicit task list to recover
+        # completed children's results.
+        gather_returned = False
+        # Track whether Phase B reached the "all succeeded" branch.
+        # Used by the failure-finally to decide whether to release
+        # the reservations + close survivors (failure path) or to
+        # leave them for Phase C (success path).
+        success_branch = False
+        successes: list[DqliteConnection] = []
+        try:
+            for _ in range(self._min_size):
+                create_tasks.append(asyncio.create_task(self._create_connection()))
+            # Create min_size connections concurrently so startup
+            # latency doesn't scale with min_size × per-connect RTT.
+            results = await asyncio.gather(
+                *create_tasks,
+                return_exceptions=True,
+            )
+            gather_returned = True
+            failures: list[BaseException] = []
+            for r in results:
+                if isinstance(r, BaseException):
+                    failures.append(r)
+                else:
+                    successes.append(r)
+            if failures:
+                # Route ``str(exc)`` (not ``repr(exc)``) through
+                # ``sanitize_for_log`` so the wire-layer single-stage
+                # substitution (``?`` for control / bidi / invisible,
+                # ``\n`` / ``\t`` literal-escape for LF / Tab) lands
+                # on the operator-facing text directly — ``repr()``
+                # would have double-encoded the same characters
+                # through Python's escape sequences. Prepend
+                # ``type(exc).__name__`` so the class-context cue
+                # that ``repr()`` provided survives the switch.
+                _first_failure = failures[0]
+                logger.debug(
+                    "pool.initialize: aborting after %d/%d creates succeeded; "
+                    "closing %d survivors (first failure: %s: %s)",
+                    len(successes),
+                    self._min_size,
+                    len(successes),
+                    type(_first_failure).__name__,
+                    sanitize_for_log(str(_first_failure)),
+                )
+                # Log every failure individually so operators see the
+                # full picture before unpacking the ExceptionGroup —
+                # partial cluster outages frequently produce different
+                # root causes per node (timeout / refused / no-leader)
+                # and the single-exception surface hid the majority
+                # signal.
+                for i, exc in enumerate(failures):
+                    logger.warning(
+                        "pool.initialize: create_connection %d/%d failed: %s: %s",
+                        i + 1,
+                        len(failures),
+                        type(exc).__name__,
+                        sanitize_for_log(str(exc)),
                     )
-                    gather_returned = True
-                    successes: list[DqliteConnection] = []
-                    failures: list[BaseException] = []
-                    for r in results:
-                        if isinstance(r, BaseException):
-                            failures.append(r)
-                        else:
-                            successes.append(r)
-                    if failures:
-                        # Close the connections that did succeed — they
-                        # are unowned now that initialize is aborting.
-                        # ``%r`` on a server-supplied exception would
-                        # echo ``OperationalError.message`` / wrapped
-                        # peer text into the log without sanitisation.
-                        # Route ``str(exc)`` (not ``repr(exc)``) through
-                        # ``sanitize_for_log`` so the wire-layer
-                        # single-stage substitution (``?`` for control /
-                        # bidi / invisible, ``\n`` / ``\t`` literal-
-                        # escape for LF / Tab) lands on the operator-
-                        # facing text directly — ``repr()`` would have
-                        # double-encoded the same characters through
-                        # Python's escape sequences, producing harder-
-                        # to-read log lines than the sibling
-                        # ``sanitize_for_log(str(...))`` sites use.
-                        # Prepend ``type(exc).__name__`` so the class-
-                        # context cue that ``repr()`` provided survives
-                        # the switch.
-                        _first_failure = failures[0]
-                        logger.debug(
-                            "pool.initialize: aborting after %d/%d creates succeeded; "
-                            "closing %d survivors (first failure: %s: %s)",
-                            len(successes),
-                            self._min_size,
-                            len(successes),
-                            type(_first_failure).__name__,
-                            sanitize_for_log(str(_first_failure)),
-                        )
-                        # Log every failure individually so operators
-                        # see the full picture before unpacking the
-                        # ExceptionGroup — partial cluster outages
-                        # frequently produce different root causes per
-                        # node (timeout / refused / no-leader) and the
-                        # single-exception surface hid the majority
-                        # signal.
-                        for i, exc in enumerate(failures):
-                            logger.warning(
-                                "pool.initialize: create_connection %d/%d failed: %s: %s",
-                                i + 1,
-                                len(failures),
-                                type(exc).__name__,
-                                sanitize_for_log(str(exc)),
-                            )
-                        # Route the success-cleanup walk through the
-                        # canonical shielded helper so an outer cancel
-                        # landing mid-walk does NOT orphan the
-                        # remaining survivors. The prior shape's bare
-                        # ``await conn.close()`` propagated the cancel
-                        # immediately, leaking ``len(successes) -
-                        # walk_index - 1`` live transports (open
-                        # sockets, registered ``weakref.finalize``,
-                        # reader Task, server-side session) AND
-                        # supplanted the ``failures[0]`` cause with
-                        # the cancel. The helper's per-iter
-                        # ``asyncio.shield`` + ``CancelledError``
-                        # absorb runs the walk to completion so
-                        # ``raise failures[0]`` below carries the
-                        # actual initialise failure cause instead of
-                        # the late cancel. Symmetric with the
-                        # already-hardened ``_initialize_close_unqueued``
-                        # call further down the same ``finally`` chain.
-                        await self._initialize_close_unqueued(successes)
-                        # Preserve the single-failure narrow type so
-                        # callers doing ``except DqliteConnectionError``
-                        # continue to match. For multiple distinct
-                        # failures, raise an ExceptionGroup so every
-                        # cause is accessible via structured handling
-                        # (``except*``); the finally releases the
-                        # reservation before the raise propagates.
-                        if len(failures) == 1:
-                            raise failures[0]
-                        # Bounded aggregate: at most
-                        # ``_MAX_AGGREGATE_CHILDREN`` children so the
-                        # exception graph stays picklable for cross-
-                        # process error capture (Celery, multiprocessing).
-                        from dqliteclient.cluster import _bounded_group
+                # Route the success-cleanup walk through the canonical
+                # shielded helper so an outer cancel landing mid-walk
+                # does NOT orphan the remaining survivors. The helper's
+                # per-iter ``asyncio.shield`` + ``CancelledError``
+                # absorb runs the walk to completion so the
+                # ``raise failures[0]`` / ``raise _bounded_group(...)``
+                # below carries the actual initialise failure cause
+                # instead of the late cancel.
+                await self._initialize_close_unqueued(successes)
+                # Preserve the single-failure narrow type so callers
+                # doing ``except DqliteConnectionError`` continue to
+                # match. For multiple distinct failures, raise an
+                # ExceptionGroup so every cause is accessible via
+                # structured handling (``except*``); the finally
+                # releases the reservation before the raise propagates.
+                if len(failures) == 1:
+                    raise failures[0]
+                # Bounded aggregate: at most ``_MAX_AGGREGATE_CHILDREN``
+                # children so the exception graph stays picklable for
+                # cross-process error capture (Celery, multiprocessing).
+                from dqliteclient.cluster import _bounded_group
 
-                        raise _bounded_group(
-                            f"pool.initialize: {len(failures)} of {self._min_size} connects failed",
-                            failures,
-                        )
-                    # Track which successes are still unqueued so a
-                    # cancellation mid put-loop can close them precisely
-                    # rather than leaking their transports.
-                    unqueued_survivors = list(successes)
-                    for conn in successes:
-                        # Re-check _closed every iteration: close() does
-                        # not acquire _lock, so a concurrent close()
-                        # landing while gather was suspended would
-                        # otherwise let us commit connections into a
-                        # pool whose _closed flag is True. In that case
-                        # acquire() refuses them (they are invisible to
-                        # the user) and the transports leak. Route the
-                        # tail through the existing unqueued_survivors
-                        # cleanup path instead.
-                        if self._closed:
-                            break
-                        await self._pool.put(conn)
-                        # put() succeeded: the slot is now committed —
-                        # the connection stays in _size accounting and
-                        # belongs to the queue, not to this function.
-                        unqueued -= 1
-                        unqueued_survivors.pop(0)
-                    logger.debug("pool.initialize: %d connections ready", self._min_size)
-                finally:
-                    # Capture the in-flight exception (if any) at the
-                    # top of the finally so a later ``raise
-                    # outer_cancel`` inside this arm can chain it
-                    # explicitly via ``__cause__``. Python sets
-                    # ``__context__`` to the in-flight exception
-                    # automatically (PEP 3134 implicit chaining), but
-                    # SA's ``walk_cause_chain`` (and every other
-                    # cause-following classifier) follows ``__cause__``
-                    # exclusively. Without this capture, a try-body
-                    # ``DqliteConnectionError`` / ``OperationalError``
-                    # gets buried on ``__context__`` and is invisible
-                    # to is_disconnect classification at the SA layer.
-                    in_flight: BaseException | None = sys.exc_info()[1]
-                    # Any exit path with uncommitted reservations —
-                    # failed gather, raise from _pool.put, outer
-                    # CancelledError mid put-loop — must return the
-                    # unqueued slots to _size so a subsequent
-                    # initialize()/acquire() is not blocked against
-                    # a stale counter climbing toward _max_size.
-                    # Route through the same under-flow-guarded helper
-                    # as the per-conn ``_release_reservation`` path so
-                    # a future double-decrement at this site lands the
-                    # canonical ERROR log instead of silently producing
-                    # a negative ``_size``. The lock is already held
-                    # by this method's outer ``async with self._lock``.
+                raise _bounded_group(
+                    f"pool.initialize: {len(failures)} of {self._min_size} connects failed",
+                    failures,
+                )
+            # All gather children succeeded. Hand the conns to Phase
+            # C for the under-lock publish. Record them on
+            # ``unqueued_survivors`` so a cancel landing between this
+            # assignment and Phase C's lock acquire still routes them
+            # through the failure-finally close-walk.
+            success_branch = True
+            unqueued_survivors = list(successes)
+        finally:
+            # Capture the in-flight exception (if any) at the top of
+            # the finally so a later ``raise outer_cancel`` inside
+            # this arm can chain it explicitly via ``__cause__``.
+            # Python sets ``__context__`` to the in-flight exception
+            # automatically (PEP 3134 implicit chaining), but SA's
+            # ``walk_cause_chain`` follows ``__cause__`` exclusively.
+            in_flight: BaseException | None = sys.exc_info()[1]
+            # Cancel-during-gather recovery: ``gather`` propagates
+            # CancelledError when its caller is cancelled, but
+            # children that already completed have their results
+            # sitting in their tasks' ``_result`` slot. The
+            # post-gather assignment to ``unqueued_survivors`` did
+            # not run, so this loop iterates an empty list. Walk
+            # ``create_tasks`` to recover those results. Only walks
+            # the task list if ``gather`` raised before returning;
+            # once the post-gather code ran, the success_branch
+            # discipline tracks survivors precisely.
+            if not gather_returned:
+                cancelled_pending: list[asyncio.Task[DqliteConnection]] = []
+                for t in create_tasks:
+                    if not t.done():
+                        t.cancel()
+                        cancelled_pending.append(t)
+                outer_cancel: BaseException | None = None
+                if cancelled_pending:
+                    try:
+                        await asyncio.gather(*cancelled_pending, return_exceptions=True)
+                    except BaseException as exc:
+                        outer_cancel = exc
+                self._initialize_collect_completed_conns(create_tasks, unqueued_survivors)
+                if outer_cancel is not None:
+                    # Close before re-raising so the caller's outer
+                    # cancel doesn't orphan the survivors. Release
+                    # the reservations + clear the Phase A flags so
+                    # a subsequent ``initialize()`` call is not
+                    # blocked against stale state.
+                    await self._initialize_close_unqueued(unqueued_survivors)
+                    async with self._lock:
+                        if unqueued > 0 and self._release_reservations_locked(unqueued):
+                            self._signal_state_change()
+                        self._initializing = False
+                        if self._initialize_done_event is not None:
+                            self._initialize_done_event.set()
+                            self._initialize_done_event = None
+                    if in_flight is not None and in_flight is not outer_cancel:
+                        raise outer_cancel from in_flight
+                    raise outer_cancel
+            # Phase B failure tail (failures arm raised, or any other
+            # exception unwound through here). The Phase C publish
+            # below only runs when ``success_branch`` is True; here
+            # we close survivors, release reservations, and clear
+            # the Phase A flags so secondary callers wake from
+            # ``evt.wait()`` and can retry per the documented
+            # idempotence contract.
+            if not success_branch:
+                async with self._lock:
                     if unqueued > 0 and self._release_reservations_locked(unqueued):
                         self._signal_state_change()
-                    # Close any connection that made it past the gather
-                    # but never into the queue. Under a clean success
-                    # this list is empty; on partial put-loop cancel it
-                    # holds the unqueued tail.
-                    #
-                    # Cancel-during-gather recovery: ``gather``
-                    # propagates CancelledError when its caller is
-                    # cancelled, but children that already completed
-                    # have their results sitting in their tasks'
-                    # ``_result`` slot. The post-gather assignment to
-                    # ``unqueued_survivors`` did not run, so this
-                    # loop iterates an empty list. Walk
-                    # ``create_tasks`` to recover those results.
-                    # Already-failed / not-yet-done / cancelled tasks
-                    # are skipped — only successful results need
-                    # closing here. Only walks the task list if
-                    # ``gather`` raised before returning; once the
-                    # post-gather code ran, the pop-based
-                    # discipline already tracked the un-queued tail
-                    # precisely (walking again would double-close
-                    # conns already in the queue).
-                    if not gather_returned:
-                        # Cancel any task that's still pending (e.g.
-                        # BaseException landed mid-task-creation before
-                        # gather ran, or gather itself was cancelled
-                        # mid-flight) and await them so their slots
-                        # don't surface as orphan-task warnings at GC.
-                        # Without this pass, a pending task created
-                        # inside this frame outlives the function
-                        # frame with no observer.
-                        cancelled_pending: list[asyncio.Task[DqliteConnection]] = []
-                        for t in create_tasks:
-                            if not t.done():
-                                t.cancel()
-                                cancelled_pending.append(t)
-                        # Pass-1 gather can ITSELF be cancelled by an
-                        # outer ``BaseException`` (e.g. an
-                        # ``asyncio.timeout`` wrapping initialize()
-                        # firing inside this gather). Without the
-                        # try/except, the gather re-raises and pass-2
-                        # is skipped — connections produced by tasks
-                        # that completed JUST BEFORE being cancelled
-                        # are orphaned (transports leaked → GC
-                        # ResourceWarning). Wrap the gather and route
-                        # to the same close-completed helper from
-                        # both arms so the recovery walk runs even
-                        # under outer cancel; re-raise after closing
-                        # so structured concurrency still propagates.
-                        outer_cancel: BaseException | None = None
-                        if cancelled_pending:
-                            try:
-                                await asyncio.gather(*cancelled_pending, return_exceptions=True)
-                            except BaseException as exc:
-                                outer_cancel = exc
-                        self._initialize_collect_completed_conns(create_tasks, unqueued_survivors)
-                        if outer_cancel is not None:
-                            # Close before re-raising so the caller's
-                            # outer cancel doesn't orphan the survivors.
-                            await self._initialize_close_unqueued(unqueued_survivors)
-                            # Explicitly chain the try-body in-flight
-                            # exception via ``__cause__`` so SA's
-                            # ``walk_cause_chain`` can reach it. Guard
-                            # against ``raise X from X`` self-cycles
-                            # (legal but produces awkward rendering) —
-                            # if the in-flight is the outer cancel
-                            # itself, fall back to implicit context
-                            # propagation. ``in_flight is None`` covers
-                            # the clean-finally-after-success path,
-                            # which never enters this arm anyway
-                            # (outer_cancel only set on gather raise).
-                            if in_flight is not None and in_flight is not outer_cancel:
-                                raise outer_cancel from in_flight
-                            raise outer_cancel
-                    await self._initialize_close_unqueued(unqueued_survivors)
-            # Do not mark initialized if close() landed during the
-            # put-loop and we broke out early — otherwise a subsequent
-            # initialize() call on a (re-opened) pool short-circuits.
-            if not self._closed:
-                self._initialized = True
+                    self._initializing = False
+                    if self._initialize_done_event is not None:
+                        self._initialize_done_event.set()
+                        self._initialize_done_event = None
+                await self._initialize_close_unqueued(unqueued_survivors)
+        # Phase C — publish under lock, NO ``await`` inside. The
+        # queue's maxsize is ``max_size`` and the constructor enforces
+        # ``min_size <= max_size``, so ``put_nowait`` for each of the
+        # ``min_size`` successes cannot raise ``QueueFull`` in correct
+        # production state. The ``except`` arm below is defensive
+        # for the test monkey-patches that simulate a queue-invariant
+        # break: it releases the reservations and routes the
+        # un-published successes through the shielded close helper.
+        # If ``self._closed`` flipped during Phase B (a sibling
+        # ``close()`` ran concurrently), route the survivors out via
+        # the same helper instead of publishing — same invariant as
+        # the prior put-loop's per-iteration ``if self._closed:
+        # break``.
+        close_these: list[DqliteConnection] = []
+        publish_error: BaseException | None = None
+        async with self._lock:
+            try:
+                if self._closed:
+                    close_these = list(successes)
+                    if self._release_reservations_locked(self._min_size):
+                        self._signal_state_change()
+                else:
+                    for conn in successes:
+                        self._pool.put_nowait(conn)
+                    self._initialized = True
+            except Exception as exc:
+                publish_error = exc
+                close_these = list(successes)
+                if self._release_reservations_locked(self._min_size):
+                    self._signal_state_change()
+            self._initializing = False
+            if self._initialize_done_event is not None:
+                self._initialize_done_event.set()
+                self._initialize_done_event = None
+        if close_these:
+            await self._initialize_close_unqueued(close_these)
+        if publish_error is not None:
+            raise publish_error
+        if not close_these:
+            logger.debug("pool.initialize: %d connections ready", self._min_size)
 
     @staticmethod
     def _initialize_collect_completed_conns(
@@ -2894,6 +2904,18 @@ class ConnectionPool:
             self._closed_flag[0] = True
             self._close_done = None
             self._closed_event = None
+            # Mirror the loop-bound primitive nulling for the
+            # initialize-side coordination state: a child-side
+            # ``initialize()`` call would otherwise park on a
+            # parent-loop ``asyncio.Event`` forever, or observe
+            # ``_initializing=True`` and recurse into ``evt.wait()``
+            # against an event the parent owns. The child cannot
+            # meaningfully warm up post-fork (shared FDs); clearing
+            # both flags lets a subsequent ``initialize()`` call
+            # take the "no warm-up needed" / closed-pool short
+            # path cleanly.
+            self._initializing = False
+            self._initialize_done_event = None
             self._drain_complete = True
             if self._finalizer is not None:
                 self._finalizer.detach()

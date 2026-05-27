@@ -136,18 +136,24 @@ async def test_initialize_close_race_guards_initialized_flag() -> None:
 
 
 @pytest.mark.asyncio
-async def test_initialize_close_between_put_iterations_closes_tail_survivors() -> None:
-    """Put-loop mid-iteration break: when ``close()`` lands AFTER at
-    least one put succeeded but BEFORE the remaining successes have
-    been enqueued, the tail routes through ``unqueued_survivors``
-    cleanup. Every survivor must be closed and reservation accounting
-    must resolve to zero.
+async def test_initialize_close_between_gather_and_phase_c_closes_all_survivors() -> None:
+    """Close-during-publish race: ``close()`` lands AFTER gather
+    returns successfully but BEFORE Phase C's ``async with
+    self._lock:`` acquires. Phase C re-checks ``_closed`` under
+    the lock and routes every survivor through the shielded close
+    helper instead of publishing them into a closed pool.
 
-    The existing tests in this module cover the shape where ``close()``
-    lands before ANY put — the whole batch takes the break path at
-    the top of the put-loop. This test covers the intermediate shape:
-    one put committed, close lands, remaining tail goes through
-    unqueued cleanup.
+    The pre-fix shape had a per-iteration ``if self._closed: break``
+    inside the await-driven put-loop; that surface is gone (Phase C
+    is atomic under the lock). The new structural protection is
+    Phase C's single ``if self._closed:`` branch — pin it here by
+    racing ``close()`` against the lock acquire via
+    ``_lock.acquire`` interception.
+
+    The existing sibling test
+    ``test_initialize_close_race_routes_survivors_through_cleanup``
+    covers the close-during-gather path; this test covers the
+    close-during-publish-acquire path.
     """
     pool = ConnectionPool(["n1:9001", "n2:9001", "n3:9001"], min_size=3, max_size=3, timeout=0.5)
 
@@ -164,34 +170,42 @@ async def test_initialize_close_between_put_iterations_closes_tail_survivors() -
 
     pool._create_connection = _create  # type: ignore[assignment]
 
-    # Intercept the queue put so that exactly the first put succeeds,
-    # then close() fires before the second put iteration runs.
-    original_put = pool._pool.put
-    puts_done = 0
-    close_fired = asyncio.Event()
+    # Intercept ``_lock.acquire`` so the FIRST acquire after gather
+    # (Phase C's) runs ``close()`` BEFORE returning. ``close()``
+    # itself uses the lock, so we drop the intercept on the first
+    # call to avoid re-entry. Phase A's acquire already ran before
+    # gather; only Phase C's hits the intercept.
+    original_acquire = pool._lock.acquire
+    intercept_fired = asyncio.Event()
+    seen_acquires = 0
 
-    async def _intercept_put(item: object) -> None:
-        nonlocal puts_done
-        await original_put(item)  # type: ignore[arg-type]
-        puts_done += 1
-        if puts_done == 1:
-            # Land the close() between put-loop iterations.
+    async def _intercepted_acquire() -> bool:
+        nonlocal seen_acquires
+        seen_acquires += 1
+        # Phase A is acquire #1; Phase C is acquire #2. The
+        # failure-finally arm may have run another lock window
+        # depending on path, but for the all-success path we expect
+        # acquire #2 to be Phase C's.
+        if seen_acquires == 2 and not intercept_fired.is_set():
+            intercept_fired.set()
+            # Restore the original acquire BEFORE running close() so
+            # close()'s own lock acquire goes through normally.
+            pool._lock.acquire = original_acquire
             await pool.close()
-            close_fired.set()
+        return await original_acquire()
 
-    pool._pool.put = _intercept_put
+    pool._lock.acquire = _intercepted_acquire  # type: ignore[assignment]
 
     await asyncio.wait_for(pool.initialize(), timeout=1.0)
-    assert close_fired.is_set(), "close() did not land between put-iterations"
+    assert intercept_fired.is_set(), "Phase C lock acquire was not intercepted"
 
-    # _initialized must stay False — the put-loop was interrupted by
-    # a concurrent close().
+    # _initialized stays False — Phase C saw _closed=True under the
+    # lock and took the route-through-cleanup branch.
     assert pool._initialized is False
-    # Every mock must have been closed: the first entered the queue
-    # and was drained by close()'s _drain_idle; the remaining tail
-    # went through the unqueued_survivors cleanup path. Both routes
-    # end in ``conn.close()`` being awaited at least once.
+    # Every survivor closed: either via Phase C's close-routing or
+    # via close()'s own drain.
     for i, m in enumerate(mocks):
         assert m.close.await_count >= 1, f"survivor {i} was never closed"
-    # Pool must be in the closed state (no further acquires possible).
     assert pool._closed is True
+    # Reservation accounting resolved exactly.
+    assert pool._size == 0, f"_size did not return to zero: {pool._size}"

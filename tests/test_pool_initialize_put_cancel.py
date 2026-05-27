@@ -17,7 +17,6 @@ unqueued survivors so their transports do not leak.
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -26,15 +25,20 @@ from dqliteclient.pool import ConnectionPool
 
 
 @pytest.mark.asyncio
-async def test_initialize_cancel_mid_put_keeps_size_consistent() -> None:
-    """Simulate CancelledError landing on the 3rd put when min_size=5.
+async def test_initialize_publish_failure_releases_reservations_and_closes_survivors() -> None:
+    """Phase C publish failure: simulate a synthetic failure inside
+    ``put_nowait`` (e.g. a queue-invariant break). Every reserved
+    slot must be released and every gathered survivor must be
+    closed; the original failure propagates to the caller.
 
-    Before the fix: queue has 2 connections, _size was decremented by
-    5 (the full reservation) so _size ended negative or 0 while
-    qsize() == 2.
-
-    After the fix: queue has 2 connections, _size reflects those 2
-    committed slots plus any uncommitted reservations are released.
+    The pre-fix shape had an await-driven put-loop where
+    ``CancelledError`` could land between iterations and leave a
+    partial queue + drifted ``_size``. The post-fix Phase C is
+    atomic under ``self._lock`` with no awaits, so the
+    cancel-mid-iteration surface is gone (by design). The
+    equivalent semantic — "any abort path releases all
+    reservations and closes all survivors" — is exercised here via
+    the Phase C exception arm.
     """
     pool = ConnectionPool(["localhost:19001"], min_size=5, max_size=5, timeout=0.5)
 
@@ -51,36 +55,34 @@ async def test_initialize_cancel_mid_put_keeps_size_consistent() -> None:
 
     pool._create_connection = _create  # type: ignore[assignment]
 
-    # Wrap put so the third call raises CancelledError. The first two
-    # legitimately land in the queue.
-    original_put = pool._pool.put
+    # Patch ``put_nowait`` to raise on the third call: the first two
+    # succeed but Phase C's loop raises and routes ALL successes
+    # through the close helper (the publish-failure cleanup is
+    # all-or-nothing, mirroring atomic-publish semantics).
+    original_put_nowait = pool._pool.put_nowait
     put_call_count = 0
 
-    async def _put(conn: object) -> None:
+    def _put_nowait(conn: object) -> None:
         nonlocal put_call_count
         put_call_count += 1
         if put_call_count == 3:
-            raise asyncio.CancelledError()
-        await original_put(conn)  # type: ignore[arg-type]
+            raise RuntimeError("synthetic Phase C failure")
+        original_put_nowait(conn)  # type: ignore[arg-type]
 
-    pool._pool.put = _put  # type: ignore[assignment]
+    pool._pool.put_nowait = _put_nowait  # type: ignore[assignment]
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(RuntimeError, match="synthetic Phase C failure"):
         await pool.initialize()
 
-    # The 2 committed connections stay in the queue.
-    assert pool._pool.qsize() == 2
-    # _size reflects exactly what's in the queue (2 committed slots).
-    # Before the fix, _size would be 0 or negative here.
-    assert pool._size == 2
-    # The 3 unqueued survivors (including the one whose put raised)
-    # had their transports closed so no orphans leak.
-    unqueued_mocks = mocks[2:]
-    for m in unqueued_mocks:
-        m.close.assert_awaited_once()
-    # The 2 committed mocks stay alive — still in the queue.
-    for m in mocks[:2]:
-        m.close.assert_not_awaited()
+    # Atomic publish: on Phase C failure, ALL successes are routed
+    # through the close helper; the queue ends up empty (the 2
+    # partially-published conns were drained by the close-walk).
+    # Reservation count returns to zero.
+    assert pool._size == 0, f"_size should be 0, got {pool._size}"
+    # Every gathered survivor was closed.
+    for i, m in enumerate(mocks):
+        assert m.close.await_count >= 1, f"survivor {i} was not closed"
+    assert pool._initialized is False
 
 
 @pytest.mark.asyncio

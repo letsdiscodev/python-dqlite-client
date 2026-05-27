@@ -130,12 +130,20 @@ class TestInitializeUnqueuedSurvivorCloseErrorSwallow:
     async def test_close_error_in_unqueued_finally_logged_at_debug(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Drive the ``finally``-block's survivor-close path: gather
-        all-success, but the put-loop is interrupted (``put`` raises
-        ``CancelledError`` after the first put), and the unqueued
-        tail's ``close()`` raises an ``_POOL_CLEANUP_EXCEPTIONS``
-        member. The pool must DEBUG-log
-        "unqueued-survivor close error"."""
+        """Drive the Phase C exception path: gather all-success, then
+        ``put_nowait`` raises (simulating a queue-invariant break or
+        any other publish-time failure). The unqueued tail's
+        ``close()`` raises an ``_POOL_CLEANUP_EXCEPTIONS`` member;
+        the pool must DEBUG-log ``"unqueued-survivor close error"``
+        and re-raise the original publish failure to the caller.
+
+        The prior shape patched ``_pool.put`` to inject
+        ``CancelledError`` mid-put-loop; the post-fix Phase C runs
+        ``put_nowait`` under the lock with no awaits, so the
+        cancel-mid-iteration surface is gone (by design — atomic
+        publish). The equivalent semantic is exercised here via the
+        Phase C exception arm.
+        """
         a = _FakeConn(name="a")
         b = _FakeConn(name="b")
         b.close_raises = OSError("transport gone")
@@ -147,26 +155,25 @@ class TestInitializeUnqueuedSurvivorCloseErrorSwallow:
 
         pool = _pool_with_factory(_factory, min_size=2, max_size=2)
 
-        original_put = pool._pool.put
+        # Patch ``put_nowait`` to raise on the second call so the
+        # first conn is "published" (queued) and the second triggers
+        # the Phase C exception path that routes survivors through
+        # the shielded close helper.
+        original_put_nowait = pool._pool.put_nowait
         puts = 0
 
-        async def _intercept_put(item: object) -> None:
+        def _intercept_put_nowait(item: object) -> None:
             nonlocal puts
-            await original_put(item)  # type: ignore[arg-type]
             puts += 1
-            if puts == 1:
-                # Cancel the in-flight initialize() task at the next
-                # await point — the put-loop's next iteration will
-                # observe the cancellation and the finally enters
-                # the unqueued-survivor cleanup with ``b`` still in
-                # the unqueued list.
-                raise asyncio.CancelledError
+            if puts == 2:
+                raise asyncio.QueueFull
+            original_put_nowait(item)  # type: ignore[arg-type]
 
-        pool._pool.put = _intercept_put
+        pool._pool.put_nowait = _intercept_put_nowait
 
         with (
             caplog.at_level(logging.DEBUG, logger="dqliteclient.pool"),
-            pytest.raises(asyncio.CancelledError),
+            pytest.raises(asyncio.QueueFull),
         ):
             await pool.initialize()
 
