@@ -130,6 +130,18 @@ _MAX_AGGREGATE_ERROR_PAYLOAD: Final[int] = 16 * 1024
 # where per-node detail is mostly redundant noise anyway.
 _MAX_AGGREGATE_CHILDREN: Final[int] = 20
 
+# How many ``_probe_one`` tasks the find-leader fan-out creates
+# before ceding one scheduler tick to siblings. The wire cap
+# ``_MAX_NODE_COUNT`` (10_000 in ``dqlitewire.messages.responses``)
+# bounds the upper end of the NodeStore size; on a Pi-class device
+# allocating that many tasks back-to-back without yielding costs
+# tens of milliseconds of pure loop CPU. Yielding every 256 keeps
+# the burst well under one frame at 60 fps while preserving the
+# all-tasks-created-up-front semantics that the parallel
+# verify-redirect optimisation depends on (see ``_probe_one``
+# semaphore-scope comment).
+_PROBE_TASK_CREATE_YIELD_EVERY: Final[int] = 256
+
 
 def _bounded_group(message: str, excs: list[BaseException]) -> BaseExceptionGroup[BaseException]:
     """Build a ``BaseExceptionGroup`` with at most
@@ -1272,8 +1284,29 @@ class ClusterClient:
         policy_error: ClusterPolicyError | None = None
         unexpected_exc: BaseException | None = None
         try:
+            # Create all probe tasks up-front so the post-semaphore
+            # ``_verify_redirect`` phase can overlap across nodes
+            # (the semaphore inside ``_probe_one`` gates only the
+            # initial ``_query_leader`` wire dial; verify runs
+            # outside the slot). The up-front creation shape is
+            # load-bearing for the parallel-sweep optimisation —
+            # gating task creation behind the semaphore would
+            # serialise verifies one-after-another and defeat the
+            # redirect-stampede amortisation documented at
+            # ``_probe_one``.
+            #
+            # The cost is task allocation: for a NodeStore
+            # approaching the wire cap of ``_MAX_NODE_COUNT``
+            # (10_000), creating all N tasks before the first
+            # ``await asyncio.wait`` would burn tens of
+            # milliseconds of synchronous loop CPU. Yield every
+            # ``_PROBE_TASK_CREATE_YIELD_EVERY`` allocations so a
+            # hostile or buggy NodeStore approaching the cap does
+            # not monopolise the loop during the allocation burst.
             for idx, n in enumerate(nodes):
                 pending.add(asyncio.create_task(_probe_one(idx, n)))
+                if (idx + 1) % _PROBE_TASK_CREATE_YIELD_EVERY == 0:
+                    await asyncio.sleep(0)
             while pending:
                 done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
