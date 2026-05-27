@@ -2449,7 +2449,12 @@ class DqliteConnection:
             # available — some callers (tests, inline error paths) run
             # _invalidate outside a loop; the drain is best-effort.
             try:
-                loop = asyncio.get_running_loop()
+                # Probe for a running loop; the value isn't needed
+                # because ``asyncio.ensure_future`` below picks up
+                # the running loop itself. The probe gates the
+                # ``else`` arm so non-loop callers (tests, inline
+                # error paths) silently skip scheduling.
+                asyncio.get_running_loop()
             except RuntimeError:
                 pass
             else:
@@ -2491,7 +2496,7 @@ class DqliteConnection:
                 # Strong-ref on self so the task is not GC'd before
                 # close() awaits it.
                 try:
-                    new_task = loop.create_task(_bounded_drain())
+                    new_task = asyncio.ensure_future(_bounded_drain())
                     # Attach the drain-observer to the FRESH task too,
                     # symmetric with the cancel-and-detach idiom on
                     # ``prior`` above. ``close()`` usually consumes the
@@ -2510,7 +2515,7 @@ class DqliteConnection:
                     new_task.add_done_callback(_observe_drain_exception)
                     self._pending_drain = new_task
                 except RuntimeError as schedule_err:
-                    # ``loop.create_task`` raises
+                    # ``asyncio.ensure_future`` raises
                     # RuntimeError("Event loop is closed") if the
                     # loop has been stopped — a real shape during
                     # interpreter shutdown / engine.dispose() races.
@@ -2526,7 +2531,7 @@ class DqliteConnection:
                     # so reusing the name silently breaks a sibling
                     # reference further down.
                     logger.debug(
-                        "Connection._invalidate: loop.create_task raised %s "
+                        "Connection._invalidate: asyncio.ensure_future raised %s "
                         "while scheduling _bounded_drain; original cause preserved",
                         type(schedule_err).__name__,
                         exc_info=True,

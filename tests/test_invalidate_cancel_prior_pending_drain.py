@@ -129,7 +129,7 @@ async def test_invalidate_with_closed_loop_preserves_cause(
     # ``_invalidation_cause`` for downstream chaining.
     assert conn._pending_drain is None
     assert isinstance(conn._invalidation_cause, ValueError)
-    assert any("loop.create_task" in r.message for r in caplog.records)
+    assert any("asyncio.ensure_future" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
