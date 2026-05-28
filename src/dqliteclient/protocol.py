@@ -126,6 +126,27 @@ _ENCODE_OFFLOAD_THRESHOLD: Final[int] = 256 * 1024
 # sub-ms with explicit yields); callers needing sub-5-ms
 # scheduling SLA would still benefit from a two-tier sync
 # generator + per-K-rows ``await asyncio.sleep(0)`` shape.
+#
+# Cancel-orphan worst case (applies to all three decode offload
+# sites that gate on this constant — ``_read_response``,
+# ``_read_continuation``, and the ``dump`` path via
+# ``_decode_dump_response_sync``): ``asyncio.to_thread`` cannot
+# cancel a worker that has already started, so an outer cancel
+# (e.g. a dbapi sync-timeout firing mid-decode) unwinds the
+# awaiting coroutine immediately while the worker runs the decode
+# to completion and discards its result. This is NOT a
+# correctness defect — the cancel arm invalidates the connection
+# (``DqliteConnection._invalidate`` nulls ``_protocol`` and never
+# re-touches the decoder/buffer), so the worker's late mutations
+# land on an abandoned decoder no future reader can reach. The
+# residual is bounded second-order resource use: the orphan pins
+# one default-``ThreadPoolExecutor`` slot (shared with the
+# encode-offload and ``YamlNodeStore`` fsync paths) plus a strong
+# ref to the frame buffer for at most one ``max_message_size``
+# decode, then self-drains. A dedicated bounded executor was
+# weighed and rejected as disproportionate / beyond Go/C parity
+# (go-dqlite avoids the orphan only because Go can abort the
+# read; ``to_thread`` cannot).
 _DECODE_OFFLOAD_THRESHOLD: Final[int] = 256 * 1024
 
 
@@ -867,6 +888,10 @@ class DqliteProtocol:
         offload unconditionally rather than threshold-gating.
         The wire-receive + hostile-server trailing-frame check
         stay on the loop thread (see :meth:`_read_message_bytes`).
+        See the ``_DECODE_OFFLOAD_THRESHOLD`` comment for the
+        bounded cancel-orphan worst case shared by every decode
+        offload site (the orphan lands on an abandoned decoder
+        after ``_invalidate`` — no correctness defect).
         """
         async with self._lock:
             request = DumpRequest(name=database)
@@ -1745,6 +1770,8 @@ class DqliteProtocol:
                 except (AttributeError, TypeError, IndexError):
                     pending_size = 0
                 if pending_size >= _DECODE_OFFLOAD_THRESHOLD:
+                    # Cancel-orphan worst case is bounded + safe; see
+                    # the ``_DECODE_OFFLOAD_THRESHOLD`` comment.
                     result = await asyncio.to_thread(self._decoder.decode_continuation)
                 else:
                     result = self._decoder.decode_continuation()
@@ -1885,6 +1912,8 @@ class DqliteProtocol:
             except (AttributeError, TypeError, IndexError):
                 pending_size = 0
             if pending_size >= _DECODE_OFFLOAD_THRESHOLD:
+                # Cancel-orphan worst case is bounded + safe; see
+                # the ``_DECODE_OFFLOAD_THRESHOLD`` comment.
                 message = await asyncio.to_thread(self._decoder.decode)
             else:
                 message = self._decoder.decode()
