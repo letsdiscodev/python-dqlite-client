@@ -128,9 +128,10 @@ _ENCODE_OFFLOAD_THRESHOLD: Final[int] = 256 * 1024
 # generator + per-K-rows ``await asyncio.sleep(0)`` shape.
 #
 # Cancel-orphan worst case (applies to all three decode offload
-# sites that gate on this constant — ``_read_response``,
-# ``_read_continuation``, and the ``dump`` path via
-# ``_decode_dump_response_sync``): ``asyncio.to_thread`` cannot
+# sites — ``_read_response`` and ``_read_continuation`` gate on
+# this constant; the ``dump`` path via
+# ``_decode_dump_response_sync`` offloads unconditionally):
+# ``asyncio.to_thread`` cannot
 # cancel a worker that has already started, so an outer cancel
 # (e.g. a dbapi sync-timeout firing mid-decode) unwinds the
 # awaiting coroutine immediately while the worker runs the decode
