@@ -192,6 +192,21 @@ class MemoryNodeStore(NodeStore):
         top-level ``connect`` APIs). ``initial_addresses`` is a
         deprecated alias kept for back-compat; prefer ``addresses`` in
         new code.
+
+        Construction cost / event-loop caveat
+        -------------------------------------
+
+        Seeds are validated with a per-address ``parse_address`` walk on
+        the calling thread. For a realistic seed list (a handful of
+        nodes) the cost is negligible. This constructor is synchronous,
+        so constructing it from within a running event loop with a very
+        large address list (up to the 10_000-entry cap) runs the whole
+        walk inline and stalls every other coroutine on the loop for its
+        duration — unlike the async ``set_nodes`` path, which yields
+        cooperatively. Construct the store at process start (before the
+        loop runs) or keep the seed list small; the runtime
+        ``set_nodes`` path is the one that handles large lists without
+        blocking.
         """
         if addresses is not None and initial_addresses is not None:
             raise TypeError("Pass only one of 'addresses' or 'initial_addresses'")

@@ -266,7 +266,12 @@ async def create_pool(
 
     Args:
         addresses: List of node addresses in "host:port" format. Ignored if
-            ``cluster`` or ``node_store`` is provided.
+            ``cluster`` or ``node_store`` is provided. Validated
+            synchronously while the pool is constructed; a realistic list
+            (a handful of nodes) is negligible, but a very large list (up
+            to the 10_000-entry cap) runs its ``parse_address`` validation
+            inline on the loop — see :meth:`MemoryNodeStore.__init__`'s
+            construction-cost caveat.
         database: Database name to open
         min_size: Number of connections to pre-warm at
             :meth:`ConnectionPool.initialize`. NOT a steady-state
