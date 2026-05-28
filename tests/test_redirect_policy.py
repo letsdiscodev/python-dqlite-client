@@ -125,6 +125,46 @@ class TestRedirectPolicy:
             f"probe attempts (expected 1)."
         )
 
+    def test_policy_rejection_does_not_log_exhausted_attempts(self, caplog) -> None:
+        """A ClusterPolicyError is excluded from retry and fails on the
+        first attempt, so connect() must NOT emit the aggregate
+        'connect exhausted N attempts' WARNING. That warning would
+        misreport a single deterministic redirect-policy rejection as N
+        exhausted transport attempts and mislead an operator diagnosing
+        the failure.
+        """
+        import logging as _logging
+        from unittest.mock import patch
+
+        from dqliteclient.exceptions import ClusterPolicyError
+
+        store = MemoryNodeStore(["10.0.0.1:9001"])
+        cc = ClusterClient(
+            store,
+            timeout=5.0,
+            redirect_policy=allowlist_policy(["10.0.0.1:9001"]),
+        )
+
+        async def probe(address: str, **kw: object) -> str | None:
+            return "attacker.com:9001"
+
+        caplog.set_level(_logging.WARNING, logger="dqliteclient.cluster")
+        with (
+            patch.object(cc, "_query_leader", side_effect=probe),
+            pytest.raises(ClusterPolicyError),
+        ):
+            asyncio.run(cc.connect())
+
+        exhausted = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "dqliteclient.cluster" and "exhausted" in r.getMessage()
+        ]
+        assert not exhausted, (
+            f"connect() must not log 'exhausted attempts' for an unretried "
+            f"ClusterPolicyError; got: {exhausted}"
+        )
+
     def test_self_leader_does_not_bypass_policy(self) -> None:
         """Policy applies to EVERY confirmed-leader address, including
         the self-confirm case where the probed node returns its own

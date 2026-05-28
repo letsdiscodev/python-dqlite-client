@@ -2096,6 +2096,17 @@ class ClusterClient:
                 ),
                 excluded_exceptions=(ClusterPolicyError,),
             )
+        except ClusterPolicyError:
+            # Excluded from retry by design (deterministic redirect-policy
+            # mismatch): ``retry_with_backoff`` re-raises it on the first
+            # attempt with no backoff. It is a ``ClusterError`` subclass,
+            # so without this arm the broad handler below would log the
+            # aggregate "connect exhausted N attempts" WARNING with the
+            # full ``attempts_cap`` — misreporting a single deterministic
+            # rejection as N exhausted transport attempts. Propagate
+            # quietly; the policy rejection is already actionable on its
+            # own.
+            raise
         except (DqliteConnectionError, ClusterError, OSError) as exc:
             # Aggregate-failure WARNING. Per-attempt failures log at
             # DEBUG (so a routine leader flip's per-attempt churn does
