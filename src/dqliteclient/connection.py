@@ -109,6 +109,17 @@ def get_current_pid() -> int:
 # in lockstep on changes.
 _CLOSE_RESNAPSHOT_CAP: Final[int] = 3
 
+# Row stride at which ``fetch`` cedes the event loop while reshaping a
+# decoded result into dicts. Above this many rows the build yields
+# ``await asyncio.sleep(0)`` every stride; below it the straight
+# comprehension runs with no scheduler overhead. The result set is
+# bounded only by ``max_total_rows`` (default 10_000_000), so an
+# un-yielding reshape of a large result would freeze the loop after the
+# (already loop-friendly) wire decode. Local to the client — mirrors the
+# dbapi cursor's yield stride numerically without importing it (dbapi
+# depends on the client, not the reverse).
+_FETCH_DICT_YIELD_EVERY: Final[int] = 4096
+
 # Bare ``BEGIN`` opens an implicit ``DEFERRED`` transaction per SQLite's
 # grammar default. dqlite's Raft FSM serializes transactions regardless
 # of the qualifier, so DEFERRED / IMMEDIATE / EXCLUSIVE collapse to the
@@ -3300,7 +3311,17 @@ class DqliteConnection:
         """Execute a query and return results as list of dicts."""
         self._validate_params(params)
         columns, rows = await self._run_protocol(lambda p, db: p.query_sql(db, sql, params))
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        if len(rows) < _FETCH_DICT_YIELD_EVERY:
+            return [dict(zip(columns, row, strict=True)) for row in rows]
+        # Large result: cede the loop every stride so the per-row dict
+        # build does not monopolise it. ``strict=True`` is preserved so a
+        # column/row arity mismatch still raises ``ValueError``.
+        result: list[dict[str, Any]] = []
+        for i, row in enumerate(rows):
+            result.append(dict(zip(columns, row, strict=True)))
+            if (i + 1) % _FETCH_DICT_YIELD_EVERY == 0:
+                await asyncio.sleep(0)
+        return result
 
     async def fetchall(self, sql: str, params: Sequence[Any] | None = None) -> list[list[Any]]:
         """Execute a query and return results as list of lists."""
