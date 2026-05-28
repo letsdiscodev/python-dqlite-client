@@ -146,31 +146,46 @@ def _decode_dump_response_sync(frame_bytes: bytes, decoder: MessageDecoder) -> M
 def _estimate_request_body_size(request: object) -> int:
     """Cheap loop-thread pre-estimate of the encoded body size.
 
-    Walks ``request.params`` (present on ``ExecRequest`` /
-    ``QueryRequest`` / ``ExecSqlRequest`` / ``QuerySqlRequest``)
-    and sums per-param sizes. Returns ``0`` for request types
-    without a ``params`` attribute, which keeps every admin /
-    handshake / fixed-shape RPC on the fast in-loop path.
+    Sums two contributions:
 
-    Pessimistic for ``str`` params: uses ``len(value) * 4`` to
+    * The ``sql`` text field, present on ``PrepareRequest`` /
+      ``ExecSqlRequest`` / ``QuerySqlRequest``. This is the single
+      largest TEXT field on the request side (capped at
+      ``_MAX_TEXT_VALUE_SIZE`` ≈ 64 MiB). A multi-MiB inline-literal
+      statement (``PrepareRequest`` with a big SQL, or
+      ``ExecSqlRequest`` / ``QuerySqlRequest`` carrying a large SQL
+      with few/no params — the shape SQLAlchemy ``insertmanyvalues``
+      and large literal ``VALUES`` / ``IN (...)`` expansions emit)
+      must offload its ``encode_text`` transcode + copy.
+    * ``request.params`` (present on ``ExecRequest`` / ``QueryRequest``
+      / ``ExecSqlRequest`` / ``QuerySqlRequest``), summing per-param
+      sizes.
+
+    Returns ``0`` for request types carrying neither field, which
+    keeps every admin / handshake / fixed-shape RPC on the fast
+    in-loop path.
+
+    Pessimistic for ``str`` content: uses ``len(value) * 4`` to
     upper-bound UTF-8 expansion without materialising the encoded
     form. Underestimating would silently keep a multi-MiB TEXT
-    param on the loop; over-estimating only triggers the offload
+    field on the loop; over-estimating only triggers the offload
     earlier, paying at most a single ~50 µs hop on a payload that
     is anyway near the threshold.
     """
-    params = getattr(request, "params", None)
-    if not params:
-        return 0
     total = 0
-    for value in params:
-        if isinstance(value, (bytes, bytearray, memoryview)):
-            total += len(value)
-        elif isinstance(value, str):
-            total += len(value) * 4
-        # Numeric / bool / None params contribute < 16 bytes each on
-        # the wire (uint64 / int64 / double / NULL sentinel); ignored
-        # here as negligible vs the threshold.
+    sql = getattr(request, "sql", None)
+    if isinstance(sql, str):
+        total += len(sql) * 4
+    params = getattr(request, "params", None)
+    if params:
+        for value in params:
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                total += len(value)
+            elif isinstance(value, str):
+                total += len(value) * 4
+            # Numeric / bool / None params contribute < 16 bytes each
+            # on the wire (uint64 / int64 / double / NULL sentinel);
+            # ignored here as negligible vs the threshold.
     return total
 
 
@@ -1421,12 +1436,15 @@ class DqliteProtocol:
 
         Threshold-gates the encode: when the projected encoded body
         size meets or exceeds ``_ENCODE_OFFLOAD_THRESHOLD`` the
-        encode runs on a worker thread via ``asyncio.to_thread``
-        so a multi-MiB BLOB / TEXT param does not freeze the
-        event loop during the four-pass memcpy chain in
-        ``encode_blob`` + ``encode_params_tuple``. Smaller
-        requests stay in-loop to avoid the ~50 µs thread-hop
-        cost on the hot path.
+        encode runs on a worker thread via ``asyncio.to_thread`` so
+        a multi-MiB payload does not freeze the event loop during
+        the encode memcpy chain. The projection
+        (``_estimate_request_body_size``) covers both a large BLOB /
+        TEXT ``param`` (``encode_blob`` / ``encode_params_tuple``)
+        and a large ``sql`` text field (``encode_text`` — the shape
+        an inline-literal ``PrepareRequest`` / ``ExecSqlRequest`` /
+        ``QuerySqlRequest`` produces). Smaller requests stay in-loop
+        to avoid the ~50 µs thread-hop cost on the hot path.
 
         Mirrors the in-tree ``YamlNodeStore.set_nodes``
         ``asyncio.to_thread`` discipline. Used by every
