@@ -1478,6 +1478,20 @@ class DqliteProtocol:
         bundle a tiny ``ClientRequest`` into one TCP segment by
         design — see ``negotiate_protocol_only`` and
         ``handshake``).
+
+        Cancel-orphan safety rests on two invariants. (A) The
+        encoder is stateless — ``MessageEncoder.encode`` derives a
+        fresh ``bytes`` from the immutable request and mutates no
+        instance state, so an orphaned encode worker (a cancel
+        cannot stop a running ``to_thread`` job) leaves nothing
+        torn. (B) The full ``frame`` is built BEFORE ``_send``
+        writes it, so a cancel at the offload ``await`` unwinds
+        before any wire byte is written — no partial frame. A
+        future migration to a streaming encoder that calls
+        ``writer.write`` mid-encode would break BOTH invariants
+        and must invalidate the connection on cancel, exactly as
+        the sibling ``_WireEncodeError`` arm in ``connection`` is
+        already annotated to require.
         """
         if _estimate_request_body_size(request) >= _ENCODE_OFFLOAD_THRESHOLD:
             frame = await asyncio.to_thread(self._encoder.encode, request)
