@@ -7,7 +7,7 @@ import os
 import stat
 import tempfile
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, NoReturn, Protocol, final, runtime_checkable
@@ -311,32 +311,62 @@ class MemoryNodeStore(NodeStore):
             await self._set_nodes_locked(nodes)
 
     async def _set_nodes_locked(self, nodes: Sequence[NodeInfo]) -> None:
-        self._nodes = _validate_and_normalise_nodes(nodes)
+        self._nodes = await _validate_and_normalise_nodes_async(nodes)
 
 
-def _validate_and_normalise_nodes(
+# Cooperative-yield cadence for the per-node ``parse_address``
+# validation walk in :func:`_validate_and_normalise_nodes_async`. Kept
+# as a node-store-local constant of the same value (256) as
+# ``cluster._PROBE_TASK_CREATE_YIELD_EVERY`` — importing that would
+# re-introduce the cluster import cycle the local imports below avoid.
+# The two knobs are deliberately the same: the structurally identical
+# ``cluster_info`` redirect-policy filter yields on the identical
+# per-node cost under the same _MAX_NODE_COUNT cap.
+_NODE_VALIDATE_YIELD_EVERY: Final[int] = 256
+
+
+def _materialise_and_cap_nodes(
     nodes: Sequence[NodeInfo] | Iterable[NodeInfo],
-) -> tuple[NodeInfo, ...]:
-    """Strip / validate / dedup ``NodeInfo`` entries.
+) -> Sequence[NodeInfo]:
+    """Materialise an iterable of ``NodeInfo`` into an indexable
+    sequence and enforce the wire-side count cap.
 
-    Shared by every node-store entry point that constructs an
-    in-memory node tuple from raw input — :meth:`MemoryNodeStore.__init__`
-    (after wrapping each seed string in a synthetic ``NodeInfo``),
-    :meth:`MemoryNodeStore._set_nodes_locked`, :meth:`YamlNodeStore.set_nodes`,
-    and :meth:`YamlNodeStore._load_from_disk`. The shared helper
-    eliminates rule-drift across the four call sites: a future
-    address-validation rule (e.g. "reject IPv6 link-local") lands in
-    one place.
+    Shared by the sync and async validators so the cap check cannot
+    drift between them. Generator-tolerant: non-list / non-tuple inputs
+    (e.g. ``set_nodes(NodeInfo(...) for n in seeds)``) are materialised
+    into a ``list`` up front so the ``len(nodes)`` cap check and the
+    subsequent per-node loop both work; this turns the erstwhile bare
+    ``TypeError: object of type 'generator' has no len()`` into a clean
+    accept on the happy path and the regular ``ValueError`` on over-cap
+    inputs.
+    """
+    if not isinstance(nodes, (list, tuple)):
+        nodes = list(nodes)
+    # Length-cap before per-entry validation so a pathological 1 M-entry
+    # input from app-side misuse cannot block the event loop on
+    # parse_address loops. Matches the wire-side cap _MAX_NODE_COUNT
+    # applied to ServersResponse. (The async validator additionally
+    # yields every _NODE_VALIDATE_YIELD_EVERY entries within the cap.)
+    from dqlitewire.messages.responses import _MAX_NODE_COUNT as _WIRE_MAX_NODES
 
-    Generator-tolerant: callers may pass any ``Iterable[NodeInfo]``
-    (e.g. ``set_nodes(NodeInfo(...) for n in seeds)``). Non-list /
-    non-tuple inputs are materialised into a ``list`` up front so the
-    downstream cap check and iteration both work; this turns the
-    erstwhile bare ``TypeError: object of type 'generator' has no
-    len()`` from ``len(nodes)`` into a clean accept on the happy path
-    and the regular ``ValueError`` on over-cap inputs.
+    if len(nodes) > _WIRE_MAX_NODES:
+        raise ValueError(
+            f"too many nodes: got {len(nodes)}, max {_WIRE_MAX_NODES} "
+            f"(matches wire-side ServersResponse cap)"
+        )
+    return nodes
 
-    Validation pipeline:
+
+def _normalise_one(
+    node: NodeInfo,
+    seen: set[tuple[str, int]],
+    unique: list[NodeInfo],
+    parse_address: Callable[[str], tuple[str, int]],
+) -> None:
+    """Validate / strip / dedup a single ``NodeInfo`` into ``unique``.
+
+    The per-node body shared by the sync and async validators so their
+    accept / reject / dedup behaviour cannot drift:
 
     1. Reject non-string ``NodeInfo.address`` with ``TypeError``.
     2. Strip leading/trailing whitespace (operator-friendly canonicalisation).
@@ -345,30 +375,50 @@ def _validate_and_normalise_nodes(
     5. Deduplicate by the ``parse_address`` canonical ``(host, port)``
        tuple so address variants that differ only in lexical shape
        (mixed-case hostnames per RFC 1035, IPv6 short-vs-long form,
-       non-canonical IPv4 literals) dedup to a single entry.
-       Mirrors the canonical-tuple discipline used by
+       non-canonical IPv4 literals) dedup to a single entry. Mirrors the
+       canonical-tuple discipline used by
        :func:`dqliteclient.cluster._addr_equiv`.
-    6. Return frozen ``NodeInfo`` tuples with the stripped address so
+    6. Append a frozen ``NodeInfo`` with the stripped address so
        downstream lookups by address match.
     """
-    # Materialise non-list/tuple iterables (e.g. generators) up front
-    # so the upfront ``len(nodes)`` cap check and the subsequent
-    # ``for node in nodes`` loop both work. The helper already returns
-    # a tuple at the end, so the materialise is conceptually free.
-    if not isinstance(nodes, (list, tuple)):
-        nodes = list(nodes)
-    # Length-cap before per-entry validation so a pathological 1 M-entry
-    # input from app-side misuse cannot block the event loop on
-    # parse_address loops under the asyncio.Lock held by
-    # YamlNodeStore.set_nodes. Matches the wire-side cap
-    # _MAX_NODE_COUNT applied to ServersResponse.
-    from dqlitewire.messages.responses import _MAX_NODE_COUNT as _WIRE_MAX_NODES
-
-    if len(nodes) > _WIRE_MAX_NODES:
-        raise ValueError(
-            f"too many nodes: got {len(nodes)}, max {_WIRE_MAX_NODES} "
-            f"(matches wire-side ServersResponse cap)"
+    if not isinstance(node.address, str):
+        raise TypeError(
+            f"NodeInfo.address must be 'host:port' string, got {type(node.address).__name__}"
         )
+    addr = node.address.strip()
+    if not addr:
+        raise ValueError("NodeInfo.address must be a non-empty 'host:port' string")
+    try:
+        canonical = parse_address(addr)
+    except ValueError as e:
+        raise ValueError(f"NodeInfo.address {addr!r} is not a valid 'host:port': {e}") from e
+    if canonical in seen:
+        return
+    seen.add(canonical)
+    if addr is node.address:
+        unique.append(node)
+    else:
+        # NodeInfo is a frozen dataclass; rebuild with the stripped
+        # address so a downstream lookup by-address matches.
+        unique.append(NodeInfo(node_id=node.node_id, address=addr, role=node.role))
+
+
+def _validate_and_normalise_nodes(
+    nodes: Sequence[NodeInfo] | Iterable[NodeInfo],
+) -> tuple[NodeInfo, ...]:
+    """Strip / validate / dedup ``NodeInfo`` entries (synchronous).
+
+    Shared by the node-store entry points that construct an in-memory
+    node tuple from a synchronous context — :meth:`MemoryNodeStore.__init__`
+    (after wrapping each seed string in a synthetic ``NodeInfo``) and the
+    ``to_thread``-dispatched :meth:`YamlNodeStore._load_from_disk`. The
+    async ``set_nodes`` paths use :func:`_validate_and_normalise_nodes_async`
+    instead, which yields cooperatively. All three share
+    :func:`_materialise_and_cap_nodes` and :func:`_normalise_one` so a
+    future address-validation rule (e.g. "reject IPv6 link-local") lands
+    in one place and the sync / async behaviour cannot drift.
+    """
+    capped = _materialise_and_cap_nodes(nodes)
     seen: set[tuple[str, int]] = set()
     unique: list[NodeInfo] = []
     # Local import to avoid the cluster import cycle (cluster imports
@@ -376,27 +426,42 @@ def _validate_and_normalise_nodes(
     # ``connection`` module at module-import time).
     from dqliteclient.connection import parse_address as _parse_addr_validator
 
-    for node in nodes:
-        if not isinstance(node.address, str):
-            raise TypeError(
-                f"NodeInfo.address must be 'host:port' string, got {type(node.address).__name__}"
-            )
-        addr = node.address.strip()
-        if not addr:
-            raise ValueError("NodeInfo.address must be a non-empty 'host:port' string")
-        try:
-            canonical = _parse_addr_validator(addr)
-        except ValueError as e:
-            raise ValueError(f"NodeInfo.address {addr!r} is not a valid 'host:port': {e}") from e
-        if canonical in seen:
-            continue
-        seen.add(canonical)
-        if addr is node.address:
-            unique.append(node)
-        else:
-            # NodeInfo is a frozen dataclass; rebuild with the stripped
-            # address so a downstream lookup by-address matches.
-            unique.append(NodeInfo(node_id=node.node_id, address=addr, role=node.role))
+    for node in capped:
+        _normalise_one(node, seen, unique, _parse_addr_validator)
+    return tuple(unique)
+
+
+async def _validate_and_normalise_nodes_async(
+    nodes: Sequence[NodeInfo] | Iterable[NodeInfo],
+) -> tuple[NodeInfo, ...]:
+    """Async-yielding twin of :func:`_validate_and_normalise_nodes`.
+
+    Runs the identical validation / dedup pipeline and returns
+    byte-identical output, but yields cooperatively every
+    ``_NODE_VALIDATE_YIELD_EVERY`` nodes so a large input (up to the
+    10_000-node ``_MAX_NODE_COUNT`` cap) does not monopolise the event
+    loop on the per-node ``parse_address`` + ``ipaddress.ip_address``
+    walk. Used by the async ``set_nodes`` paths
+    (:meth:`MemoryNodeStore._set_nodes_locked`,
+    :meth:`YamlNodeStore.set_nodes`).
+
+    Mirrors the cooperative-yield discipline of
+    :meth:`dqliteclient.cluster.ClusterClient.cluster_info`'s
+    redirect-policy filter (identical per-node cost, identical cap). The
+    cap check runs before the first yield so an over-cap input is
+    rejected without yielding; a sub-``_NODE_VALIDATE_YIELD_EVERY`` input
+    (the common 1-9-node case) yields zero times.
+    """
+    capped = _materialise_and_cap_nodes(nodes)
+    seen: set[tuple[str, int]] = set()
+    unique: list[NodeInfo] = []
+    # Local import to avoid the cluster import cycle (see the sync twin).
+    from dqliteclient.connection import parse_address as _parse_addr_validator
+
+    for i, node in enumerate(capped):
+        _normalise_one(node, seen, unique, _parse_addr_validator)
+        if (i + 1) % _NODE_VALIDATE_YIELD_EVERY == 0:
+            await asyncio.sleep(0)
     return tuple(unique)
 
 
@@ -954,7 +1019,7 @@ class YamlNodeStore(NodeStore):
             # bytes set_nodes wrote). Validation is INSIDE the lock so
             # two concurrent set_nodes cannot race the validation
             # pre-pass and clobber each other's writes.
-            normalised = _validate_and_normalise_nodes(nodes)
+            normalised = await _validate_and_normalise_nodes_async(nodes)
             payload = [
                 {
                     "ID": int(n.node_id),
