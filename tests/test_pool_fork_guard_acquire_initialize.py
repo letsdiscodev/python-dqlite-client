@@ -1,16 +1,6 @@
-"""Pin: ``ConnectionPool.initialize`` and
-``ConnectionPool.acquire`` raise ``InterfaceError`` when called
-after fork (creator pid != current pid).
-
-The fork guards on ``close`` are pinned by a sibling test; this
-file covers the ``initialize`` and ``acquire`` arms so a regression
-that drops either guard would let a forked child silently share the
-parent's TCP fds with corrupted reads / mixed request-response
-framing.
-
-Uses ``monkeypatch.setattr`` to spoof ``os.getpid()`` so the test
-exercises the post-fork branch without a real ``fork()``.
-"""
+"""Pin: ``initialize`` and ``acquire`` raise ``InterfaceError`` after fork
+(creator pid != current pid) so a child cannot share the parent's TCP fds.
+os.getpid() is spoofed to exercise the post-fork branch without a real fork()."""
 
 import os
 

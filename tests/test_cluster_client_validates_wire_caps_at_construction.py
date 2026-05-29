@@ -1,17 +1,6 @@
-"""``ClusterClient.__init__`` must validate ``max_total_rows``,
-``max_continuation_frames`` and ``max_message_size`` at construction
-— matching the discipline at ``DqliteConnection.__init__`` — so a
-misconfigured value surfaces at the operator's config-load site
-rather than deep inside a per-node probe coroutine on the first
-``find_leader()``.
-
-The pre-fix behaviour stored the value verbatim on ``self._max_*`` and
-only ran the validator at ``DqliteProtocol.__init__``, which a probe
-coroutine constructs many RPCs later. A ``bool`` (e.g.
-``max_total_rows=True``) would silently propagate through every
-admin and probe RPC for the lifetime of the instance until the first
-construction tripped the validator inside ``_query_leader``.
-"""
+"""ClusterClient.__init__ validates max_total_rows, max_continuation_frames and
+max_message_size at construction so a misconfigured value surfaces at the
+operator's config-load site, not deep inside a probe coroutine."""
 
 from __future__ import annotations
 
@@ -66,7 +55,6 @@ def test_cluster_client_max_message_size_bool_rejected_at_construction() -> None
     ["max_total_rows", "max_continuation_frames", "max_message_size"],
 )
 def test_cluster_client_none_allowed_for_caps(kwarg: str) -> None:
-    # None disables the cap (or defers to the wire-layer default) and
-    # must be accepted at construction.
+    # None (disable cap / defer to wire default) must be accepted at construction.
     kwargs: dict[str, object] = {kwarg: None}
     ClusterClient(_store(), **kwargs)  # type: ignore[arg-type]

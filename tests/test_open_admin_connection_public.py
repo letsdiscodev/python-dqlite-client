@@ -1,13 +1,5 @@
-"""``ClusterClient.open_admin_connection`` is the public direct-to-
-node primitive — analogue of go-dqlite's
-``NewDirectConnector(id, address, options...).Connect(ctx)``
-(``client.go:358-367``).
-
-Pre-rename it was the leading-underscore private ``_admin_connection``;
-external callers building bespoke admin tooling (talk-to-this-specific-
-node) had no documented entrypoint. The rename is forward-only — no
-external imports of the private name existed in the tree.
-"""
+"""``ClusterClient.open_admin_connection`` is the public direct-to-node primitive
+(renamed from the private ``_admin_connection``)."""
 
 from __future__ import annotations
 
@@ -20,18 +12,12 @@ from dqliteclient.node_store import MemoryNodeStore
 
 
 def test_open_admin_connection_is_public_method() -> None:
-    """The method is exposed without the leading underscore. The
-    private name no longer exists — pin against accidentally
-    re-introducing the underscore."""
     assert hasattr(ClusterClient, "open_admin_connection")
     assert not hasattr(ClusterClient, "_admin_connection")
 
 
 @pytest.mark.asyncio
 async def test_open_admin_connection_yields_handshaken_protocol() -> None:
-    """End-to-end: opening the public method against a mocked
-    transport yields a protocol with handshake completed and the
-    socket closed on exit."""
     store = MemoryNodeStore(["localhost:9001"])
     cluster = ClusterClient(store, timeout=0.5)
 
@@ -59,9 +45,7 @@ async def test_open_admin_connection_yields_handshaken_protocol() -> None:
 
 @pytest.mark.asyncio
 async def test_open_admin_connection_closes_writer_on_exception() -> None:
-    """A caller-raised exception inside the ``async with`` body must
-    still trigger socket cleanup — same discipline as the existing
-    private form."""
+    """A caller-raised exception inside the ``async with`` body still triggers socket cleanup."""
     store = MemoryNodeStore(["localhost:9001"])
     cluster = ClusterClient(store, timeout=0.5)
 

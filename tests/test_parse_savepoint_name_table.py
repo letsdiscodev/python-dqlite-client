@@ -1,12 +1,4 @@
-"""Consolidated table-driven tests for ``_parse_savepoint_name`` and
-``_parse_release_name``.
-
-The parsers have several deliberate trade-off branches (None for
-quoted / backtick / square-bracket / unicode / leading-digit names)
-that historically each got their own ad-hoc tests as savepoint cycles
-landed. This file consolidates the matrix so a future audit can extend
-coverage with a single parametrize row instead of a new test method.
-"""
+"""Table-driven tests for ``_parse_savepoint_name`` / ``_parse_release_name``."""
 
 from __future__ import annotations
 
@@ -18,7 +10,7 @@ from dqliteclient.connection import _parse_release_name, _parse_savepoint_name
 @pytest.mark.parametrize(
     ("input_str", "expected"),
     [
-        # Bare ASCII identifiers — accepted, lowercased.
+        # Bare ASCII — accepted, lowercased.
         ("foo", "foo"),
         ("Foo", "foo"),
         ("FOO", "foo"),
@@ -26,34 +18,29 @@ from dqliteclient.connection import _parse_release_name, _parse_savepoint_name
         ("foo_bar", "foo_bar"),
         ("_foo", "_foo"),
         ("_", "_"),
-        # Leading digit — parser-rejected (SQLite parse-rejects too).
+        # Leading digit — parser-rejected.
         ("123foo", None),
         ("9", None),
-        # Quoted / backtick / bracketed — parser-rejected to avoid the
-        # case-sensitivity desync (server treats them case-sensitive,
-        # bare branch lowercases).
+        # Quoted / backtick / bracketed — rejected: server is case-sensitive
+        # but the bare branch lowercases (desync).
         ('"foo"', None),
         ("`foo`", None),
         ("[foo]", None),
-        # Unicode letters — parser-rejected; ``str.isalnum`` would
-        # accept them but ``str.lower`` may normalise differently
-        # than the server.
+        # Unicode — rejected: ``str.lower`` may normalise unlike the server.
         ("café", None),
         ("αβγ", None),
-        # Empty / whitespace-only — parser-rejected.
+        # Empty / whitespace-only — rejected.
         ("", None),
         ("   ", None),
         ("\t\n", None),
-        # Leading-comment + name — accepted (SQLite tokenizer treats
-        # comments as whitespace anywhere in the token stream).
+        # Leading comment — accepted (tokenizer treats comments as whitespace).
         ("/* x */ foo", "foo"),
         ("-- comment\nfoo", "foo"),
-        # Trailing whitespace and comments — accepted.
+        # Trailing whitespace / comments — accepted.
         ("foo  ", "foo"),
         ("foo /* x */", "foo"),
         ("foo -- comment", "foo"),
-        # Trailing garbage — parser-rejected (forward-defence
-        # tightening; SQLite parse-rejects too).
+        # Trailing garbage — parser-rejected.
         ("foo extra", None),
         ("foo()", None),
         ("foo bar", None),
@@ -66,26 +53,19 @@ def test_parse_savepoint_name(input_str: str, expected: str | None) -> None:
 @pytest.mark.parametrize(
     ("input_str", "expected"),
     [
-        # Without leading SAVEPOINT keyword — delegates to _parse_savepoint_name.
+        # No leading keyword — delegates to _parse_savepoint_name.
         ("foo", "foo"),
         ("123foo", None),
         ('"foo"', None),
-        # With leading SAVEPOINT keyword — keyword stripped before
-        # delegating.
+        # Leading SAVEPOINT keyword stripped before delegating.
         ("SAVEPOINT foo", "foo"),
-        ("SAVEPOINT  foo", "foo"),  # multiple spaces
+        ("SAVEPOINT  foo", "foo"),
         ("savepoint foo", "foo"),  # case-insensitive keyword
-        ("SAVEPOINT\tfoo", "foo"),  # tab between keyword and name
-        # SAVEPOINT keyword + comment + name.
+        ("SAVEPOINT\tfoo", "foo"),
         ("SAVEPOINT /* x */ foo", "foo"),
         ("SAVEPOINT -- comment\nfoo", "foo"),
-        # ``SAVEPOINTX`` is a bareword, not the keyword — boundary
-        # check rejects the strip; treats whole tail as a name (which
-        # is itself a bareword starting with ``SAVEPOINTX foo`` — the
-        # parser stops at the space, returns ``"savepointx"`` → no
-        # wait, "SAVEPOINTX foo" has trailing garbage after
-        # SAVEPOINTX, so parser-rejected after the trailing-garbage
-        # tightening).
+        # ``SAVEPOINTX`` is a bareword, not the keyword; trailing garbage
+        # after it is parser-rejected.
         ("SAVEPOINTX foo", None),
     ],
 )

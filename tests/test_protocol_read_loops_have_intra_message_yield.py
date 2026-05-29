@@ -1,19 +1,7 @@
-"""Pin: ``DqliteProtocol._read_response`` and
-``_read_continuation`` each include an ``await asyncio.sleep(0)``
-inside their read-and-feed loop so a fast-burst server cannot pin
-the event loop for the whole multi-chunk message decode.
-
-The two sibling drain loops (``_drain_continuations`` per-frame
-yield, ``_interrupt`` drain yield) already follow this discipline.
-The chunk-feed loop is the parity gap one layer down.
-
-The hazard is bounded today by asyncio's private
-``_DEFAULT_LIMIT = 64 KiB``, which caps iteration count at ~16
-between yields. That bound is not a contract — a future
-StreamReader limit bump or a large dump / continuation response
-makes the loop monopolise the loop thread for the full chunk-
-stream. The cooperative yield removes the dependency on
-asyncio's private constants.
+"""Pin: ``DqliteProtocol._read_response`` and ``_read_continuation``
+each ``await asyncio.sleep(0)`` inside their read-and-feed loop so a
+fast-burst server cannot pin the event loop for a multi-chunk decode.
+The yield removes the dependency on asyncio's private StreamReader limit.
 """
 
 from __future__ import annotations
@@ -34,9 +22,7 @@ def _read_continuation_source() -> str:
 
 
 def _has_asyncio_sleep_zero_in_while(src: str) -> bool:
-    """Walk the AST and look for ``await asyncio.sleep(0)`` inside
-    any ``while`` loop body.
-    """
+    """True if ``await asyncio.sleep(0)`` appears inside any ``while``."""
     tree = ast.parse(src)
     for node in ast.walk(tree):
         if not isinstance(node, ast.While):

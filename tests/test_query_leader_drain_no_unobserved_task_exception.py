@@ -1,17 +1,6 @@
-"""Pin: the leader-probe ``finally`` writer drain does NOT leak an
-unobserved ``TimeoutError`` from the inner ``wait_for`` Task on outer
-cancel.
-
-The drain wraps ``writer.wait_closed()`` in
-``asyncio.shield(asyncio.wait_for(...))``. When the awaiter is
-cancelled mid-shield, ``shield`` re-raises CancelledError to the
-awaiter while letting the inner Task survive. If the inner Task
-later resolves with TimeoutError (peer unresponsive) and no coroutine
-is awaiting the Task, asyncio's task-finalisation logger emits
-``"Task exception was never retrieved"`` at GC. The fix is an
-explicit done-callback that observes ``.exception()`` so the
-warning never fires.
-"""
+"""Pin: the leader-probe finally writer drain does not leak an unobserved
+TimeoutError from the inner shielded Task on outer cancel. A done-callback
+observes ``.exception()`` so asyncio's GC-time warning never fires."""
 
 from __future__ import annotations
 
@@ -25,74 +14,49 @@ from dqliteclient import cluster as cluster_module
 
 
 def test_observe_drain_exception_is_module_level_helper() -> None:
-    """Source-level pin: the helper exists. A regression that inlines
-    it back without observation would surface here."""
+    """Source-level pin: the helper exists."""
     assert hasattr(cluster_module, "_observe_drain_exception")
     assert callable(cluster_module._observe_drain_exception)
 
 
 def test_observe_drain_exception_reaps_timeout_error() -> None:
-    """Functional pin: the helper consumes the exception so a future
+    """Functional pin: the helper consumes the exception so a later
     ``t.exception()`` read does not re-raise."""
 
     async def _drive() -> None:
         async def _slow() -> None:
             await asyncio.sleep(60)
 
-        # Build a task that resolves with TimeoutError.
         inner = asyncio.ensure_future(asyncio.wait_for(_slow(), timeout=0.001))
-        # Wait for the inner to time out.
         with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
             await inner
-        # Inner is done with TimeoutError — observe via the helper.
         cluster_module._observe_drain_exception(inner)
-        # ``.exception()`` on an already-observed task does not re-raise.
         assert isinstance(inner.exception(), TimeoutError)
 
     asyncio.run(_drive())
 
 
 def test_observe_drain_exception_skips_cancelled_task() -> None:
-    """Functional pin: the helper is no-op-safe on a cancelled task —
-    it does not raise. The sibling ``reaps_timeout_error`` test only
-    exercises the resolved-with-exception arm; a regression that drops
-    BOTH the ``if not t.cancelled():`` guard AND the
-    ``contextlib.suppress(BaseException)`` wrapper would let a cancelled
-    task's ``CancelledError`` escape the helper. (Removing only the
-    guard or only the suppress is observationally equivalent because
-    BaseException-suppress catches the CancelledError that
-    ``t.exception()`` would raise — those mutants survive this pin by
-    design; pinning the implementation shape would break on harmless
-    refactors.)
-    """
+    """Functional pin: the helper is no-op-safe on a cancelled task; it must not raise."""
 
     async def _drive() -> None:
         async def _slow() -> None:
             await asyncio.sleep(60)
 
-        # Build a task that we cancel before it resolves.
         cancelled = asyncio.create_task(_slow())
         cancelled.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await cancelled
         assert cancelled.cancelled(), "test setup: task must be cancelled, not resolved"
-        # The helper must NOT raise on a cancelled task — its
-        # ``if not t.cancelled():`` arm short-circuits before
-        # ``t.exception()`` (which would raise CancelledError).
         cluster_module._observe_drain_exception(cancelled)
 
     asyncio.run(_drive())
 
 
 def test_query_leader_finally_uses_observed_drain_pattern() -> None:
-    """Source-level pin: the leader-probe finally wraps the inner
-    drain in ``asyncio.ensure_future`` plus the
-    ``add_done_callback(_observe_drain_exception)`` pattern, NOT the
-    direct ``shield(wait_for(...))`` composition that orphans the
-    inner Task."""
+    """Source-level pin: the finally shields an explicit inner-Task variable with
+    an observer done-callback, not a ``shield(wait_for(...))`` that orphans the Task."""
     src = inspect.getsource(cluster_module)
-    # The shield(...) call must consume an explicit Task variable, not
-    # an inline asyncio.wait_for(...) — that's the regression shape.
     assert "asyncio.shield(inner_drain)" in src, (
         "Leader-probe finally must shield an explicit inner-Task variable "
         "with an exception-observer done-callback (NOT a composed "
@@ -103,19 +67,9 @@ def test_query_leader_finally_uses_observed_drain_pattern() -> None:
 
 @pytest.mark.asyncio
 async def test_outer_cancel_during_drain_does_not_emit_unobserved_warning() -> None:
-    """Behavioural pin: cancel the outer task mid-drain, let the inner
-    task run to its TimeoutError, drain the loop, and verify NO
-    "Task exception was never retrieved" diagnostic fires.
-
-    Drives a synthetic case mirroring the production shape — a task
-    that runs the same shielded pattern in a tight loop, with the
-    outer cancelled mid-flight.
-
-    asyncio surfaces the unobserved-exception diagnostic via
-    ``loop.call_exception_handler``, NOT via ``warnings.warn``.
-    Capture via the loop's exception handler so the assert sees what
-    asyncio actually emits.
-    """
+    """Behavioural pin: cancel outer mid-drain, let inner reach TimeoutError, and
+    verify no "Task exception was never retrieved" diagnostic fires. asyncio surfaces
+    that diagnostic via ``loop.call_exception_handler``, not ``warnings.warn``."""
 
     async def _slow() -> None:
         await asyncio.sleep(60)
@@ -141,8 +95,6 @@ async def test_outer_cancel_during_drain_does_not_emit_unobserved_warning() -> N
     finally:
         loop.set_exception_handler(prior_handler)
 
-    # Ensure no asyncio "Task exception was never retrieved" diagnostic
-    # was emitted to the loop's exception handler.
     asyncio_diagnostics = [
         ctx
         for ctx in captured
@@ -155,13 +107,8 @@ async def test_outer_cancel_during_drain_does_not_emit_unobserved_warning() -> N
 
 @pytest.mark.asyncio
 async def test_loop_exception_handler_captures_unobserved_task_exception() -> None:
-    """Positive control: with no done-callback, the unobserved-
-    exception diagnostic IS emitted via ``loop.call_exception_handler``
-    — verifying the capture mechanism works. Without this control, a
-    future regression on the capture path itself (e.g., asyncio
-    changing how it surfaces the diagnostic) would silently make the
-    negative pin above pass for the wrong reason.
-    """
+    """Positive control: with no done-callback, the diagnostic IS emitted, proving
+    the capture mechanism works (so the negative pin can't pass for the wrong reason)."""
 
     async def _slow() -> None:
         await asyncio.sleep(60)
@@ -171,14 +118,10 @@ async def test_loop_exception_handler_captures_unobserved_task_exception() -> No
     prior_handler = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, ctx: captured.append(ctx))
     try:
-        # Build an inner task that resolves with TimeoutError —
-        # crucially with NO done-callback to observe the exception.
+        # No done-callback, so the resolved-with-TimeoutError task stays unobserved.
         inner = asyncio.ensure_future(asyncio.wait_for(_slow(), timeout=0.001))
-        # Wait for the timeout to fire without awaiting the inner.
         await asyncio.sleep(0.05)
-        # Drop the reference so the task can be GC'd → ``__del__``
-        # fires → ``call_exception_handler`` reports the unobserved
-        # exception.
+        # Drop the reference so GC finalises the task and reports the unobserved exception.
         del inner
         import gc
 

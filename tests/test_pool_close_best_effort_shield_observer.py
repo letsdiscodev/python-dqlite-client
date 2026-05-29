@@ -1,31 +1,7 @@
-"""Pin: ``ConnectionPool._close_best_effort`` schedules the inner
-``conn.close()`` as an explicit ``Task`` with
-``_observe_drain_exception`` attached, then awaits
-``asyncio.shield(task)``.
-
-The prior shape — ``await asyncio.shield(conn.close())`` — wraps
-the bare coroutine in an IMPLICIT task. If the outer awaiter is
-cancelled or otherwise abandoned while the inner close is still
-running, the implicit task is left running unobserved. When the
-close eventually raises, asyncio's task finaliser surfaces the
-exception via ``Task was destroyed but it is pending`` (if the
-loop closes mid-flight) or "exception was never retrieved" at GC.
-
-The canonical fix shape (already established at
-``pool.py``'s ``_drain_idle`` per-iteration site and at
-``connection.py``'s ``_abort_protocol``) is::
-
-    inner = asyncio.ensure_future(conn.close())
-    inner.add_done_callback(_observe_drain_exception)
-    await asyncio.shield(inner)
-
-This pin is structural via source inspection because the runtime
-behaviour (asyncio's ``_log_on_exception`` for shielded futures)
-is intentional and orthogonal to the explicit-task discipline the
-project relies on for cross-site uniformity. Regression risk is
-that a future contributor inlines the bare-coro shield pattern;
-the AST walk catches that mechanically.
-"""
+"""_close_best_effort must shield an explicit ensure_future(conn.close()) Task
+with _observe_drain_exception attached, not the bare coroutine: shield(conn.close())
+orphans the implicit task on outer-await abandonment, surfacing the eventual
+exception at GC. Pinned structurally via AST walk."""
 
 from __future__ import annotations
 
@@ -41,10 +17,8 @@ def _close_best_effort_source() -> str:
 
 
 def test_close_best_effort_uses_explicit_task_and_done_callback() -> None:
-    """The helper body must construct an explicit Task for the inner
-    ``conn.close()``, attach a done-callback, and shield the Task
-    (not the bare coroutine).
-    """
+    """Body must build an explicit Task for conn.close(), attach a done-callback,
+    and shield the Task, not the bare coroutine."""
     src = _close_best_effort_source()
     tree = ast.parse(src)
 
@@ -57,7 +31,7 @@ def test_close_best_effort_uses_explicit_task_and_done_callback() -> None:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        # ``asyncio.ensure_future(conn.close())``
+        # asyncio.ensure_future(conn.close())
         if (
             isinstance(func, ast.Attribute)
             and func.attr == "ensure_future"

@@ -1,33 +1,7 @@
-"""Pin: ``DqliteProtocol._send_request`` offloads large-request
-encode to a worker thread via ``asyncio.to_thread`` so the
-multi-MiB BLOB / TEXT param memcpy chain does not freeze the
-event loop.
-
-The prior shape called ``await self._send(self._encoder.encode(
-request))`` at every single-request site in ``protocol.py``
-(16 sites converted; the two handshake sites at lines 393 and
-470 deliberately keep direct ``_send`` because they prepend
-8-byte handshake bytes and bundle a tiny ``ClientRequest`` into
-one TCP segment by design). Every encode ran synchronously on
-the loop thread before the first ``await`` in ``_send``'s
-``drain()``. For an ``ExecRequest`` carrying a 64 MiB BLOB
-param, the ~4 full-sized memcpys in ``encode_blob`` +
-``encode_params_tuple`` consume hundreds of ms on x86 (multiple
-seconds on Pi-class) before yielding.
-
-The fix introduces a single ``_send_request(request)`` helper
-that estimates encoded body size and threshold-gates the encode
-via ``asyncio.to_thread`` when the projected size is at least
-``_ENCODE_OFFLOAD_THRESHOLD`` (256 KiB — chosen to amortise the
-~50 µs thread-hop cost while still catching all multi-MiB
-shapes). Small messages (heartbeats, admin RPCs, fixed-shape
-requests) stay in-loop to avoid the thread-hop overhead on the
-hot path.
-
-Mirrors the in-tree ``YamlNodeStore.set_nodes`` to_thread
-discipline and aiohttp's compression-utils threshold-gated
-``run_in_executor`` pattern (the only direct industry
-precedent for size-gated encode offload).
+"""Pin: ``DqliteProtocol._send_request`` threshold-gates large encodes
+onto ``asyncio.to_thread`` (at ``_ENCODE_OFFLOAD_THRESHOLD``) so a
+multi-MiB BLOB/TEXT memcpy chain does not freeze the loop, while small
+requests stay in-loop to avoid the thread-hop cost on the hot path.
 """
 
 from __future__ import annotations
@@ -60,11 +34,7 @@ def _make_protocol_with_mock_writer() -> DqliteProtocol:
 
 
 async def test_send_request_small_payload_stays_in_loop() -> None:
-    """A heartbeat-class request (zero or tiny params) encodes
-    in-loop — no ``asyncio.to_thread`` hop. Pins the threshold
-    fast-path so heartbeats / admin RPCs do not pay the
-    ~50 µs hop cost per call.
-    """
+    """A heartbeat-class request encodes in-loop, with no to_thread hop."""
     proto = _make_protocol_with_mock_writer()
 
     to_thread_calls: list[Any] = []
@@ -75,7 +45,6 @@ async def test_send_request_small_payload_stays_in_loop() -> None:
         return await real_to_thread(func, *args, **kwargs)
 
     with patch.object(asyncio, "to_thread", _tracking_to_thread):
-        # LeaderRequest is the canonical zero-param admin RPC.
         await proto._send_request(wire_requests.LeaderRequest())
 
     assert to_thread_calls == [], (
@@ -83,16 +52,12 @@ async def test_send_request_small_payload_stays_in_loop() -> None:
         f"Heartbeat-class requests must stay in-loop to avoid the "
         f"~50 µs thread-hop cost on every call."
     )
-    # ``_writer.write`` is a MagicMock; mypy can't see the
-    # call_count attribute through the typed Protocol stub.
+    # mypy can't see call_count through the typed Protocol stub.
     assert proto._writer.write.call_count == 1  # type: ignore[attr-defined]
 
 
 async def test_send_request_large_blob_param_dispatches_via_to_thread() -> None:
-    """An ``ExecRequest`` carrying a 1 MiB BLOB param (well above
-    the 256 KiB gate) MUST be encoded on a worker thread so the
-    loop is not frozen during the multi-pass memcpy.
-    """
+    """A 1 MiB BLOB param (above the gate) is encoded on a worker thread."""
     proto = _make_protocol_with_mock_writer()
 
     to_thread_calls: list[Any] = []
@@ -116,20 +81,16 @@ async def test_send_request_large_blob_param_dispatches_via_to_thread() -> None:
         f"large-blob request must be offloaded to ``asyncio.to_thread``; "
         f"got {len(to_thread_calls)} hops."
     )
-    # ``_writer.write`` is a MagicMock; mypy can't see the
-    # call_count attribute through the typed Protocol stub.
+    # mypy can't see call_count through the typed Protocol stub.
     assert proto._writer.write.call_count == 1  # type: ignore[attr-defined]
 
 
 async def test_send_request_threshold_boundary_offloads_at_threshold() -> None:
-    """A payload exactly at the threshold offloads; below the
-    threshold stays in-loop. Pins the boundary so future tuning
-    is intentional.
-    """
+    """At/above the threshold offloads; below stays in-loop."""
     proto = _make_protocol_with_mock_writer()
     threshold = protocol_mod._ENCODE_OFFLOAD_THRESHOLD
 
-    # Just BELOW the threshold — stays in-loop.
+    # Just below the threshold.
     small_blob = b"\x00" * (threshold - 1024)
     small_request = wire_requests.ExecRequest(
         db_id=1,
@@ -150,7 +111,7 @@ async def test_send_request_threshold_boundary_offloads_at_threshold() -> None:
         f"payload just below threshold should stay in-loop; saw offload calls: {to_thread_calls!r}"
     )
 
-    # AT or above the threshold — offloads.
+    # At/above the threshold.
     big_blob = b"\x00" * (threshold + 1024)
     big_request = wire_requests.ExecRequest(
         db_id=1,
@@ -166,15 +127,9 @@ async def test_send_request_threshold_boundary_offloads_at_threshold() -> None:
 
 
 async def test_send_request_threshold_is_documented_constant() -> None:
-    """The threshold lives as a module-level ``Final`` constant so
-    operators can grep for it and so a future tuning lands at
-    a single site.
-    """
+    """The threshold is a module-level ``Final`` constant."""
     assert hasattr(protocol_mod, "_ENCODE_OFFLOAD_THRESHOLD")
     threshold = protocol_mod._ENCODE_OFFLOAD_THRESHOLD
-    # Sanity: must be in the 64 KiB - 1 MiB band per the prior-art
-    # convergence (aiohttp 4 KiB compression / asyncpg COPY 512 KiB
-    # chunk / psycopg3 128 KiB buffer).
     assert 64 * 1024 <= threshold <= 1024 * 1024, (
         f"_ENCODE_OFFLOAD_THRESHOLD={threshold} is outside the sensible 64 KiB - 1 MiB band"
     )

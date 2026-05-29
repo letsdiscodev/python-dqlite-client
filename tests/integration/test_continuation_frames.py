@@ -1,17 +1,6 @@
-"""Integration test for multi-frame rows continuation.
-
-The dqlite server batches query results into frames that fit in its
-per-response buffer. For result sets larger than one frame's worth of
-rows, the server sends an initial ``ROWS`` response with
-``has_more=True`` followed by one or more continuation frames ending
-with a final frame that sets ``has_more=False``.
-
-Previously only a Python-round-trip test exercised this path
-(``test_decode_continuation_roundtrip``). This integration test
-queries a real dqlite server for a result set large enough to cross
-the continuation boundary, exercising the full server→wire→
-``_drain_continuations``→client path end-to-end.
-"""
+"""Integration test for multi-frame rows continuation: query a result set large enough that
+the server emits continuation frames (``has_more=True``), exercising the full
+server -> wire -> ``_drain_continuations`` -> client reassembly path end-to-end."""
 
 from __future__ import annotations
 
@@ -27,23 +16,17 @@ class TestContinuationFrames:
     async def test_large_result_set_crosses_continuation_boundary(
         self, cluster_address: str
     ) -> None:
-        """Select a result set large enough that the server emits at
-        least one continuation frame. Verify row reassembly is exact.
+        """Select enough rows to cross the continuation boundary; verify exact reassembly.
 
-        Row size: 8-byte INTEGER + ~50-byte TEXT per row ≈ 60 bytes
-        plus tuple framing. The server's per-frame buffer is on the
-        order of tens of KiB, so a few thousand rows guarantees at
-        least one continuation.
+        ~60 bytes/row vs a tens-of-KiB per-frame buffer, so a few thousand rows guarantees it.
         """
         N_ROWS = 5000
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_continuation")
             await conn.execute("CREATE TABLE test_continuation (id INTEGER PRIMARY KEY, val TEXT)")
 
-            # Batch inserts into a single transaction for speed.
             async with conn.transaction():
-                # SQLite has a default compile-time limit of 999
-                # parameters per statement; chunk to stay under.
+                # SQLite caps parameters per statement at 999 by default; chunk to stay under.
                 batch = 500
                 for start in range(0, N_ROWS, batch):
                     values = []
@@ -63,25 +46,19 @@ class TestContinuationFrames:
             assert rows[-1][0] == N_ROWS - 1
             assert rows[-1][1] == f"row-{N_ROWS - 1:06d}-padding-padding"
 
-            # Spot-check a middle row.
             mid = N_ROWS // 2
             assert rows[mid][0] == mid
 
     async def test_continuation_boundary_actually_crossed(self, cluster_address: str) -> None:
-        """Confirm the server actually emitted at least one
-        continuation frame — a smaller result set that still fits in
-        one frame would give a false sense of coverage. Instrument
-        ``_drain_continuations`` and assert ``frames > 1``.
-        """
+        """Instrument ``_drain_continuations`` and assert ``frames > 1`` — a single-frame
+        result set would give a false sense of coverage."""
         from dqliteclient.protocol import DqliteProtocol
 
         N_ROWS = 5000
         frames_seen: list[int] = []
 
         async def _spy(self, initial, deadline):
-            # Copied structurally from the real method but with a
-            # frames counter escape hatch. Keeps the original on the
-            # class intact for other tests.
+            # Structural copy of the real method plus a frames counter.
             response = initial
             all_rows = list(initial.rows)
             all_row_types: list[list[int]] = [[int(t) for t in rt] for rt in initial.row_types]

@@ -1,17 +1,6 @@
 """Pin: ``DqliteProtocol.open_database`` enforces the upstream
-"first DB on a fresh connection gets db_id=0" contract.
-
-``gateway.c::handle_open`` assigns ``response.id = 0`` for the first
-OPEN on a connection; the next OPEN on the same connection is
-refused with ``SQLITE_BUSY`` (``gateway.c:319-324``). The wire
-decoder accepts any uint64, so a buggy / misconfigured server (or a
-MITM-modified response) could otherwise feed a non-zero id into
-``self._db_id``, which then propagates to every subsequent RPC and
-surfaces as a confusing ``prepare`` ``db_id`` mismatch one
-round-trip later.
-
-This guard catches the bad id at the OPEN site with clear attribution,
-mirroring ``prepare``'s defence-in-depth ``db_id`` mismatch check.
+"first DB on a fresh connection gets db_id=0" contract, catching a
+bad id at the OPEN site before it propagates to subsequent RPCs.
 """
 
 from __future__ import annotations
@@ -53,7 +42,6 @@ async def test_open_database_rejects_nonzero_db_id() -> None:
     msg = str(exc_info.value)
     assert "expected 0" in msg
     assert WIRE_DECODE_FAILED_PREFIX in msg
-    # The bad id is surfaced so operators can correlate.
     assert "db_id=42" in msg
 
 

@@ -1,15 +1,4 @@
-"""Low-level protocol handler for dqlite.
-
-Also hosts the public ``validate_positive_int_or_none`` validator
-because that helper originated inline inside
-:class:`DqliteProtocol`'s ``max_total_rows`` /
-``max_continuation_frames`` kwargs and was promoted in place. The
-sibling public validators ``validate_timeout`` and ``parse_address``
-live in :mod:`dqliteclient.connection` for the same first-caller
-reason. All three are re-exported via :mod:`dqliteclient`; the
-asymmetric module homes are an artefact of where each validator was
-first needed, not a contract.
-"""
+"""Low-level protocol handler for dqlite."""
 
 import asyncio
 import logging
@@ -75,124 +64,37 @@ __all__ = ["DqliteProtocol", "validate_positive_int_or_none"]
 
 logger = logging.getLogger(__name__)
 
-# Socket read buffer size. 4 KiB balances syscall overhead for typical
-# request/response payloads against latency for small wire messages.
 _READ_CHUNK_SIZE: Final[int] = 4096
 
-# Upper bound on how wide a server's advertised heartbeat can stretch
-# the per-read deadline on a connection that opted into
-# ``trust_server_heartbeat``. Without this cap a hostile or buggy
-# server could advertise an arbitrary value and effectively disable
-# client-side read timeouts for the whole session. Sized to tolerate
-# sane operational tuning (``config.c`` defaults to 15 s; 300 s fits
-# 20× that with plenty of headroom) while still bounding the widening
-# to a known scale. Changes here must be reflected in the
-# ``trust_server_heartbeat`` docstrings on ``DqliteProtocol.__init__``
-# and ``DqliteProtocol.handshake``, ``DqliteConnection.__init__``,
-# and the top-level ``connect`` / ``create_pool`` docstrings in
-# ``__init__.py``.
+# Caps how far a server-advertised heartbeat can widen the per-read deadline
+# under ``trust_server_heartbeat``, so a hostile server cannot disable read
+# timeouts. Mirrored in the ``trust_server_heartbeat`` docstrings on
+# ``DqliteProtocol`` / ``DqliteConnection`` and the ``connect`` / ``create_pool``
+# docstrings in ``__init__.py``.
 _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS: Final[float] = 300.0
 
-# Encode-offload threshold for ``_send_request``. Requests whose
-# projected encoded body size meets or exceeds this value are
-# encoded on a worker thread via ``asyncio.to_thread`` so the
-# multi-MiB BLOB / TEXT param memcpy chain in ``encode_blob`` +
-# ``encode_params_tuple`` does not freeze the event loop. Sized
-# to amortise the ~50 µs thread-hop cost (~5× hop overhead at
-# 256 KiB) while still catching every multi-MiB shape. Sits in
-# the band documented across prior-art encoders (aiohttp 4 KiB
-# compression gate, psycopg3 128 KiB COPY buffer, asyncpg
-# 512 KiB COPY chunk). Heartbeats / admin RPCs / fixed-shape
-# requests stay in-loop because their projected size is well
-# under this threshold.
+# Requests whose projected encoded body size reaches this encode on a worker
+# thread so a multi-MiB param/SQL memcpy does not freeze the event loop.
 _ENCODE_OFFLOAD_THRESHOLD: Final[int] = 256 * 1024
 
-# Decode-offload threshold for ``_read_response``. Frames whose
-# total wire size meets or exceeds this value are decoded on a
-# worker thread via ``asyncio.to_thread`` so the per-row + per-cell
-# walk in ``RowsResponse.decode_body`` does not freeze the loop.
-# A 100k-row × 32-col RowsResponse (~25 MiB body) otherwise pins
-# the loop for hundreds of ms. The threshold matches
-# ``_ENCODE_OFFLOAD_THRESHOLD`` so both directions amortise the
-# ~50 µs thread-hop overhead at the same payload boundary.
-# CPython's GIL release every ``sys.setswitchinterval`` (~5 ms by
-# default) inside the worker thread gives the loop thread natural
-# scheduling slices during the off-loop decode — comparable to a
-# cooperative ``await asyncio.sleep(0)`` every ~5 ms of decode
-# work without the API redesign a two-tier sync-generator
-# approach would require. Mirrors the in-tree dump-decode +
-# send-encode offload pattern. NOTE: the latency guarantee is
-# coarser than an in-loop generator (5 ms granularity vs.
-# sub-ms with explicit yields); callers needing sub-5-ms
-# scheduling SLA would still benefit from a two-tier sync
-# generator + per-K-rows ``await asyncio.sleep(0)`` shape.
-#
-# Cancel-orphan worst case (applies to all three decode offload
-# sites — ``_read_response`` and ``_read_continuation`` gate on
-# this constant; the ``dump`` path via
-# ``_decode_dump_response_sync`` offloads unconditionally):
-# ``asyncio.to_thread`` cannot
-# cancel a worker that has already started, so an outer cancel
-# (e.g. a dbapi sync-timeout firing mid-decode) unwinds the
-# awaiting coroutine immediately while the worker runs the decode
-# to completion and discards its result. This is NOT a
-# correctness defect — the cancel arm invalidates the connection
-# (``DqliteConnection._invalidate`` nulls ``_protocol`` and never
-# re-touches the decoder/buffer), so the worker's late mutations
-# land on an abandoned decoder no future reader can reach. The
-# residual is bounded second-order resource use: the orphan pins
-# one default-``ThreadPoolExecutor`` slot (shared with the
-# encode-offload and ``YamlNodeStore`` fsync paths) plus a strong
-# ref to the frame buffer for at most one ``max_message_size``
-# decode, then self-drains. A dedicated bounded executor was
-# weighed and rejected as disproportionate / beyond Go/C parity
-# (go-dqlite avoids the orphan only because Go can abort the
-# read; ``to_thread`` cannot).
+# Frames at/above this wire size decode on a worker thread so the per-row walk
+# does not freeze the loop. See cancel-orphan note: an outer cancel cannot stop a
+# running ``to_thread`` worker, but it lands on an abandoned decoder after
+# ``_invalidate`` nulls ``_protocol`` — bounded resource use, no correctness defect.
 _DECODE_OFFLOAD_THRESHOLD: Final[int] = 256 * 1024
 
 
 def _decode_dump_response_sync(frame_bytes: bytes, decoder: MessageDecoder) -> Message:
-    """Sync body of the ``dump`` off-loop decode hop.
-
-    Runs ``decoder.decode_bytes(frame_bytes)`` on a worker thread
-    so the multi-MiB ``bytes(view[offset:offset+size])`` per-file
-    memcpy in :meth:`FilesResponse.decode_body` does not freeze
-    the event loop. Mirrors the in-tree ``YamlNodeStore.set_nodes``
-    ``asyncio.to_thread`` discipline — admin-class operations
-    whose payload is multi-MiB by design always offload
-    unconditionally rather than threshold-gating.
-    """
+    """Sync body of the ``dump`` off-loop decode hop (run via to_thread)."""
     return decoder.decode_bytes(frame_bytes)
 
 
 def _estimate_request_body_size(request: object) -> int:
     """Cheap loop-thread pre-estimate of the encoded body size.
 
-    Sums two contributions:
-
-    * The ``sql`` text field, present on ``PrepareRequest`` /
-      ``ExecSqlRequest`` / ``QuerySqlRequest``. This is the single
-      largest TEXT field on the request side (capped at
-      ``_MAX_TEXT_VALUE_SIZE`` ≈ 64 MiB). A multi-MiB inline-literal
-      statement (``PrepareRequest`` with a big SQL, or
-      ``ExecSqlRequest`` / ``QuerySqlRequest`` carrying a large SQL
-      with few/no params — the shape SQLAlchemy ``insertmanyvalues``
-      and large literal ``VALUES`` / ``IN (...)`` expansions emit)
-      must offload its ``encode_text`` transcode + copy.
-    * ``request.params`` (present on ``ExecRequest`` / ``QueryRequest``
-      / ``ExecSqlRequest`` / ``QuerySqlRequest``), summing per-param
-      sizes.
-
-    Returns ``0`` for request types carrying neither field, which
-    keeps every admin / handshake / fixed-shape RPC on the fast
-    in-loop path.
-
-    Pessimistic for ``str`` content: uses ``len(value) * 4`` to
-    upper-bound UTF-8 expansion without materialising the encoded
-    form. Underestimating would silently keep a multi-MiB TEXT
-    field on the loop; over-estimating only triggers the offload
-    earlier, paying at most a single ~50 µs hop on a payload that
-    is anyway near the threshold.
+    Sums the ``sql`` text field and ``params``; returns 0 for requests with
+    neither (keeping admin/handshake RPCs in-loop). ``len * 4`` upper-bounds
+    UTF-8 expansion: over-estimating only offloads earlier, under would not.
     """
     total = 0
     sql = getattr(request, "sql", None)
@@ -205,47 +107,26 @@ def _estimate_request_body_size(request: object) -> int:
                 total += len(value)
             elif isinstance(value, str):
                 total += len(value) * 4
-            # Numeric / bool / None params contribute < 16 bytes each
-            # on the wire (uint64 / int64 / double / NULL sentinel);
-            # ignored here as negligible vs the threshold.
+            # Numeric/bool/None params are < 16 bytes each; negligible.
     return total
 
 
-# Default cap on inbound message-frame size, re-exported from the wire
-# layer's ``ReadBuffer.DEFAULT_MAX_MESSAGE_SIZE`` (64 MiB). Promoted to
-# a module-level constant so the propagation through DqliteProtocol /
-# DqliteConnection / ConnectionPool sees a single source of truth, in
-# parity with ``_DEFAULT_MAX_TOTAL_ROWS`` / ``_DEFAULT_MAX_CONTINUATION_FRAMES``.
-# A wire-layer bump propagates automatically; a client-side hot-fix
-# can rebind this constant without touching the wire.
+# Default inbound frame-size cap, re-exported from the wire layer (64 MiB) so
+# the propagation chain has a single source of truth.
 DEFAULT_MAX_MESSAGE_SIZE: Final[int] = ReadBuffer.DEFAULT_MAX_MESSAGE_SIZE
 
 
 def _failure_message(message: str, addr_suffix: str) -> str:
-    """Render the body of a FailureResponse-derived exception.
-
-    Substitutes a stable placeholder when the server message is empty
-    or reduces to whitespace under the wire-layer
-    ``_sanitize_server_text`` cleanup. Without this, an empty message
-    bubbles up as ``"[1] "`` (with a trailing space and no
-    diagnostic), which log scraping cannot group on usefully and
-    operators cannot grep. The placeholder ``"(no diagnostic from
-    server)"`` is the contract.
-    """
+    """Render a FailureResponse body, substituting a placeholder for empty text
+    so log scraping has something to grep instead of ``"[1] "``."""
     body = message if message.strip() else "(no diagnostic from server)"
     return body + addr_suffix
 
 
 def validate_positive_int_or_none(value: int | None, name: str) -> int | None:
-    """Shared validation for positive-int-or-None parameters.
+    """Validate a positive-int-or-None parameter; None disables the cap.
 
-    Used for both ``max_total_rows`` and ``max_continuation_frames``.
-    None disables the cap; any int value must be > 0.
-
-    Public so downstream packages (``dqlitedbapi``, ``sqlalchemy-dqlite``)
-    can apply the same construction-time validation without reaching
-    into private symbols. Same shape as the public ``parse_address`` /
-    ``allowlist_policy`` helpers in this package.
+    Public so downstream packages can reuse it without reaching into privates.
     """
     if value is None:
         return None
@@ -272,14 +153,7 @@ class DqliteProtocol:
     ) -> None:
         self._reader = reader
         self._writer = writer
-        # Forward the user's continuation caps directly. The codec
-        # accepts ``None`` to disable a cap (its public contract);
-        # passing through verbatim keeps the client-layer (this
-        # class) and the wire-layer cap surfaces aligned without an
-        # encoded sentinel. ``max_message_size`` is the third wire
-        # governor (alongside max_total_rows / max_continuation_frames);
-        # None falls back to the wire-layer default (64 MiB) — see
-        # ``DEFAULT_MAX_MESSAGE_SIZE`` for the re-export rationale.
+        # None falls back to the wire-layer default (64 MiB).
         effective_max_message_size = (
             max_message_size if max_message_size is not None else DEFAULT_MAX_MESSAGE_SIZE
         )
@@ -298,84 +172,38 @@ class DqliteProtocol:
             max_continuation_frames=max_continuation_frames,
             max_message_size=effective_max_message_size,
         )
-        # Symmetric outbound cap. ``MessageEncoder.encode()`` rejects
-        # frames whose total size exceeds ``max_message_size`` BEFORE
-        # they reach the writer, so an accidentally oversized
-        # ``PrepareRequest`` (huge SQL string) or ``ExecSqlRequest``
-        # (oversized bind value) surfaces as a local ``EncodeError``
-        # instead of a remote rejection after a round-trip or a
-        # stalled write pipe. Sharing the same cap value with the
-        # decoder keeps the lever single-knob from the operator's
-        # perspective. Go-dqlite has no outbound cap; this is purely
-        # Python defence-in-depth.
+        # Symmetric outbound cap: reject oversized frames locally before the
+        # writer rather than after a round-trip. Python-only defence-in-depth.
         self._encoder = MessageEncoder(max_message_size=effective_max_message_size)
         self._max_message_size = effective_max_message_size
         self._client_id = 0
         self._heartbeat_timeout = 0
         self._timeout = timeout
-        # Per-read deadline, initially equal to the operator-configured
-        # write/drain budget. When ``trust_server_heartbeat=True`` the
-        # handshake may widen this (up to 300 s) based on the server's
-        # advertised heartbeat; the write-path ``self._timeout`` never
-        # changes so a hostile server cannot stretch the operator's
-        # write SLO by advertising a long heartbeat.
+        # Per-read deadline; ``trust_server_heartbeat`` may widen this (up to
+        # 300 s) but never ``self._timeout``, so the write SLO stays pinned.
         self._read_timeout = timeout
-        # Diagnostic-only peer address. Embedded into timeout and
-        # decode-error messages so operators can tell from the
-        # exception alone which node a hung probe / mangled frame came
-        # from; callers without the address in scope may omit it.
+        # Diagnostic-only peer address, embedded into error messages.
         self._address = address
-        # Cumulative cap across continuation frames for a single query.
-        # A hostile or buggy server can drip-feed 1-row-per-frame inside
-        # the per-operation deadline; without a cumulative cap, clients
-        # could legitimately allocate hundreds of millions of rows over
-        # the full deadline. None disables the cap.
+        # Cumulative row cap across a query's continuation frames so a server
+        # drip-feeding 1 row/frame within the deadline cannot exhaust memory.
         self._max_total_rows = validate_positive_int_or_none(max_total_rows, "max_total_rows")
-        # Per-query frame cap. Complements max_total_rows: a server
-        # sending 10M 1-row frames to reach the row cap would still
-        # burn 10M × decode-cost of Python work; the frame cap bounds
-        # that at ~100k iterations.
+        # Frame cap complements max_total_rows: bounds per-frame decode work
+        # against a server sending many tiny frames to reach the row cap.
         self._max_continuation_frames = validate_positive_int_or_none(
             max_continuation_frames, "max_continuation_frames"
         )
-        # When True, the client honors the server-advertised heartbeat
-        # timeout to adjust its per-read deadline (subject to the 300 s
-        # hard cap). When False (default), the server value is recorded
-        # for diagnostics only and the operator-configured ``timeout``
-        # is authoritative. Opt-in protects operators whose timeout is
-        # a latency-SLO boundary from server-induced amplification.
         self._trust_server_heartbeat = trust_server_heartbeat
-        # Serialise wire-touching RPCs. The dqlite server does not
-        # support concurrent requests on a single connection — two
-        # concurrent ``Call``s on the same protocol interleave their
-        # writes on the shared writer and their reads on the shared
-        # decoder, surfacing as a malformed-frame ``ProtocolError`` or
-        # codec poisoning several round-trips later with no breadcrumb
-        # pointing at the concurrency violation. Mirrors go-dqlite's
-        # ``Protocol.mu sync.Mutex`` at ``internal/protocol/protocol.go:15-30``
-        # ("We need to take a lock since the dqlite server currently
-        # does not support concurrent requests.").
-        #
-        # In-tree callers (``DqliteConnection.execute`` /
-        # ``query_sql`` / admin) hold ``_in_use`` one layer up which
-        # guards the same race; the protocol-layer lock closes the gap
-        # for third-party callers that import ``DqliteProtocol``
-        # directly and share an instance across tasks. ``_send`` /
-        # ``_read_*`` are called from inside locked methods so do not
-        # need their own acquisition.
-        #
-        # ``handshake`` / ``negotiate_protocol_only`` are connect-time
-        # methods called from a single coroutine before the protocol
-        # is published anywhere; they intentionally skip the lock.
+        # Serialise wire-touching RPCs: the dqlite server does not support
+        # concurrent requests on one connection (mirrors go-dqlite's
+        # Protocol.mu). In-tree callers hold ``_in_use`` one layer up; this
+        # closes the gap for third-party callers sharing an instance.
+        # ``_send`` / ``_read_*`` run inside locked methods; connect-time
+        # ``handshake`` / ``negotiate_protocol_only`` intentionally skip it.
         self._lock = asyncio.Lock()
 
     def __reduce__(self) -> NoReturn:
-        # Wraps a live ``asyncio.StreamReader`` / ``StreamWriter``
-        # (loop-bound), a ``MessageDecoder`` with internal buffer
-        # state, and per-stream cap counters that mean nothing
-        # post-deserialise. Surface a clear driver-level TypeError
-        # instead of leaking the underlying ``cannot pickle
-        # 'asyncio.streams.StreamReader'``.
+        # Wraps loop-bound streams + stateful decoder; raise a clear TypeError
+        # rather than leaking the underlying StreamReader pickle failure.
         raise TypeError(
             f"cannot pickle {type(self).__name__!r} object — wraps "
             f"loop-bound StreamReader / StreamWriter and a stateful "
@@ -387,183 +215,53 @@ class DqliteProtocol:
     def is_wire_coherent(self) -> bool:
         """True if the codec-layer decoder buffer has not been poisoned.
 
-        Reflects ONLY the wire-codec layer (``MessageDecoder.is_poisoned``).
-        A poisoned buffer (mid-stream wire desync, malformed frame, etc.)
-        cannot recover without ``reset()`` + reconnect; the pool-reset
-        path consults this before sending ROLLBACK so a wasted round-trip
-        on an already-doomed connection is short-circuited.
-
-        Does NOT reflect client-layer ``ProtocolError`` raises that
-        detect higher-level invariant violations on top of coherent
-        bytes: ``prepare`` db_id mismatch, ``_read_response``
-        extra-frame-after-FAILURE, ``_read_continuation`` unexpected
-        EmptyResponse, ``interrupt`` drain wrong-type / no-progress /
-        frame-cap, ``_drain_continuations`` max_total_rows /
-        max_continuation_frames / no-progress. In those cases the codec
-        decoded correctly but the connection still has unread frames
-        buffered or a continuation expected; the wire IS desynchronised
-        at the next-request boundary, but ``is_wire_coherent`` returns
-        ``True``.
-
-        This narrowness is intentional. ``is_wire_coherent`` is the
-        codec-poison hint only; client-layer protocol violations route
-        through ``DqliteConnection._run_protocol``'s
-        ``ProtocolError → _invalidate`` chain, which closes the writer
-        and clears ``self._protocol`` — the pool short-circuits on
-        ``protocol is None`` before consulting this accessor at all
-        (see ``pool.py::_socket_looks_dead``).
-
-        INTENTIONALLY consulted only by the pool reset path. The
-        dbapi, the SA dialect, and direct ``DqliteConnection``
-        callers route a wire desync through the exception-based
-        classifier chain instead: wire-layer ``ProtocolError`` is
-        wrapped to ``OperationalError(code=None)`` by
-        ``dqlitedbapi.cursor._call_client``, and the SA dialect's
-        ``is_disconnect`` substring branch matches the
-        ``"wire decode failed"`` prefix the client emits.
-
-        Wire coherence is a hint, not a liveness contract: a
-        ``CancelledError`` mid-flight could poison the buffer between
-        this read and the next operation, so a ``True`` return MUST
-        NOT be treated as "the connection is healthy". Use as a
-        short-circuit optimisation only; do not propagate this check
-        to ``do_ping`` / pre-checkout paths or to other operational
-        classifiers. Third-party harnesses that consume
-        ``DqliteProtocol`` directly should always invalidate on any
-        ``ProtocolError`` rather than reading this flag.
+        Reflects ONLY ``MessageDecoder.is_poisoned``, not client-layer
+        ProtocolError raises (db_id mismatch, extra frame, drain caps) that
+        leave coherent bytes but a desynchronised next-request boundary.
+        A hint, not a liveness contract — a CancelledError could poison the
+        buffer before the next op, so a True return is not "healthy". Used as
+        a short-circuit by the pool reset path only; other callers classify
+        wire desync through the ProtocolError exception chain.
         """
         return not self._decoder.is_poisoned
 
     async def negotiate_protocol_only(self) -> None:
-        """Probe-only handshake: write the protocol version bytes
-        WITHOUT a follow-up ``ClientRequest``.
+        """Probe-only handshake: write the version bytes with no ClientRequest.
 
-        The C server reads 8 bytes (the version) and validates them
-        BEFORE expecting the next message; no response is sent. The
-        server's request handlers (notably ``handle_leader``) do not
-        require ``g->client_id`` to be set, so a leader probe can skip
-        registration. ``cluster._query_leader`` uses this lighter path
-        so probes against non-leader peers don't allocate a per-client
-        server slot.
-
-        DO NOT use this for connections that issue real queries —
-        ``handle_open`` / ``handle_exec`` etc. depend on a registered
-        client in some code paths and on per-connection state set up
-        by ``handle_client``. Use :meth:`handshake` for those paths.
+        Leader probes can skip registration (``handle_leader`` needs no
+        client_id), avoiding a per-client server slot. DO NOT use for
+        connections issuing real queries — those need :meth:`handshake`.
         """
         await self._send(self._encoder.encode_handshake())
 
     async def handshake(self, client_id: int | None = None) -> int:
-        """Perform protocol handshake.
+        """Perform protocol handshake; return the server's heartbeat timeout.
 
-        If ``client_id`` is not provided, a random non-zero 63-bit id is
-        generated so each connection is distinguishable in server logs,
-        traces, and per-client metrics. Returns the heartbeat timeout
-        from the server.
-
-        Bundles the protocol-version exchange and the ``ClientRequest``
-        registration into a SINGLE writer-write so the kernel can pack
-        them into one TCP segment. Splitting into two writes would
-        double the syscall count and the per-segment overhead on the
-        connect hot path. The probe path (leader discovery) uses the
-        lighter :meth:`negotiate_protocol_only` instead.
+        Bundles the version exchange and ClientRequest into a single write so
+        the kernel packs them into one TCP segment on the connect hot path.
         """
         if client_id is None:
-            # Deliberate divergence from go-dqlite. Go declares
-            # ``Connector.clientID uint64`` (``connector.go:75-83``)
-            # default-zero and never assigns; every Go connection
-            # registers with ``id=0``. The server-side
-            # ``handle_client`` (``gateway.c:300-309``) stores
-            # ``g->client_id = request.id`` verbatim — used only
-            # for ``tracef`` records and per-connection
-            # ``handle_interrupt`` keying, neither of which requires
-            # a unique id per connection.
-            #
-            # Python randomises so each connection is distinguishable
-            # in server logs, traces, and per-client metrics — useful
-            # for operators tailing a busy server and filtering by
-            # connection id. 63 bits avoids sign-extension pitfalls
-            # if an intermediate layer treats the id as int64. The
-            # ``or 1`` guards against the astronomically unlikely
-            # all-zero draw — preserved deliberately so an
-            # operator's ``client_id != 0`` filter is reliable.
-            #
-            # Operational trade-offs:
-            #
-            # * Mixed-client clusters: an operator filtering server
-            #   logs by ``client_id`` sees Python connections with
-            #   random 63-bit ids while Go connections all show id 0;
-            #   the same filter cannot apply uniformly across both
-            #   client implementations.
-            # * No cross-reconnect correlation: a Python client that
-            #   loses connection and reconnects gets a FRESH random
-            #   id, so server-side per-client metrics see one
-            #   connection per attempt rather than one client with
-            #   several attempts. Go's id=0 doesn't solve this either,
-            #   but the current Python design forecloses a future
-            #   operator-supplied stable id without an API change.
-            # * ``secrets.randbits`` (CSPRNG-backed via
-            #   ``getrandom(2)`` on Linux) is the choice over the
-            #   faster ``random.getrandbits`` because the
-            #   ``random._inst`` PRNG state is process-global and
-            #   not fork-aware (see ``retry._retry_random`` and
-            #   ``cluster._cluster_random`` for the same reasoning
-            #   at sibling sites). The per-handshake cost is
-            #   sub-microsecond and negligible against handshake
-            #   RTT; the fork-safety property is the load-bearing
-            #   reason for this choice.
+            # Diverges from go-dqlite (always id=0). Randomise so each
+            # connection is distinguishable in server logs/metrics. 63 bits
+            # avoids int64 sign-extension; ``or 1`` keeps a ``client_id != 0``
+            # filter reliable. ``secrets`` (not ``random``) because the PRNG
+            # state is process-global and not fork-aware.
             client_id = secrets.randbits(63) or 1
-        # Send protocol version + client registration together
         request = ClientRequest(client_id=client_id)
-        # Record the negotiated id BEFORE the wire write so the
-        # ``FailureResponse`` arm below has the slot-allocation
-        # breadcrumb available. Upstream ``handle_client``
-        # (``gateway.c:300-309``) writes ``g->client_id =
-        # request.id`` BEFORE composing the response, so by the time
-        # any FailureResponse reaches us the server-side per-gateway
-        # slot has already been allocated. Reclamation happens at
-        # TCP close (the caller's ``_abort_protocol`` drives this
-        # via ``writer.close() + wait_closed``); surfacing the id in
-        # the exception message means an operator triaging a
-        # handshake failure can correlate the server-side trace
-        # without walking back to ``gateway.c``.
+        # Record the id before the write so the FailureResponse arm can report
+        # it: the server allocates its gateway slot (reclaimed on TCP close)
+        # before composing any response.
         self._client_id = client_id
         await self._send(self._encoder.encode_handshake() + self._encoder.encode(request))
 
-        # Read welcome response
         response = await self._read_response()
 
         if isinstance(response, FailureResponse):
-            # Mirror the query-path raise sites: surface the
-            # server-reported code and peer address so log aggregators
-            # can group on the numeric code (DQLITE_PARSE,
-            # DQLITE_NOTLEADER, etc.) rather than on text alone.
-            # ``_failure_text`` already pre-truncates the body before
-            # appending the addr suffix, bounding the result at
-            # ~240 chars; do NOT wrap it in an outer ``_truncate_error``,
-            # which would re-truncate over the addr suffix and silently
-            # strip the peer attribution exactly when the operator
-            # needs it most (a long handshake failure).
-            # Preserve the verbatim server text via ``raw_message`` —
-            # mirrors the 16 sibling FailureResponse-derived raise
-            # sites in this file. Without this, ``ProtocolError.raw_message``
-            # defaults to the synthetic "Handshake failed: ..."
-            # string, throwing away the verbatim peer text (capped at
-            # ``DqliteError._MAX_RAW_MESSAGE`` codepoints, default 4 KiB)
-            # that ``ProtocolError.raw_message`` is meant to carry for
-            # cross-process forensic recovery.
-            # Raise OperationalError (with the structured ``code``
-            # second positional) rather than ProtocolError so the
-            # server-supplied SQLite code is preserved as an
-            # attribute, not only interpolated into the message
-            # string. Mirrors the 16 sibling FailureResponse-derived
-            # raise sites; the prior ProtocolError site was the lone
-            # asymmetric path that forced downstream classifiers
-            # (``_connect_impl``'s leader-flip arm, dbapi's
-            # ``_CODE_TO_EXCEPTION``, SA's ``is_disconnect``) to
-            # fall back on substring matching. Semantically the
-            # handshake failure carries a server-supplied SQLite
-            # code — operational, not protocol-shape.
+            # OperationalError (not ProtocolError) so the server-supplied
+            # SQLite code is preserved as an attribute for downstream
+            # classifiers. ``raw_message`` keeps the verbatim peer text;
+            # ``_failure_text`` pre-truncates so do NOT re-wrap in
+            # ``_truncate_error`` (it would strip the addr suffix).
             raise OperationalError(
                 f"Handshake failed (server-side client slot may be allocated "
                 f"as id={client_id}; reclaimed on TCP close): "
@@ -578,34 +276,18 @@ class DqliteProtocol:
             )
 
         self._heartbeat_timeout = response.heartbeat_timeout
-        # Surface the three diagnostic edge cases the wire layer accepts
-        # but cannot remediate from the client side. Each is non-fatal
-        # (the protocol stays operational) but the operator chasing a
-        # mis-configured-peer / non-conforming-server symptom needs
-        # the breadcrumb to correlate against per-cluster config audits.
         if response.heartbeat_timeout == 0:
-            # Wire-layer ``WelcomeResponse.heartbeat_timeout`` docstring
-            # flags 0 as semantically ambiguous: upstream ``config.c``
-            # defaults to 15000 and never emits 0, so 0 from the wire is
-            # either a misconfigured peer or a non-conforming server.
+            # config.c defaults to 15000 and never emits 0, so 0 means a
+            # misconfigured peer or non-conforming server.
             logger.debug(
                 "handshake: server advertised heartbeat=0 (semantically "
                 "ambiguous per wire spec; widening disabled)"
             )
-        # Use the server-advertised heartbeat only when explicitly
-        # trusted. Previously we always widened ``self._timeout`` up
-        # to 300 s based on the server value, which let a hostile
-        # server amplify the operator's configured timeout up to 30×.
-        # Default is opt-in (``trust_server_heartbeat=False``): the
-        # per-read-deadline widening is DISABLED unless the caller
-        # explicitly enables it. The server-advertised value is still
-        # read here for diagnostics but has no effect on the deadline.
+        # Widen only when explicitly trusted; otherwise a hostile server could
+        # amplify the configured timeout up to 30x.
         if self._trust_server_heartbeat and response.heartbeat_timeout > 0:
             heartbeat_seconds = response.heartbeat_timeout / 1000.0
             if heartbeat_seconds > _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS:
-                # Cap firing: surface at WARNING so an operator can
-                # tell that the server-advertised value was over-large
-                # and was clipped at the client cap.
                 logger.warning(
                     "handshake: server-advertised heartbeat %.2fs exceeds "
                     "client cap %.2fs; clipping",
@@ -613,16 +295,9 @@ class DqliteProtocol:
                     _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS,
                 )
                 heartbeat_seconds = _HEARTBEAT_READ_TIMEOUT_CAP_SECONDS
-            # Cap to prevent a malicious/buggy server from disabling timeouts.
-            # Only widen the READ deadline — the write-path self._timeout
-            # stays pinned to the operator-configured value so a hostile
-            # server cannot advertise a long heartbeat to stretch every
-            # writer.drain() beyond the operator's SLO.
+            # Widen only the READ deadline; write-path self._timeout stays pinned.
             new_read_timeout = max(self._read_timeout, heartbeat_seconds)
             if new_read_timeout != self._read_timeout:
-                # Security-relevant opt-in: surface the actual widening
-                # at DEBUG so an operator who flipped the knob can
-                # confirm it took effect.
                 logger.debug(
                     "handshake: widened per-read timeout %.2fs -> %.2fs (server heartbeat=%.2fs)",
                     self._read_timeout,
@@ -631,12 +306,8 @@ class DqliteProtocol:
                 )
                 self._read_timeout = new_read_timeout
             else:
-                # No-op widening: the server's value was smaller than
-                # the operator's configured deadline. The operator
-                # opted into ``trust_server_heartbeat`` expecting
-                # widening; surface the mismatch so they can
-                # recalibrate either the server config or the client
-                # read deadline.
+                # Server value <= configured deadline: opted-in but no widening
+                # applied. Surface so the operator can recalibrate.
                 logger.debug(
                     "handshake: trust_server_heartbeat=True but server "
                     "advertised %.2fs <= configured read timeout %.2fs; "
@@ -647,24 +318,11 @@ class DqliteProtocol:
         return response.heartbeat_timeout
 
     async def get_leader(self) -> tuple[int, str]:
-        """Request leader information.
+        """Request leader information; return ``(node_id, address)``.
 
-        Returns ``(node_id, address)``. The ``(0, "")`` "no leader
-        known" shape is passed through verbatim — callers normalise it
-        upstream — but the malformed ``(0, nonempty)`` shape is
-        rejected here as a ``ProtocolError``: upstream
-        ``raft_leader`` pairs id and address (both filled, or both
-        zero/NULL) so ``(0, addr)`` is either a confused or hostile
-        peer. Guarding at the wire layer is symmetric with sibling
-        RPC defences (e.g. ``prepare``'s ``db_id`` mismatch) and
-        means third-party callers of ``DqliteProtocol`` get the same
-        defence as the cluster-layer wrappers.
-
-        The mirror shape ``(N, "")`` is NOT raised here. The cluster
-        wrappers want to log the ``RAFT_NOMEM`` transient with the
-        per-address context that the protocol layer lacks before
-        normalising to "no leader known"; moving the raise up would
-        lose that breadcrumb.
+        ``(0, "")`` ("no leader known") passes through; ``(0, nonempty)`` is
+        rejected as ProtocolError (raft_leader pairs id+address). ``(N, "")``
+        is left for the cluster wrappers to log with per-address context.
         """
         async with self._lock:
             request = LeaderRequest()
@@ -683,12 +341,7 @@ class DqliteProtocol:
                 )
 
             if response.node_id == 0 and response.address:
-                # ``raft_leader`` never emits ``node_id=0`` paired
-                # with a non-empty address; a peer returning this is
-                # either confused or hostile. Reject at the wire
-                # layer so any consumer of LEADER replies — including
-                # third-party callers wiring ``DqliteProtocol``
-                # directly into custom probes — gets the defence.
+                # raft_leader never pairs node_id=0 with an address; reject.
                 raise ProtocolError(
                     f"server returned address "
                     f"{_sanitize_display_text(response.address)!r} "
@@ -699,17 +352,10 @@ class DqliteProtocol:
             return response.node_id, response.address
 
     async def cluster(self) -> list[NodeInfo]:
-        """Request the cluster's node list.
+        """Request the cluster's node list (V1: id + address + role).
 
-        Sends ``ClusterRequest(format=1)`` and returns the V1 node
-        list (id + address + role) the server replies with via
-        :class:`ServersResponse`. Format 0 (V0, no role field) is
-        rejected client-side by ``ClusterRequest.__post_init__``;
-        callers needing the V0 shape would have to bypass this layer.
-
-        Mirrors the spec-level admin operation ``go-dqlite/client.Cluster``.
-        Any node can answer this — the cluster view is replicated —
-        but the typical caller asks the leader for the freshest view.
+        Any node can answer (the view is replicated), but the freshest view
+        comes from the leader.
         """
         async with self._lock:
             request = ClusterRequest(format=1)
@@ -730,15 +376,9 @@ class DqliteProtocol:
             return response.nodes
 
     async def add(self, node_id: int, address: str) -> None:
-        """Add a node to the cluster (Raft membership change).
+        """Add a node to the cluster (Raft membership change). Must hit the leader.
 
-        Sends ``AddRequest(node_id, address)`` and expects
-        :class:`EmptyResponse`. The peer MUST be the current leader;
-        a follower returns ``SQLITE_IOERR_NOT_LEADER``-style codes.
-
-        Mirrors go-dqlite's ``client.go::EncodeAdd`` half of
-        ``Client.Add``. Per upstream semantics, ADD lands the node as
-        ``NodeRole.SPARE``; promote with :meth:`assign` after.
+        Lands the node as ``NodeRole.SPARE``; promote with :meth:`assign` after.
         """
         async with self._lock:
             request = AddRequest(node_id=node_id, address=address)
@@ -757,15 +397,7 @@ class DqliteProtocol:
                 )
 
     async def assign(self, node_id: int, role: NodeRole) -> None:
-        """Assign (or change) a node's role.
-
-        Sends ``AssignRequest(node_id, role)`` (modern 16-byte body;
-        the legacy 8-byte PROMOTE shape is encoder-rejected per the
-        wire-layer documentation). Expects :class:`EmptyResponse`.
-        Must be sent to the leader.
-
-        Mirrors go-dqlite's ``client.go::EncodeAssign``.
-        """
+        """Assign (or change) a node's role. Must be sent to the leader."""
         async with self._lock:
             request = AssignRequest(node_id=node_id, role=role)
             await self._send_request(request)
@@ -783,14 +415,9 @@ class DqliteProtocol:
                 )
 
     async def remove(self, node_id: int) -> None:
-        """Remove a node from the cluster (Raft membership change).
+        """Remove a node from the cluster. Must be sent to the leader.
 
-        Sends ``RemoveRequest(node_id)`` and expects
-        :class:`EmptyResponse`. Must be sent to the leader. Removing
-        the current leader requires a prior :meth:`transfer` to a
-        different voter — the server otherwise rejects.
-
-        Mirrors go-dqlite's ``client.go::EncodeRemove``.
+        Removing the current leader requires a prior :meth:`transfer`.
         """
         async with self._lock:
             request = RemoveRequest(node_id=node_id)
@@ -809,17 +436,10 @@ class DqliteProtocol:
                 )
 
     async def describe(self) -> MetadataResponse:
-        """Describe the connected node's metadata.
+        """Describe the connected node's metadata (failure_domain + weight).
 
-        Sends ``DescribeRequest(format=0)`` (the only format the
-        upstream gateway accepts) and returns the
-        :class:`MetadataResponse` carrying ``failure_domain`` and
-        ``weight``. The response describes the **connected node**,
-        not the cluster — to sweep, the higher-level
-        :meth:`ClusterClient.describe` accepts an explicit
-        ``address``.
-
-        Mirrors go-dqlite's ``client.go::EncodeDescribe``.
+        Describes the connected node, not the cluster; sweep via
+        :meth:`ClusterClient.describe`.
         """
         async with self._lock:
             request = DescribeRequest(format=0)
@@ -840,16 +460,10 @@ class DqliteProtocol:
             return response
 
     async def weight(self, weight: int) -> None:
-        """Set the connected node's weight.
+        """Set the connected node's weight (leader-election preference).
 
-        Sends ``WeightRequest(weight)`` and expects
-        :class:`EmptyResponse`. Weight tunes leader-election
-        preference within a failure domain. Affects only the
-        **connected node** — to sweep, the higher-level
-        :meth:`ClusterClient.set_weight` accepts an explicit
-        ``address``.
-
-        Mirrors go-dqlite's ``client.go::EncodeWeight``.
+        Affects only the connected node; sweep via
+        :meth:`ClusterClient.set_weight`.
         """
         async with self._lock:
             request = WeightRequest(weight=weight)
@@ -868,31 +482,10 @@ class DqliteProtocol:
                 )
 
     async def dump(self, database: str) -> dict[str, bytes]:
-        """Dump a database to ``{filename: bytes}``.
+        """Dump a database to ``{filename: bytes}`` (DB file + WAL sidecar).
 
-        Sends ``DumpRequest(database)`` and returns the
-        :class:`FilesResponse`'s ``files`` dict (typically two
-        entries: the database file and its WAL sidecar). The
-        wire-layer enforces caps on file count + per-file size +
-        8-byte content alignment so a hostile peer cannot exhaust
-        client memory.
-
-        Mirrors go-dqlite's ``client.go::EncodeDump``.
-
-        The :class:`FilesResponse` decode runs on a worker thread
-        via ``asyncio.to_thread`` because the per-file
-        ``bytes(view[offset:offset+size])`` materialise is
-        multi-MiB by design (the database file + WAL sidecar
-        commonly total tens of MiB). Mirrors the in-tree
-        ``YamlNodeStore.set_nodes`` discipline — admin-class
-        operations whose payload is multi-MiB by design always
-        offload unconditionally rather than threshold-gating.
-        The wire-receive + hostile-server trailing-frame check
-        stay on the loop thread (see :meth:`_read_message_bytes`).
-        See the ``_DECODE_OFFLOAD_THRESHOLD`` comment for the
-        bounded cancel-orphan worst case shared by every decode
-        offload site (the orphan lands on an abandoned decoder
-        after ``_invalidate`` — no correctness defect).
+        The decode runs unconditionally on a worker thread (the payload is
+        multi-MiB by design); the trailing-frame check stays on the loop.
         """
         async with self._lock:
             request = DumpRequest(name=database)
@@ -919,23 +512,10 @@ class DqliteProtocol:
             return response.files
 
     async def transfer(self, target_node_id: int) -> None:
-        """Request leadership transfer to ``target_node_id``.
+        """Request leadership transfer to ``target_node_id``. Must hit the leader.
 
-        Sends ``TransferRequest(target_node_id)`` and expects an
-        :class:`EmptyResponse` on success. The peer connected to MUST
-        be the current leader; sending Transfer to a follower returns
-        ``SQLITE_IOERR_NOT_LEADER`` (or equivalent), which surfaces
-        here as :class:`OperationalError` so the higher-level
-        ``ClusterClient.transfer_leadership`` can rediscover the
-        leader and retry against it.
-
-        On success, Raft begins promoting ``target_node_id`` to
-        leader; the call returns once the server has accepted the
-        transfer request. Election convergence (the new leader being
-        able to accept writes) is observable via a subsequent
-        :meth:`get_leader` call.
-
-        Mirrors the spec-level admin operation ``go-dqlite/client.Transfer``.
+        Returns once the server accepts the request; election convergence is
+        observable via a subsequent :meth:`get_leader`.
         """
         async with self._lock:
             request = TransferRequest(target_node_id=target_node_id)
@@ -954,23 +534,10 @@ class DqliteProtocol:
                 )
 
     async def open_database(self, name: str, flags: int = 0, vfs: str = "") -> int:
-        """Open a database.
+        """Open a database; return its id.
 
-        Returns the database ID. Upstream contractually assigns ``0``
-        to the first (and only) database opened on a fresh connection
-        — ``gateway.c::handle_open`` writes ``response.id = 0`` and
-        the next OPEN on the same connection is refused with
-        ``SQLITE_BUSY`` (``gateway.c:319-324``). A wire response that
-        echoes any other id is either a buggy / misconfigured server
-        or a hostile peer; reject defensively rather than threading
-        the bad id through every subsequent RPC and surfacing the
-        symptom one round-trip later via ``prepare``'s ``db_id``
-        mismatch guard. Mirrors that guard's discipline.
-
-        Uses ``WIRE_DECODE_FAILED_PREFIX`` so SA's ``is_disconnect``
-        triggers pool invalidation downstream — the connection's
-        view of the database id is irrecoverable on this RPC, so the
-        pool must drop the slot.
+        Upstream always assigns 0 to the first DB on a fresh connection, so any
+        other id means a buggy/hostile peer and is rejected defensively.
         """
         async with self._lock:
             request = OpenRequest(name=name, flags=flags, vfs=vfs)
@@ -989,6 +556,7 @@ class DqliteProtocol:
                 )
 
             if response.db_id != 0:
+                # WIRE_DECODE_FAILED_PREFIX so SA's is_disconnect drops the slot.
                 raise ProtocolError(
                     f"{WIRE_DECODE_FAILED_PREFIX}: OPEN returned db_id={response.db_id}, "
                     f"expected 0 (upstream contract: first DB on a fresh connection "
@@ -1018,23 +586,11 @@ class DqliteProtocol:
                     f"Expected StmtResponse, got {type(response).__name__}{self._addr_suffix()}"
                 )
 
-            # Defense-in-depth: confirm the server's StmtResponse echoes
-            # the db_id we asked it to prepare against. A mismatch would
-            # mean the server's prepared-statement registry has drifted
-            # from the client's view, and any future exec/finalize
-            # against the returned stmt_id would target a different
-            # database. Surface this as a ProtocolError so the
-            # connection is invalidated rather than silently routing
-            # writes against the wrong DB.
+            # Confirm the echoed db_id matches; a mismatch means the server's
+            # statement registry drifted, so invalidate rather than route
+            # writes at the wrong DB. WIRE_DECODE_FAILED_PREFIX so SA's
+            # is_disconnect drops the slot.
             if response.db_id != db_id:
-                # Prefix with the canonical ``WIRE_DECODE_FAILED_PREFIX``
-                # phrase so SA's ``is_disconnect`` substring matcher routes
-                # this through the pool-invalidate path. Without the
-                # prefix, the registry-drift event would surface as a
-                # non-disconnect ProtocolError and the SA pool would keep
-                # the broken slot. The prefix matches the wire-decode
-                # invalidation wired into
-                # ``sqlalchemy-dqlite._dqlite_disconnect_messages``.
                 raise ProtocolError(
                     f"{WIRE_DECODE_FAILED_PREFIX}: StmtResponse db_id {response.db_id} "
                     f"does not match requested db_id {db_id}{self._addr_suffix()}"
@@ -1061,90 +617,26 @@ class DqliteProtocol:
                 )
 
     async def _interrupt(self, db_id: int) -> None:
-        """Ask the server to stop producing further rows for this db_id.
+        """Ask the server to stop producing rows for this db_id.
 
-        Drains the stream by consuming messages until an
-        ``EmptyResponse`` arrives. The server may have continuation
-        ``RowsResponse`` frames in flight at the moment we call this;
-        the drain loop swallows them and returns when the final
-        ``EmptyResponse`` acknowledges the interrupt.
-
-        ``FailureResponse`` mid-drain is raised as
-        ``OperationalError`` — the interrupt itself may have been
-        refused. Other unexpected message types are ``ProtocolError``.
-
-        .. note::
-
-            **Currently unused by in-tree code paths.** On
-            ``asyncio.CancelledError`` mid-query, ``DqliteConnection``
-            invalidates the local connection but does NOT send
-            INTERRUPT — the server continues the query until its own
-            completion path, which on large result sets can amplify
-            cluster resource use. This mirrors the Go / C clients'
-            ``Rows.Close`` / ``clientSendInterrupt`` paths in wire
-            shape only; wiring them into cursor-cancel / task-cancel
-            is a future-streaming-support feature that is deliberately
-            out of scope for the current synchronous-drain client.
-
-        .. note::
-
-            ``interrupt`` is serialised behind the protocol-layer
-            ``self._lock`` together with all other wire-touching RPCs.
-            An ``interrupt`` issued while another task holds the lock
-            (e.g. is in the middle of ``query_sql``) queues until that
-            RPC completes, which is the correct ordering — the
-            in-flight read drains its own response before
-            ``interrupt`` writes its INTERRUPT frame. Callers no
-            longer need to cancel-and-await the in-flight task
-            manually before invoking ``interrupt``; the lock enforces
-            the ordering automatically. (For abortive cancellation
-            mid-RPC, ``DqliteConnection._invalidate`` is the
-            higher-level escape hatch: it tears down the protocol
-            without waiting for in-flight reads.)
+        Drains in-flight frames until the EmptyResponse ack arrives;
+        FailureResponse mid-drain raises OperationalError. Currently unused
+        in-tree (CancelledError invalidates the connection instead).
         """
         async with self._lock:
             request = InterruptRequest(db_id=db_id)
             await self._send_request(request)
 
-            # Drain: swallow any trailing continuation frames, break when
-            # EmptyResponse arrives. Bound by the single operation deadline
-            # so a non-responsive server cannot stall this forever, and by
-            # the max_continuation_frames cap so a slow-dripping server
-            # cannot pin the client on per-frame decode work inside that
-            # deadline window (same rationale as _drain_continuations).
-            #
-            # Loop-till-EmptyResponse mirrors Go's ``Protocol.Interrupt``
-            # (``/tmp/go-dqlite/internal/protocol/protocol.go:103-113``).
-            # The gateway dispatches INTERRUPT one of two ways
-            # (``dqlite-upstream/src/gateway.c:1366-1390``):
-            #
-            # 1. If a request is still in flight (``g->req != NULL``) when
-            #    the INTERRUPT lands, the dispatcher calls ``interrupt(g)``
-            #    (sets ``cancellation_requested`` / aborts ``leader_exec``)
-            #    and the in-flight RPC's done-callback emits the response
-            #    — RESULT or FAILURE for EXEC, EMPTY for cancelled QUERY,
-            #    plus any in-flight ROWS continuation frames already queued.
-            #    No separate EMPTY for the INTERRUPT itself in this path.
-            # 2. If the in-flight RPC's done-callback has ALREADY fired
-            #    (``g->req = NULL`` per ``gateway.c:536`` for EXEC,
-            #    ``:780`` for QUERY) before the INTERRUPT is dispatched,
-            #    the dispatcher falls through to ``handle_interrupt``
-            #    (``gateway.c:952-960``) which DOES emit a separate EMPTY
-            #    for the INTERRUPT ack. Wire then carries
-            #    ``[RESULT-or-ROWS-stream, EMPTY]`` — the prior RPC's
-            #    response followed by the INTERRUPT's own EMPTY.
-            #
-            # Treating RESULT as the terminal would consume case (2)'s
-            # prior-RPC frame and leave the trailing EMPTY in the decoder
-            # buffer, poisoning the next RPC on the connection. Drain
-            # through RESULT (and ROWS) and only exit on EMPTY — same
-            # discipline as Go.
+            # Drain trailing frames until EMPTY, bounded by the operation
+            # deadline and max_continuation_frames. Depending on timing the
+            # gateway either replaces or appends a separate EMPTY ack, so the
+            # wire may carry [RESULT-or-ROWS-stream, EMPTY]; treating RESULT as
+            # terminal would leave the trailing EMPTY buffered and poison the
+            # next RPC. Exit only on EMPTY (mirrors Go's Protocol.Interrupt).
             deadline = self._operation_deadline()
             frames = 0
             while True:
-                # Cap is checked BEFORE the read so the documented bound
-                # ``N`` allows AT MOST ``N`` non-EMPTY frames (a check
-                # after the read would fire AFTER reading the (N+1)-th).
+                # Check before the read so the cap N allows at most N frames.
                 if (
                     self._max_continuation_frames is not None
                     and frames >= self._max_continuation_frames
@@ -1158,35 +650,19 @@ class DqliteProtocol:
                 if isinstance(response, EmptyResponse):
                     return
                 if isinstance(response, FailureResponse):
-                    # FAILURE is terminal: the C server replaces the EMPTY
-                    # ack with FAILURE on the interrupt-during-EXEC abort
-                    # path (``handle_exec_done_cb`` calls ``exec_failure``
-                    # at ``gateway.c:542-544`` when ``raft_status != 0``).
-                    # There is no FAILURE-then-EMPTY pair because the
-                    # failure callback nulls ``g->req`` before the
-                    # dispatcher could read the next request.
+                    # FAILURE is terminal: it replaces the EMPTY ack on the
+                    # interrupt-during-EXEC abort path (no FAILURE-then-EMPTY).
                     raise OperationalError(
                         self._failure_text(response), response.code, raw_message=response.message
                     )
-                # ROWS and RESULT are drain-through frames in the
-                # interrupt context. ROWS is the in-flight QUERY's
-                # continuation stream; RESULT is the in-flight EXEC's
-                # terminal — either way, the EMPTY for the INTERRUPT ack
-                # is the next frame and we keep reading. Other message
-                # types indicate stream desync.
+                # ROWS / RESULT are drain-through; the EMPTY ack follows.
+                # Any other type means stream desync.
                 if not isinstance(response, (RowsResponse, ResultResponse)):
                     raise ProtocolError(
                         f"Expected EmptyResponse after Interrupt, got "
                         f"{type(response).__name__}{self._addr_suffix()}"
                     )
-                # No-progress check is RowsResponse-specific: a server
-                # emitting empty rows frames with has_more=True before
-                # EmptyResponse would consume up to
-                # ``max_continuation_frames`` iterations of decode work,
-                # mirroring the slow-frame DoS shape the query path
-                # already defends against. ResultResponse has no
-                # ``has_more`` field — RESULT is a single frame per
-                # in-flight RPC and the cap below counts it.
+                # Guard the slow-frame DoS shape (RowsResponse-specific).
                 if isinstance(response, RowsResponse) and not response.rows and response.has_more:
                     raise ProtocolError(
                         f"ROWS continuation made no progress during INTERRUPT "
@@ -1194,25 +670,16 @@ class DqliteProtocol:
                         f"{self._addr_suffix()}"
                     )
                 frames += 1
-                # Cooperative loop yield. ``await self._read_response(...)``
-                # above does NOT yield to the loop scheduler when frames
-                # are already buffered in the StreamReader. Without an
-                # explicit yield, an INTERRUPT against a pre-buffered
-                # ROWS / RESULT stream monopolises the loop for the
-                # full drain — same prefetched-frame hazard as
-                # ``_drain_continuations``.
+                # Yield: _read_response does not when frames are pre-buffered.
                 await asyncio.sleep(0)
-                # Fall through: keep reading until EmptyResponse arrives.
 
     async def exec_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
     ) -> tuple[int, int]:
-        """Execute SQL directly.
+        """Execute SQL directly; return (last_insert_id, rows_affected).
 
-        Returns (last_insert_id, rows_affected). For multi-statement SQL
-        (semicolon-separated), the server aggregates internally and returns
-        a single RESULT with sqlite3_changes() of the last statement only —
-        rows_affected is NOT a sum across statements.
+        For multi-statement SQL, rows_affected is the last statement's count,
+        NOT a sum across statements.
         """
         async with self._lock:
             request = ExecSqlRequest(
@@ -1237,11 +704,7 @@ class DqliteProtocol:
     async def _send_query(
         self, db_id: int, sql: str, params: Sequence[Any] | None
     ) -> tuple["RowsResponse", float]:
-        """Send a QUERY_SQL request and return the first RowsResponse + deadline.
-
-        Raises OperationalError for server FailureResponse and ProtocolError
-        for any other unexpected message type.
-        """
+        """Send a QUERY_SQL request and return the first RowsResponse + deadline."""
         request = QuerySqlRequest(db_id=db_id, sql=sql, params=params if params is not None else [])
         await self._send_request(request)
 
@@ -1260,61 +723,27 @@ class DqliteProtocol:
     async def _drain_continuations(
         self, initial: "RowsResponse", deadline: float
     ) -> tuple[list[list[Any]], list[list[int]]]:
-        """Drain all continuation frames, enforcing the progress + total-row caps.
+        """Drain all continuation frames, enforcing progress + total-row caps.
 
-        Returns ``(rows, row_types)`` — a flat list of all row values
-        (initial frame first) and a parallel list of per-row wire
-        ``ValueType`` tags. SQLite is dynamically typed, so row types
-        can vary per row; callers that apply result-side converters
-        need the per-row list rather than a collapsed first-row view.
-
-        A continuation claiming more rows with zero delivered, or a
-        cumulative row count exceeding ``max_total_rows``, raises
-        ProtocolError.
+        Returns ``(rows, row_types)`` with one type list per row (SQLite is
+        dynamically typed, so a column's type can vary across rows).
         """
-        # Fire the cumulative-total cap against the initial frame first.
-        # A hostile or buggy server can pack the whole oversized result
-        # into a single frame with has_more=False and never enter the
-        # continuation loop; without this pre-check the governor would
-        # only apply to the continuation tail.
+        # Check the cap against the initial frame too: a server can pack the
+        # whole oversized result into one has_more=False frame.
         if self._max_total_rows is not None and len(initial.rows) > self._max_total_rows:
             raise ProtocolError(
                 f"Query exceeded max_total_rows cap ({self._max_total_rows}); "
                 f"reduce result size or raise the cap on the connection/pool."
             )
-        # Ownership transfer: the wire layer constructs each
-        # ``RowsResponse`` fresh per decode
-        # (``RowsResponse._from_decoded`` builds a new instance with
-        # fresh inner lists) and ``_drain_continuations`` discards
-        # the instance inside its own scope — nothing else holds a
-        # reference, so aliasing the inner lists into the cumulative
-        # accumulator is safe. Skips a per-row ``list(rt)``
-        # allocation that previously ran on the loop thread between
-        # the wire decode and the next ``await asyncio.sleep(0)`` —
-        # for a 10k-row × 32-col continuation frame the prior shape
-        # allocated 10k fresh lists with 32-element memcpys
-        # (~5-10 ms of loop-thread allocator churn per frame).
-        # ``ValueType`` is an ``IntEnum`` (subclass of ``int``); the
-        # wire layer types ``row_types`` as ``list[list[ValueType]]``
-        # while this method's return contract names ``list[list[int]]``.
-        # The runtime values satisfy both annotations because IntEnum
-        # members ARE ints. ``cast`` reflects the same widening that
-        # the prior per-row ``list(rt)`` comprehension implicitly
-        # performed.
+        # Alias the wire layer's fresh per-decode inner lists straight into the
+        # accumulator (nothing else holds a reference), skipping a per-row copy.
+        # ``cast`` widens ValueType (an IntEnum) to int per the return contract.
         all_rows: list[list[Any]] = list(initial.rows)
         all_row_types: list[list[int]] = cast("list[list[int]]", list(initial.row_types))
         response = initial
         frames = 1  # the initial frame counts
         while response.has_more:
-            # Per-frame cap complements max_total_rows: a
-            # slow-drip server sending 1-row-per-frame would
-            # otherwise pin a client CPU with O(n) iterations of
-            # decode work, where n is max_total_rows. Check BEFORE
-            # the read so the documented cap ``N`` allows AT MOST
-            # ``N`` decoded frames (initial + continuations counted
-            # uniformly); a check after the read fires AFTER reading
-            # the (N+1)-th frame even when ``has_more=False`` would
-            # have ended the loop on the next iteration anyway.
+            # Check before the read so the cap N allows at most N frames.
             if (
                 self._max_continuation_frames is not None
                 and frames >= self._max_continuation_frames
@@ -1337,44 +766,22 @@ class DqliteProtocol:
                     f"Query exceeded max_total_rows cap ({self._max_total_rows}); "
                     f"reduce result size or raise the cap on the connection/pool."
                 )
-            # Ownership transfer (see entry-scope comment): the
-            # continuation ``RowsResponse`` instance is also fresh
-            # per decode and discarded inside this scope. ``ValueType``
-            # is ``IntEnum`` so the widening to ``list[int]`` is
-            # runtime-safe; the cast mirrors the entry-scope assignment.
             all_rows.extend(next_response.rows)
             all_row_types.extend(cast("list[list[int]]", next_response.row_types))
             response = next_response
-            # Cooperative loop yield. ``await self._read_continuation``
-            # above does NOT yield to the loop scheduler when the next
-            # frame is already buffered in the StreamReader — asyncio's
-            # ``read*`` returns synchronously on that fast path. Without
-            # this explicit yield, a fast-burst server that prefetches
-            # many small frames pins the loop for the entire drain,
-            # starving sibling coroutines (heartbeat probes, pool
-            # acquirers, SA do_ping keepalives). The per-iteration
-            # ``sleep(0)`` cost is sub-microsecond and dominated by the
-            # per-frame decode work upstream.
+            # Yield: _read_continuation does not when frames are pre-buffered,
+            # so a fast-burst server would otherwise pin the loop for the drain.
             await asyncio.sleep(0)
         return all_rows, all_row_types
 
     async def query_sql_typed(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
     ) -> tuple[list[str], list[int], list[list[int]], list[list[Any]]]:
-        """Execute a query and return (column_names, column_types, row_types, rows).
+        """Execute a query; return (column_names, column_types, row_types, rows).
 
-        ``column_types`` are the wire-level ``ValueType`` integer tags
-        from the first response frame — what DBAPI cursor.description
-        maps into ``type_code``. ``row_types`` carries one list per
-        row so callers can apply result-side converters per-row (SQLite
-        is dynamically typed; two rows in the same column can carry
-        different wire types under UNION, ``CASE``, ``COALESCE``, or
-        ``typeof()``).
-
-        Atomicity: a mid-stream server failure or an unexpected message
-        type raises before any rows are returned to the caller; the
-        local row list is discarded. The connection is invalidated so
-        callers don't accidentally reuse it with torn protocol state.
+        ``column_types`` are first-frame wire ValueType tags; ``row_types`` has
+        one list per row (SQLite is dynamically typed). A mid-stream failure
+        raises before any rows are returned.
         """
         async with self._lock:
             response, deadline = await self._send_query(db_id, sql, params)
@@ -1386,13 +793,10 @@ class DqliteProtocol:
     async def query_sql(
         self, db_id: int, sql: str, params: Sequence[Any] | None = None
     ) -> tuple[list[str], list[list[Any]]]:
-        """Execute a query directly.
+        """Execute a query directly; return (column_names, rows).
 
-        Returns (column_names, rows). Multi-statement SELECT is rejected
-        by the server with OperationalError(message, code=SQLITE_ERROR) where message is "nonempty
-        statement tail") — there are no additional result sets to drain.
-        Use :meth:`query_sql_typed` to also get per-column ``ValueType``
-        tags.
+        Multi-statement SELECT is rejected server-side (no extra result sets
+        to drain). Use :meth:`query_sql_typed` for per-column ValueType tags.
         """
         async with self._lock:
             response, deadline = await self._send_query(db_id, sql, params)
@@ -1407,26 +811,11 @@ class DqliteProtocol:
         *,
         allow_trailing: bool = False,
     ) -> bytes:
-        """Read the next complete frame as raw bytes WITHOUT
-        type-dispatched decode.
+        """Read the next complete frame as raw bytes, without decoding.
 
-        Used by the dump path so the multi-MiB
-        ``FilesResponse.decode_body`` per-file memcpy chain can run
-        off-loop via ``asyncio.to_thread``. The wire-receive half
-        stays on the loop thread; only the bytes-to-message
-        materialise hops off. Also used by :meth:`_read_response`
-        to threshold-gate the response decode.
-
-        Preserves the hostile-server trailing-frames hardening from
-        the prior in-line shape: every dqlite response other than
-        ``RowsResponse`` is terminal per the wire spec, so a
-        trailing buffered frame after a non-Rows response is a
-        protocol violation. The check fires on the loop thread
-        BEFORE the off-loop decode begins so the hostile-server
-        vector (a peer coalescing a fake follow-on frame) is
-        rejected pre-offload. ``allow_trailing=True`` opts out
-        (the INTERRUPT-drain caller deliberately expects two
-        frames in sequence).
+        Lets the dump path materialise off-loop. The trailing-frame check fires
+        on the loop thread before any offload; ``allow_trailing`` opts out
+        (the INTERRUPT drain expects two frames in sequence).
         """
         from dqlitewire.constants import ResponseType
 
@@ -1442,12 +831,8 @@ class DqliteProtocol:
             raise ProtocolError(f"{WIRE_DECODE_FAILED_PREFIX}{self._addr_suffix()}: {e}") from e
         if frame_bytes is None:  # pragma: no cover
             raise ProtocolError(f"Failed to read message bytes{self._addr_suffix()}")
-        # ``msg_type`` lives at byte offset 4 of the header per the
-        # 5-byte layout (size_words[0:4] + msg_type[4] +
-        # schema_version[5]). ROWS is the only response type with
-        # legitimate trailing-frame semantics; everything else is
-        # terminal. Mirrors the prior ``_read_response`` post-decode
-        # hostile-server check at the same call surface.
+        # msg_type lives at header offset 4. ROWS is the only type with
+        # legitimate trailing frames; everything else is terminal.
         msg_type = frame_bytes[4]
         if not allow_trailing and msg_type != ResponseType.ROWS and self._decoder.has_message():
             raise ProtocolError(
@@ -1460,39 +845,11 @@ class DqliteProtocol:
     async def _send_request(self, request: Message) -> None:
         """Encode ``request`` and send via :meth:`_send`.
 
-        Threshold-gates the encode: when the projected encoded body
-        size meets or exceeds ``_ENCODE_OFFLOAD_THRESHOLD`` the
-        encode runs on a worker thread via ``asyncio.to_thread`` so
-        a multi-MiB payload does not freeze the event loop during
-        the encode memcpy chain. The projection
-        (``_estimate_request_body_size``) covers both a large BLOB /
-        TEXT ``param`` (``encode_blob`` / ``encode_params_tuple``)
-        and a large ``sql`` text field (``encode_text`` — the shape
-        an inline-literal ``PrepareRequest`` / ``ExecSqlRequest`` /
-        ``QuerySqlRequest`` produces). Smaller requests stay in-loop
-        to avoid the ~50 µs thread-hop cost on the hot path.
-
-        Mirrors the in-tree ``YamlNodeStore.set_nodes``
-        ``asyncio.to_thread`` discipline. Used by every
-        single-request call site in this module EXCEPT the two
-        handshake sites (which prepend raw version bytes and
-        bundle a tiny ``ClientRequest`` into one TCP segment by
-        design — see ``negotiate_protocol_only`` and
-        ``handshake``).
-
-        Cancel-orphan safety rests on two invariants. (A) The
-        encoder is stateless — ``MessageEncoder.encode`` derives a
-        fresh ``bytes`` from the immutable request and mutates no
-        instance state, so an orphaned encode worker (a cancel
-        cannot stop a running ``to_thread`` job) leaves nothing
-        torn. (B) The full ``frame`` is built BEFORE ``_send``
-        writes it, so a cancel at the offload ``await`` unwinds
-        before any wire byte is written — no partial frame. A
-        future migration to a streaming encoder that calls
-        ``writer.write`` mid-encode would break BOTH invariants
-        and must invalidate the connection on cancel, exactly as
-        the sibling ``_WireEncodeError`` arm in ``connection`` is
-        already annotated to require.
+        Offloads the encode to a worker thread above
+        ``_ENCODE_OFFLOAD_THRESHOLD`` so a multi-MiB payload does not freeze
+        the loop. Cancel-safe because the encoder is stateless and the full
+        frame is built before any byte is written; a streaming encoder would
+        break both invariants and must invalidate on cancel.
         """
         if _estimate_request_body_size(request) >= _ENCODE_OFFLOAD_THRESHOLD:
             frame = await asyncio.to_thread(self._encoder.encode, request)
@@ -1501,104 +858,50 @@ class DqliteProtocol:
         await self._send(frame)
 
     async def _send(self, frame: bytes) -> None:
-        """Write a frame and drain, wrapping transport errors as DqliteConnectionError.
+        """Write a frame and drain, wrapping transport errors.
 
-        The synchronous ``self._writer.write(frame)`` is part of the
-        protected scope: CPython's ``_SelectorSocketTransport.write``
-        raises ``RuntimeError("Connection lost")`` /
-        ``RuntimeError("Transport is closed")`` synchronously when the
-        underlying transport is in the closing state (e.g. peer RST
-        between two requests on the same pooled connection, concurrent
-        ``_invalidate`` from a fork-pid mismatch). Without the write
-        inside the try/except, that RuntimeError leaked past
-        ``_run_protocol``'s except chain — which catches
-        DqliteConnectionError / ProtocolError / OperationalError /
-        cancel-class / _WireEncodeError but NOT bare RuntimeError —
-        bypassing the invalidate arm and leaving the connection in a
-        live-but-dead state.
-
-        A peer that accepts the TCP connection but stops reading can
-        stall ``drain()`` indefinitely on the high-water-mark future.
-        Bound the drain by ``self._timeout`` so the caller-configured
-        timeout is authoritative for sends just as it is for reads.
+        ``writer.write`` is inside the try because it can raise RuntimeError
+        synchronously on a closing transport, which would otherwise leak past
+        _run_protocol's except chain. The drain is bounded by self._timeout so
+        a peer that stops reading cannot stall it indefinitely.
         """
         try:
             self._writer.write(frame)
-            # Use ``asyncio.timeout`` cancel-scope semantics rather
-            # than ``asyncio.wait_for`` so an outer cancel landing
-            # while ``drain()`` is in flight does not discard the
-            # writer's high-water-mark future. Mirrors the discipline
-            # at the sibling dial / connect / admin / close sites
-            # (``cluster.py::_query_leader``, ``cluster.py::
-            # open_admin_connection``, ``connection.py::_connect_impl``,
-            # ``connection.py::_close_impl``,
-            # ``connection.py::_abort_protocol``,
-            # ``connection.py::_invalidate``).
-            # ``drain()`` returns ``None`` so the result-discard concern
-            # does not apply to ``_send`` today — the migration is
-            # sibling-parity defence so a future refactor that adds a
-            # result-carrying drain does not silently regress.
+            # asyncio.timeout (not wait_for) so an outer cancel does not discard
+            # the drain's high-water-mark future. Mirrors the sibling sites.
             async with asyncio.timeout(self._timeout):
                 await self._writer.drain()
         except TimeoutError as e:
             raise DqliteConnectionError(
                 f"Write timeout{self._addr_suffix()} after {self._timeout}s"
             ) from e
-        # ConnectionError / BrokenPipeError / ConnectionResetError /
-        # ConnectionAbortedError / ConnectionRefusedError are all OSError
-        # subclasses since PEP 3151 — the bare OSError arm already catches
-        # them. See the canonical OSError / PEP-3151 idiom in
-        # ``sqlalchemydqlite.base`` (the dialect's ``is_disconnect``
-        # OSError-cause-walk). RuntimeError is
-        # kept (not an OSError subclass) to cover "Transport is closed"
-        # raised synchronously from ``writer.write``.
+        # ConnectionError et al are OSError subclasses (PEP 3151). RuntimeError
+        # is kept separately for "Transport is closed" from writer.write.
         except (OSError, RuntimeError) as e:
             raise DqliteConnectionError(f"Write failed{self._addr_suffix()}: {e}") from e
 
     async def _read_data(self, deadline: float | None = None) -> bytes:
-        """Read a chunk from the stream, bounded by a per-operation deadline.
+        """Read a chunk, bounded by a per-operation deadline.
 
-        If ``deadline`` is set (monotonic time), the per-chunk timeout is
-        capped by the remaining budget — a slow-drip server that returned
-        just under the per-read timeout on every chunk used to be able to
-        keep a call alive indefinitely.
-
-        Transport errors (ConnectionResetError, BrokenPipeError, OSError,
-        RuntimeError("Transport is closed")) are wrapped in
-        DqliteConnectionError to match the write-path behaviour.
+        Capping the per-chunk timeout by the remaining budget stops a
+        slow-drip server (just-under-timeout each chunk) keeping a call alive
+        indefinitely. Transport errors wrap as DqliteConnectionError.
         """
         if deadline is not None:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                # Report the actual budget that was overrun, not the
-                # per-read window. With ``trust_server_heartbeat=True``
-                # the per-read ``self._read_timeout`` may be widened
-                # well above the configured ``self._timeout``; with
-                # heartbeat widening disabled the deadline budget is
-                # ``self._timeout``. Either way, ``-remaining`` is the
-                # observed overrun and is what operators want to see.
+                # Report the actual overrun, not the per-read window.
                 overrun = -remaining
                 raise DqliteConnectionError(
                     f"Operation{self._addr_suffix()} exceeded deadline by {overrun:.3f}s"
                 )
-            # Clamp against drift: the loop clock can advance between
-            # the guard above and the ``wait_for`` call below. Without
-            # ``max(0.0, ...)`` a sub-microsecond drift could hand
-            # ``wait_for`` a negative timeout. 3.13 handles negative
-            # timeouts consistently (immediate TimeoutError) but the
-            # clamp documents intent.
+            # Clamp against clock drift between the guard and the call below.
             timeout = max(0.0, min(remaining, self._read_timeout))
         else:
             timeout = self._read_timeout
         try:
-            # Use ``asyncio.timeout`` cancel-scope semantics rather
-            # than ``asyncio.wait_for`` so an outer cancel landing
-            # while ``reader.read()`` is in flight does not discard
-            # the bytes the inner future has already buffered (the
-            # load-bearing concern: at-most-once vs exactly-once for
-            # non-idempotent DML responses streaming back). Mirrors
-            # the discipline at the sibling dial / connect / admin
-            # sites; see ``_send`` for the sibling-parity rationale.
+            # asyncio.timeout (not wait_for) so an outer cancel does not discard
+            # bytes already buffered by the read — exactly-once for DML responses.
             async with asyncio.timeout(timeout):
                 data = await self._reader.read(_READ_CHUNK_SIZE)
         except TimeoutError as e:
@@ -1615,54 +918,20 @@ class DqliteProtocol:
     def _addr_suffix(self) -> str:
         """Render the peer address as a trailing ``" to <addr>"`` fragment.
 
-        Returns an empty string when the address is unknown — keeping
-        error messages clean for callers that don't thread it in.
-
-        Routes the address through ``sanitize_for_log`` (the strict
-        variant that ESCAPES LF/TAB and strips U+2028/U+2029/bidi
-        controls), NOT ``sanitize_server_text`` (display variant
-        that preserves LF for multi-line readability). The exception
-        text built here flows into downstream
-        ``logger.error("%s", exc)`` / ``logger.exception(...)``
-        sites; a peer that supplied an LF-bearing address — either
-        via leader-redirect, a malformed node store entry, or a
-        dial_func override that bypassed ``parse_address`` — would
-        otherwise produce log records that splice across rows
-        (CWE-117). Mirrors the discipline applied to
-        ``ClusterClient._ProbeMiss.message``.
+        Empty when the address is unknown. Routes through the strict
+        ``sanitize_for_log`` (escapes LF/TAB) because this text flows into log
+        records; an LF-bearing address could otherwise splice rows (CWE-117).
         """
         if not self._address:
             return ""
         return f" to {_sanitize_for_log(self._address)}"
 
     def _failure_text(self, response: FailureResponse) -> str:
-        """Render a FailureResponse as the body string for an
-        OperationalError / ProtocolError raise.
+        """Render a FailureResponse as an exception body string.
 
-        Substitutes a stable placeholder when the server message is
-        empty or whitespace-only so log scraping has a keyword to
-        match instead of staring at ``"[1] "``. Wraps
-        :func:`_failure_message` with the protocol's ``_addr_suffix``.
-        Used uniformly across the query-path raise sites so the
-        rendering is consistent.
-
-        Truncates the server message BEFORE composing the addr
-        suffix so the suffix survives the
-        ``OperationalError._MAX_DISPLAY_MESSAGE`` codepoint cap on
-        the exception's display ``message`` field. Without
-        pre-truncation, a long server message (e.g. ORM-generated
-        SQL with many bound parameters) would push the suffix past
-        the cutoff — operators tailing logs via
-        ``logger.error("%s", exc)`` would see the truncated server
-        text but lose the peer-address attribution.
-
-        Routes the server text through ``sanitize_server_text``
-        (display variant — preserves LF / Tab for multi-line server
-        diagnostics, strips control / bidi / invisible codepoints)
-        so a hostile peer cannot inject log-splitting characters
-        into the exception's display message. The leader-flip
-        rewrap arm in ``connection.py`` already applies the same
-        helper; mirror it on the canonical query-path raise.
+        Truncates BEFORE composing the addr suffix so the suffix survives the
+        display-message cap. Sanitises the server text (display variant) so a
+        hostile peer cannot inject log-splitting characters.
         """
         from dqliteclient.cluster import _truncate_error
 
@@ -1671,122 +940,44 @@ class DqliteProtocol:
         return _failure_message(safe_msg, self._addr_suffix())
 
     def _operation_deadline(self) -> float:
-        """Deadline (monotonic seconds) for a single read-side protocol
-        operation.
+        """Deadline (monotonic seconds) for a single read-side operation.
 
-        Uses ``self._read_timeout`` (NOT ``self._timeout``) so the
-        ``trust_server_heartbeat`` widening — which raises
-        ``_read_timeout`` up to the server-advertised heartbeat
-        capped at ``_HEARTBEAT_READ_TIMEOUT_CAP_SECONDS`` — actually
-        flows through to the per-read deadline budget. Without this,
-        the widening was dead code: ``_read_data``'s
-        ``min(remaining, self._read_timeout)`` always selected
-        ``remaining`` because the deadline came from
-        ``self._timeout`` (un-widened), so the user-configured
-        opt-in had no effect.
-
-        Write-path ``_send`` continues to use ``self._timeout``
-        directly — that's intentional: only the read
-        side gets the heartbeat widening.
-
-        Note on multi-phase RPCs: ``timeout`` bounds each phase
-        independently — a phase-1 ``_send`` followed by a phase-2
-        ``_read_response`` followed by a continuation drain can
-        cumulatively take up to ``timeout`` per phase. Worst-case
-        wall-clock for a single ``query_sql`` is therefore on the
-        order of ``2 × timeout`` (send + read+drain), and a fresh
-        ``connect → query`` flow can stack ``handshake`` +
-        ``open_database`` + ``query_sql`` for proportionally more.
-        Concrete worst-case quantification: a continuation-paginated
-        result with N frames pays N × ``timeout`` because each
-        continuation frame consumes its own per-read deadline (no
-        cumulative budget bounds the read sequence). With
-        ``timeout=10s`` and a 10-frame continuation, end-to-end
-        wall-clock can reach ~120 s (send + read + 10 × continuation
-        read) while every individual phase stayed within the
-        operator's configured budget. Callers needing an absolute
-        end-to-end bound should wrap the outer call in
-        ``asyncio.timeout`` / ``asyncio.wait_for``.
-
-        Server-heartbeat amplification: when
-        ``trust_server_heartbeat=True`` widens ``_read_timeout`` up
-        to the 300 s hard cap, the PER-PHASE budget grows; the
-        end-to-end multiplier compounds. A 5-phase RPC with the
-        server advertising the cap can stack 5 × 300 s = 1500 s of
-        read time even when the operator set ``timeout=10``. The
-        cap is per-phase, not cumulative — opting into the widening
-        is opting out of the operator's per-RPC SLO at the
-        cumulative level. Operators whose ``timeout`` is a
-        latency-SLO boundary should NOT opt in (the default is
-        ``False``).
-
-        Note: this differs from go-dqlite, which uses an absolute
-        per-call deadline (``conn.SetDeadline(ctx.Deadline())`` at
-        ``connector.go:312-333`` — applied to BOTH the
-        ``conn.Write`` and any subsequent ``conn.Read`` until
-        cleared). The per-phase shape here is a deliberate
-        Python-side choice — the asyncio.wait_for wraps individual
-        sends and reads independently — and is documented at
-        :class:`DqliteConnection` for caller guidance. The
-        :class:`DqliteConnection` and :class:`ConnectionPool`
-        docstrings echo the worst-case multiplier so operators
-        sizing ``timeout`` for SLO-bound queries see the same shape
-        at every entry point.
+        Uses ``_read_timeout`` (not ``_timeout``) so the
+        ``trust_server_heartbeat`` widening flows through; the write path keeps
+        ``_timeout``. The deadline is per-phase, not cumulative: an N-frame
+        continuation can take N x timeout end-to-end (compounded by widening up
+        to the 300 s cap). Wrap the outer call in ``asyncio.timeout`` for an
+        absolute bound.
         """
         return asyncio.get_running_loop().time() + self._read_timeout
 
     async def _read_continuation(self, deadline: float | None = None) -> RowsResponse:
         """Read and decode a ROWS continuation frame.
 
-        If ``deadline`` is None, a fresh per-operation deadline is set;
-        query_sql passes its own deadline so the budget spans every
-        continuation frame, not each one individually.
-
-        ``decode_continuation`` may also return an ``EmptyResponse`` —
-        the server's acknowledgement of a mid-stream INTERRUPT. The
-        client-layer ``query_sql`` flow does not send INTERRUPT, so an
-        ``EmptyResponse`` here would mean the server-side query was
-        cancelled out-of-band; surface it as a protocol error.
+        query_sql passes its own deadline so the budget spans every frame. An
+        EmptyResponse here means an out-of-band server-side cancel (the client
+        never sends INTERRUPT on this path); surface it as a protocol error.
         """
         if deadline is None:  # pragma: no cover
-            # Defensive: in-tree callers always pass an explicit
-            # deadline. Reaching here requires a third-party caller
-            # using ``read_continuation`` directly; the fallback
-            # picks up the connection's operation timeout.
+            # Defensive: in-tree callers always pass a deadline.
             deadline = self._operation_deadline()
         from dqlitewire.constants import WORD_SIZE
 
         try:
             while True:
-                # Threshold-gated decode offload (mirror of
-                # ``_read_response``). Peek the pending header to
-                # decide whether to offload via
-                # ``asyncio.to_thread``. ``decode_continuation``
-                # is stateful (consumes from the buffer, updates
-                # per-stream counters), so it MUST be called as a
-                # unit — the protocol's ``_lock`` guarantees no
-                # concurrent decoder access from a sibling
-                # coroutine while the worker thread holds it.
-                # Best-effort header peek to decide on offload.
-                # Wrapped in try/except so stub decoders /
-                # MagicMock fakes used by tests (which don't
-                # implement the wire-layer buffer API) fall back
-                # cleanly to the in-loop decode path.
+                # Threshold-gated decode offload (mirror of _read_response).
+                # decode_continuation is stateful so it must run as a unit; the
+                # _lock serialises decoder access. Best-effort header peek
+                # wrapped in try/except so stub/MagicMock decoders in tests
+                # (and their non-int arithmetic) fall back to the in-loop path.
                 try:
                     pending = self._decoder._buffer.peek_header()
                     pending_size = 8 + pending[0] * WORD_SIZE if pending is not None else 0
-                    # MagicMock arithmetic does NOT raise — it
-                    # returns another MagicMock that then breaks
-                    # the ``>=`` comparison below. Coerce non-int
-                    # values to 0 so stub-decoder tests fall
-                    # through to the in-loop path.
                     if not isinstance(pending_size, int):
                         pending_size = 0
                 except (AttributeError, TypeError, IndexError):
                     pending_size = 0
                 if pending_size >= _DECODE_OFFLOAD_THRESHOLD:
-                    # Cancel-orphan worst case is bounded + safe; see
-                    # the ``_DECODE_OFFLOAD_THRESHOLD`` comment.
                     result = await asyncio.to_thread(self._decoder.decode_continuation)
                 else:
                     result = self._decoder.decode_continuation()
@@ -1800,31 +991,12 @@ class DqliteProtocol:
                     return result
                 data = await self._read_data(deadline=deadline)
                 self._decoder.feed(data)
-                # Cooperative loop yield. ``await self._read_data``
-                # above does NOT yield to the loop scheduler when the
-                # next chunk is already buffered in the StreamReader
-                # (asyncio's ``read*`` returns synchronously on that
-                # fast path), and the per-iteration work is bounded
-                # today only by asyncio's ``_DEFAULT_LIMIT = 64 KiB``
-                # — a private implementation detail, not a contract.
-                # A fast-burst server prefetching a multi-MiB
-                # continuation body would otherwise pin the loop for
-                # the whole feed, starving sibling coroutines
-                # (heartbeat probes, pool acquirers, do_ping). The
-                # per-iteration ``sleep(0)`` cost is sub-microsecond
-                # and dominated by the upstream decode work.
-                # Symmetric with the sibling
-                # ``_drain_continuations`` per-frame yield.
+                # Yield: _read_data does not when the next chunk is pre-buffered,
+                # so a fast-burst server would otherwise pin the loop.
                 await asyncio.sleep(0)
         except _WireServerFailure as e:
-            # Server-authored failure mid-stream: surface the SQLite code
-            # so sqlalchemy's is_disconnect and dbapi's code-to-exception
-            # map can classify correctly (leader flip, constraint, etc.).
-            # Pre-truncate the body BEFORE composing the addr suffix so
-            # the suffix survives the OperationalError._MAX_DISPLAY_MESSAGE
-            # codepoint cap on the exception's display field — matching
-            # the eight sibling ``raise OperationalError`` sites in this
-            # module that route through ``self._failure_text``.
+            # Surface the SQLite code so SA/dbapi can classify. Pre-truncate
+            # before the addr suffix so it survives the display-message cap.
             from dqliteclient.cluster import _truncate_error
 
             truncated_msg = _truncate_error(e.message)
@@ -1834,25 +1006,10 @@ class DqliteProtocol:
                 raw_message=e.message,
             ) from e
         except _WireProtocolError as e:
-            # Wire-decode failures are NOT recovered via
-            # ``MessageDecoder.skip_message``. The wire layer documents
-            # oversize-message rejection as recoverable in-place
-            # (``read_message`` raises ``DecodeError`` without poisoning
-            # so a caller can drain the over-large frame via
-            # ``skip_message`` + ``feed`` and resume on the same
-            # connection). The client layer deliberately opts out: we
-            # wrap every wire-level ProtocolError into a client-level
-            # ProtocolError, which ``_run_protocol`` routes through
-            # ``_invalidate`` to drop the connection. Rationale: a
-            # 64 MiB cap is high enough that hitting it almost always
-            # indicates an attacker, a misbehaving server, or a
-            # deeply-nested wire bug — none of which the client can
-            # safely resume from on the same socket. The pool's
-            # re-acquire path (handshake + OPEN) is the right
-            # recovery, not in-place skip. The ``skip_message`` API
-            # remains available for third-party harnesses that
-            # consume ``DqliteProtocol`` directly and want a
-            # different policy.
+            # Deliberately do NOT recover in-place via skip_message: wrap as a
+            # client ProtocolError so _run_protocol invalidates the connection.
+            # Hitting the 64 MiB cap means an attacker/buggy server/wire bug,
+            # none safely resumable on the same socket — re-acquire instead.
             raise ProtocolError(f"{WIRE_DECODE_FAILED_PREFIX}{self._addr_suffix()}: {e}") from e
 
     async def _read_response(
@@ -1863,19 +1020,9 @@ class DqliteProtocol:
     ) -> Message:
         """Read and decode the next response message.
 
-        If ``deadline`` is None, a fresh per-operation deadline is set for
-        this one response; callers that span multiple reads (e.g. query_sql
-        across continuation frames) pass an externally-held deadline so
-        the cumulative wall time is bounded.
-
-        ``allow_trailing=True`` relaxes the "no extra buffered frames"
-        check below. The INTERRUPT drain loop sets this because it
-        deliberately consumes multiple frames in sequence (the prior
-        RPC's terminal response followed by the EMPTY ack for the
-        INTERRUPT itself) — see ``_interrupt`` for the gateway.c race
-        that produces RESULT-then-EMPTY pairs. Every other caller leaves
-        the default ``False`` so the hostile-server hardening below
-        still fires on the one-request-one-response wire contract.
+        Callers spanning multiple reads (query_sql) pass their own deadline so
+        cumulative wall time is bounded. ``allow_trailing=True`` (INTERRUPT
+        drain only) relaxes the no-extra-buffered-frames hardening below.
         """
         if deadline is None:
             deadline = self._operation_deadline()
@@ -1883,52 +1030,25 @@ class DqliteProtocol:
             while not self._decoder.has_message():
                 data = await self._read_data(deadline=deadline)
                 self._decoder.feed(data)
-                # Cooperative loop yield (see _read_continuation for
-                # full rationale). Bounds the per-message read-and-
-                # feed loop's loop-monopolisation window: asyncio's
-                # StreamReader buffer limit caps iteration count at
-                # ~16 today, but that bound is a private
-                # implementation detail. Defensive yield keeps the
-                # message-read path from starving sibling coroutines
-                # under a fast-burst server / buffer-limit bump.
+                # Yield: defensive against a fast-burst server (see
+                # _read_continuation).
                 await asyncio.sleep(0)
 
-            # Threshold-gated decode offload. ``_decoder.decode``
-            # is stateful (sets ``_continuation_expected``,
-            # per-stream counters, column-name snapshots), so it
-            # MUST be called as a unit — splitting into
-            # ``read_message`` + ``decode_bytes`` skips the
-            # continuation-state setup the streaming path needs.
-            # Peek the header to size-gate the offload: large
-            # RowsResponse frames decode on a worker thread so
-            # the per-row + per-cell walk does not freeze the
-            # loop. CPython's GIL release every
-            # ``sys.setswitchinterval`` (~5 ms by default) inside
-            # the worker gives the loop thread natural scheduling
-            # slices during the off-loop decode. The protocol's
-            # ``_lock`` ensures only one coroutine touches the
-            # decoder at a time, so calling ``decode`` from a
-            # worker thread is safe.
+            # Threshold-gated decode offload. ``decode`` is stateful (sets
+            # continuation state, counters, column snapshots) so it must run as
+            # a unit; the _lock makes the worker-thread call safe.
             from dqlitewire.constants import WORD_SIZE
 
-            # Best-effort header peek to decide on offload. Wrapped
-            # in try/except so stub decoders / MagicMock fakes used
-            # by tests (which don't implement the wire-layer buffer
-            # API) fall back cleanly to the in-loop decode path.
+            # Best-effort header peek; try/except so stub/MagicMock decoders in
+            # tests (and their non-int arithmetic) fall back to the in-loop path.
             try:
                 pending = self._decoder._buffer.peek_header()
                 pending_size = 8 + pending[0] * WORD_SIZE if pending is not None else 0
-                # MagicMock arithmetic does NOT raise — it returns
-                # another MagicMock that then breaks the ``>=``
-                # comparison below. Coerce non-int values to 0 so
-                # stub-decoder tests fall through to the in-loop path.
                 if not isinstance(pending_size, int):
                     pending_size = 0
             except (AttributeError, TypeError, IndexError):
                 pending_size = 0
             if pending_size >= _DECODE_OFFLOAD_THRESHOLD:
-                # Cancel-orphan worst case is bounded + safe; see
-                # the ``_DECODE_OFFLOAD_THRESHOLD`` comment.
                 message = await asyncio.to_thread(self._decoder.decode)
             else:
                 message = self._decoder.decode()
@@ -1936,26 +1056,12 @@ class DqliteProtocol:
             raise ProtocolError(f"{WIRE_DECODE_FAILED_PREFIX}{self._addr_suffix()}: {e}") from e
 
         if message is None:  # pragma: no cover
-            # Defensive: ``decoder.decode()`` returns None only when
-            # the buffer has no complete message. ``read_message``
-            # is called only after ``has_message()`` confirmed a
-            # complete frame is available, so this branch requires
-            # a torn buffer state between the two calls — verified
-            # by code review, not coverage.
+            # Defensive: requires a torn buffer between has_message() and here.
             raise ProtocolError(f"Failed to decode message{self._addr_suffix()}")
 
-        # Hostile-server hardening: every dqlite response other than
-        # ``RowsResponse`` is terminal per the wire spec — one request,
-        # one response. If the decoder still has another frame
-        # buffered after extracting a non-RowsResponse, the server
-        # emitted extra bytes (or two coalesced replies arrived in
-        # one TCP segment). Raise ``ProtocolError`` here so
-        # ``_run_protocol`` invalidates the connection.
-        #
-        # ``RowsResponse`` is the sole exception: continuation frames
-        # for a single Rows result legitimately carry across multiple
-        # decode steps. ``allow_trailing=True`` is the INTERRUPT
-        # drain caller's explicit opt-out.
+        # Hostile-server hardening: every response but ROWS is terminal, so a
+        # trailing buffered frame is extra/coalesced bytes — invalidate.
+        # allow_trailing is the INTERRUPT drain's opt-out.
         if (
             not allow_trailing
             and not isinstance(message, RowsResponse)
@@ -1970,9 +1076,7 @@ class DqliteProtocol:
         return message
 
     def close(self) -> None:
-        """Close the connection."""
         self._writer.close()
 
     async def wait_closed(self) -> None:
-        """Wait for the connection to close."""
         await self._writer.wait_closed()

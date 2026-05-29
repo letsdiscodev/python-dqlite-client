@@ -1,18 +1,7 @@
-"""Pin: ``DqliteConnection`` and ``ConnectionPool`` raise
-``InterfaceError`` if used from a child process after ``os.fork``.
-
-Fork-after-init is unsupported: the inherited TCP socket would be
-shared with the parent (writes interleaving on the wire), and asyncio
-primitives bound to the parent's loop are unusable in the child.
-
-The fix records ``os.getpid()`` in ``__init__`` (both classes) and
-``_check_in_use`` / ``acquire`` raise a clear ``InterfaceError``
-("reconstruct from configuration in the target process") on pid
-mismatch — symmetric with the existing ``__reduce__`` pickle guards.
-
-The test does not need a live server: the pid check fires before any
-network work; an unconnected instance is sufficient.
-"""
+"""``DqliteConnection`` / ``ConnectionPool`` raise ``InterfaceError`` if used in a
+child after ``os.fork``: the inherited TCP socket would interleave writes with the
+parent and asyncio primitives bound to the parent's loop are unusable. The pid
+check (recorded in ``__init__``) fires before any network work."""
 
 from __future__ import annotations
 
@@ -67,9 +56,8 @@ def test_dqlite_connection_used_after_fork_raises_interface_error() -> None:
     assert conn._creator_pid == os.getpid()
 
     def child_check() -> None:
-        # ``_check_in_use`` runs ``asyncio.get_running_loop`` after
-        # the pid check. Drive a loop so the pid mismatch is the
-        # raised error, not the "must be used from async context" one.
+        # Drive a loop so the pid mismatch is the raised error, not the
+        # "must be used from async context" one.
         async def run() -> None:
             conn._check_in_use()
 
@@ -110,16 +98,9 @@ def test_connection_pool_initialize_after_fork_raises_interface_error() -> None:
 
 
 def test_dqlite_connection_close_after_fork_drops_inherited_state() -> None:
-    """The fork short-circuit in ``DqliteConnection.close()`` must
-    drop every reference that crosses the fork boundary —
-    ``_pending_drain`` (parent-loop ``asyncio.Task``), transaction
-    bookkeeping, savepoint stack, and ``_bound_loop`` — so GC in
-    the child doesn't keep the inherited writer transport / socket
-    FD alive via the Task's coroutine frame, and the child's
-    ``in_transaction`` view stays self-consistent (False on a
-    closed connection)."""
+    """The fork short-circuit in ``close()`` drops every cross-fork reference so
+    GC can't keep the inherited socket FD alive via a Task's coroutine frame."""
     conn = DqliteConnection("127.0.0.1:9999")
-    # Stage state that would normally be cleared by _close_impl.
     sentinel_task = MagicMock(spec=asyncio.Task)
     conn._pending_drain = sentinel_task
     conn._in_transaction = True
@@ -150,9 +131,8 @@ def test_dqlite_connection_close_after_fork_drops_inherited_state() -> None:
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
 def test_dqlite_connection_close_after_fork_short_circuits() -> None:
-    """``close()`` in the child must not touch the inherited socket
-    (which is shared with the parent — sending FIN would close it
-    for the parent too). Short-circuits to a quiet local-state flip."""
+    """``close()`` in the child must not touch the inherited socket; sending FIN
+    would close it for the parent too. Short-circuits to a local-state flip."""
     conn = DqliteConnection("127.0.0.1:9999")
 
     r, w = os.pipe()
@@ -166,8 +146,6 @@ def test_dqlite_connection_close_after_fork_short_circuits() -> None:
                     await conn.close()
 
                 asyncio.run(run())
-                # close() did not raise — the child's local state is
-                # marked closed without touching the wire.
                 os.write(w, b"OK")
             except Exception as e:  # noqa: BLE001
                 os.write(w, f"WRONG:{type(e).__name__}:{e}".encode())
@@ -189,9 +167,8 @@ def test_dqlite_connection_close_after_fork_short_circuits() -> None:
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
 def test_connection_pool_close_after_fork_short_circuits() -> None:
-    """``pool.close()`` in the child must not drain inherited connection
-    FDs — those would close sockets the parent still uses. Short-
-    circuits to a quiet local-state flip."""
+    """``pool.close()`` in the child must not drain inherited connection FDs;
+    those would close sockets the parent still uses."""
     pool = ConnectionPool(addresses=["127.0.0.1:9999"])
 
     r, w = os.pipe()

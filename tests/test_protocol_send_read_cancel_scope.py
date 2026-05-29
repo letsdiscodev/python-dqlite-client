@@ -1,21 +1,7 @@
-"""Pin: ``DqliteProtocol._send`` and ``DqliteProtocol._read_data``
-use ``asyncio.timeout`` cancel-scope semantics rather than
-``asyncio.wait_for``.
-
-``asyncio.wait_for(fut, timeout)`` cancels the inner future on outer
-cancel AND discards its result. ``async with asyncio.timeout(...):
-await fut`` uses cancel-scope semantics: the inner future's bytes
-(``_read_data``) or completion signal (``_send``) is observable to
-the caller's ``try / except CancelledError`` handler.
-
-The migration matches the sibling dial / connect / admin discipline
-already established at four sites in ``cluster.py`` and
-``connection.py``. ``_read_data`` is the load-bearing site (returns
-bytes); ``_send`` is sibling-parity defence (returns ``None`` so the
-result-discard concern does not apply today).
-
-The diagnostic shape is preserved: an inner timeout still surfaces
-as ``DqliteConnectionError(...)`` via the ``TimeoutError`` arm.
+"""Pin: ``DqliteProtocol._send`` / ``_read_data`` use
+``asyncio.timeout`` cancel-scope semantics, not ``asyncio.wait_for``
+(which discards the inner result on outer-cancel). An inner timeout
+still surfaces as ``DqliteConnectionError`` via the ``TimeoutError`` arm.
 """
 
 from __future__ import annotations
@@ -42,10 +28,7 @@ def _make_protocol(reader: MagicMock, writer: MagicMock) -> DqliteProtocol:
 
 @pytest.mark.asyncio
 async def test_send_timeout_surfaces_as_dqlite_connection_error() -> None:
-    """Diagnostic-preservation pin: a slow ``drain()`` produces the
-    documented ``DqliteConnectionError`` shape, identical to the
-    pre-migration ``asyncio.wait_for`` arm.
-    """
+    """A slow ``drain()`` surfaces as ``DqliteConnectionError``."""
     writer = MagicMock()
 
     async def _slow_drain() -> None:
@@ -61,7 +44,7 @@ async def test_send_timeout_surfaces_as_dqlite_connection_error() -> None:
 
 @pytest.mark.asyncio
 async def test_read_data_timeout_surfaces_as_dqlite_connection_error() -> None:
-    """Diagnostic-preservation pin for ``_read_data``."""
+    """A slow ``read()`` surfaces as ``DqliteConnectionError``."""
     reader = MagicMock()
 
     async def _slow_read(_n: int) -> bytes:
@@ -78,10 +61,8 @@ async def test_read_data_timeout_surfaces_as_dqlite_connection_error() -> None:
 
 @pytest.mark.asyncio
 async def test_send_outer_cancel_propagates_as_cancel_not_dqlite_error() -> None:
-    """Cancel-scope semantics: an outer ``task.cancel()`` lands on
-    the awaiter as ``CancelledError``, not the timeout-shaped
-    ``DqliteConnectionError`` that ``asyncio.wait_for`` would map.
-    """
+    """An outer cancel surfaces as ``CancelledError``, not
+    ``DqliteConnectionError``."""
     writer = MagicMock()
     drain_started = asyncio.Event()
     cancel_now = asyncio.Event()
@@ -109,9 +90,7 @@ async def test_send_outer_cancel_propagates_as_cancel_not_dqlite_error() -> None
 
 @pytest.mark.asyncio
 async def test_read_data_outer_cancel_propagates_as_cancel() -> None:
-    """Cancel-scope semantics on ``_read_data``: an outer cancel
-    surfaces as ``CancelledError``, not ``DqliteConnectionError``.
-    """
+    """An outer cancel on ``_read_data`` surfaces as ``CancelledError``."""
     reader = MagicMock()
     read_started = asyncio.Event()
     cancel_now = asyncio.Event()

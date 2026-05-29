@@ -1,19 +1,6 @@
-"""Pin the exact wording of every ``InterfaceError`` raised from
-``DqliteConnection._check_in_use``.
-
-Operators triage on substring matches in error messages; downstream
-tooling (SQLAlchemy's ``is_disconnect``, retry decorators, log
-parsers) often inspects the wording too. A future cleanup that
-rewords any of these branches would silently break parsers.
-
-Existing tests pin the "another operation is in progress" branch
-(``test_check_in_use_error_includes_task_identity.py``) and the
-"owned by another task" branch (same file). This file pins the
-remaining three branches:
-
-  * pool-released
-  * cross-loop binding mismatch
-  * called from sync context (no running loop)
+"""Pin the wording of ``InterfaceError`` messages from
+``_check_in_use`` (pool-released, cross-loop, sync-context branches);
+downstream tooling triages on these substrings.
 """
 
 from __future__ import annotations
@@ -29,8 +16,7 @@ from dqliteclient.exceptions import InterfaceError
 
 
 def _make_bound_connection() -> DqliteConnection:
-    """A connection in the post-bind state on the running loop, with
-    every other ``_check_in_use`` precondition relaxed."""
+    """Connection in post-bind state with other ``_check_in_use`` preconditions relaxed."""
     import os as _os
 
     conn = DqliteConnection.__new__(DqliteConnection)
@@ -54,9 +40,7 @@ async def test_pool_released_branch_message_substring() -> None:
 @pytest.mark.asyncio
 async def test_cross_loop_branch_message_substring() -> None:
     conn = _make_bound_connection()
-    # A different loop than the running one — cannot construct a real
-    # second loop here; a sentinel that compares unequal is enough,
-    # because ``_check_in_use`` only does ``is`` identity comparison.
+    # ``_check_in_use`` only does ``is`` comparison, so any unequal sentinel works.
     sentinel = MagicMock(spec=asyncio.AbstractEventLoop)
     conn._bound_loop_ref = weakref.ref(sentinel)
     with pytest.raises(InterfaceError, match="bound to a different event loop"):
@@ -64,10 +48,8 @@ async def test_cross_loop_branch_message_substring() -> None:
 
 
 def test_called_from_sync_context_branch_message_substring() -> None:
-    """Outside a running loop, ``_check_in_use`` raises with a clear
-    message rather than crashing on ``get_running_loop``'s
-    RuntimeError. Run as a SYNC test so the surrounding code does
-    not have a running loop."""
+    """Sync test (no running loop): ``_check_in_use`` raises a clear
+    message rather than ``get_running_loop``'s RuntimeError."""
     import os as _os
 
     conn = DqliteConnection.__new__(DqliteConnection)
@@ -79,7 +61,3 @@ def test_called_from_sync_context_branch_message_substring() -> None:
     conn._creator_pid = _os.getpid()
     with pytest.raises(InterfaceError, match="from within an async context"):
         conn._check_in_use()
-
-
-# ``weakref`` is used by the helpers above to set up
-# ``_bound_loop_ref`` in the bound-state fixture.

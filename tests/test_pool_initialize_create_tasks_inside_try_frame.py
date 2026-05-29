@@ -1,25 +1,5 @@
-"""Pin: ``ConnectionPool.initialize`` builds its ``create_tasks``
-list INSIDE the ``try:`` frame so a ``BaseException`` (synthetic
-KeyboardInterrupt, outer cancel) landing mid-construction does not
-leak orphaned ``_create_connection`` tasks.
-
-The anchor is the in-try comment block beginning
-``"Build ``create_tasks`` INSIDE the try frame"`` inside
-``ConnectionPool.initialize`` in ``pool.py``; the construction
-itself is the ``create_tasks: list[...] = []`` allocation followed
-by the ``for _ in range(self._min_size): create_tasks.append(...)``
-loop, both nested under the same ``try:``.
-
-Pre-fix this construction (then written as a list comprehension,
-now an explicit ``for`` loop) ran BEFORE the ``try:`` frame. A
-``BaseException`` raised by the n-th ``asyncio.create_task``
-orphaned every already-created task — the ``finally`` never ran,
-the ``gather_returned``-flag-driven recovery loop never walked the
-partial list, and the orphan tasks' exceptions were unobserved.
-
-Mirrors the cluster-side hardening at ``_find_leader_impl`` and the
-pool-acquire orphan-cancellation discipline.
-"""
+"""Pin: ``ConnectionPool.initialize`` builds its ``create_tasks`` list inside
+the ``try:`` frame so a mid-construction BaseException leaks no orphan tasks."""
 
 from __future__ import annotations
 
@@ -37,18 +17,12 @@ from dqliteclient.pool import ConnectionPool
 async def test_pool_initialize_keyboardinterrupt_during_task_creation_no_orphan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Inject ``KeyboardInterrupt`` into the n-th ``create_task`` call
-    inside ``ConnectionPool.initialize``. The first task is created;
-    the ``for`` loop aborts before ``gather`` can run. Pin: the
-    task is consumed by the ``finally`` (cancelled + gathered), no
-    orphan-task warnings."""
+    """KeyboardInterrupt mid-task-creation: the created task is consumed by
+    the finally (cancelled + gathered), with no orphan-task warnings."""
     pool = ConnectionPool(["localhost:19001"], min_size=3, max_size=3, timeout=0.5)
 
-    # Force the orphaned task to surface a programming-bug exception
-    # so the unobserved-exception case is detectable. A successful
-    # _create_connection would silently return a connection that
-    # never gets closed — also a leak, but harder to pin via the
-    # loop exception handler.
+    # Surface a bug exception so the unobserved-exception case is detectable;
+    # a successful return would leak a conn but is harder to pin via the handler.
     pool._create_connection = AsyncMock(
         side_effect=TypeError("synthetic-create-bug"),
     )
@@ -87,7 +61,6 @@ async def test_pool_initialize_keyboardinterrupt_during_task_creation_no_orphan(
             "task construction is outside the try frame"
         )
 
-    # Pin no orphan-task warnings via the loop exception handler.
     captured: list[dict[str, object]] = []
     loop = asyncio.get_running_loop()
     prior_handler = loop.get_exception_handler()

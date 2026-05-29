@@ -1,18 +1,6 @@
-"""Pin: ``parse_address`` rejects pathologically long inputs up front,
-matching the wire-side ``LeaderResponse.address`` /
-``ServersResponse.address`` cap.
-
-The wire-side cap is server-side at 256 bytes
-(``_MAX_ADDRESS_SIZE`` in ``dqlitewire.messages.responses``);
-``parse_address`` reuses the same constant as the SSOT so any seed
-that survives parsing is also guaranteed to round-trip through
-cluster discovery and redirect. Without the SSOT a 600-byte address
-could survive ``parse_address`` (under the prior 1024-byte ceiling),
-get used to dial, and then fail on the first ``LeaderResponse`` /
-``ServersResponse`` carrying that address back.
-
-Pin the wire-aligned cap with a small, bounded error message.
-"""
+"""``parse_address`` rejects over-long inputs up front, reusing the wire-side
+256-byte ``_MAX_ADDRESS_SIZE`` as SSOT so any address that parses also
+round-trips through cluster discovery / redirect."""
 
 from __future__ import annotations
 
@@ -25,7 +13,7 @@ def test_oversized_address_rejected_with_bounded_message() -> None:
     huge = "a" * (_MAX_ADDRESS_LEN + 1) + ":9001"
     with pytest.raises(ValueError) as ei:
         parse_address(huge)
-    # The error message must be bounded, NOT interpolate the full input.
+    # Bounded message must not interpolate the full input.
     assert len(str(ei.value)) < 1024
 
 
@@ -36,11 +24,8 @@ def test_oversized_address_message_describes_the_cap() -> None:
 
 
 def test_at_cap_address_proceeds_to_normal_parse() -> None:
-    """Just-below-cap address proceeds to the regular parse path; the
-    cap should not constrain legitimate addresses."""
-    # Construct a hostname that's just below the cap. Use a long
-    # but DNS-legal label sequence: ``a.a...a:9001``.
-    host = ".".join(["a"] * 50)  # short enough; legal hostname
+    """Below-cap address proceeds to the regular parse path."""
+    host = ".".join(["a"] * 50)
     addr = f"{host}:9001"
     assert len(addr) < _MAX_ADDRESS_LEN
     out_host, out_port = parse_address(addr)
@@ -48,21 +33,19 @@ def test_at_cap_address_proceeds_to_normal_parse() -> None:
 
 
 def test_max_address_len_matches_wire_cap() -> None:
-    """SSOT pin: the client-side ``_MAX_ADDRESS_LEN`` is the wire-side
-    ``_MAX_ADDRESS_SIZE`` re-exported (not a parallel value)."""
+    """``_MAX_ADDRESS_LEN`` is the wire-side ``_MAX_ADDRESS_SIZE`` re-exported,
+    not a parallel value."""
     from dqlitewire.messages.responses import _MAX_ADDRESS_SIZE
 
     assert _MAX_ADDRESS_LEN == _MAX_ADDRESS_SIZE
 
 
 def test_address_above_wire_cap_rejected_with_actionable_message() -> None:
-    """A 300-byte address (above the wire cap of 256) is rejected
-    locally; without this the address would dial successfully but
-    every later wire frame echoing it would surface as ``DecodeError``
-    on the address-cap path."""
+    """An above-cap address is rejected locally rather than dialing and later
+    failing as ``DecodeError`` on every wire frame echoing it."""
     from dqlitewire.messages.responses import _MAX_ADDRESS_SIZE
 
-    huge = "a" * _MAX_ADDRESS_SIZE + ":9001"  # > 256 bytes incl. port
+    huge = "a" * _MAX_ADDRESS_SIZE + ":9001"
     with pytest.raises(ValueError, match="exceeds maximum"):
         parse_address(huge)
 

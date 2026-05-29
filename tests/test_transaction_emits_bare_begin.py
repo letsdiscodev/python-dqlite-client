@@ -1,12 +1,5 @@
-"""Pin: ``transaction()`` ctxmgr emits a bare ``BEGIN`` (DEFERRED).
-
-dqlite's Raft FSM serializes transactions regardless of the
-``DEFERRED`` / ``IMMEDIATE`` / ``EXCLUSIVE`` qualifier — isolation is
-always SERIALIZABLE — so a bare ``BEGIN`` (the SQLite default) is the
-correct, documented choice. Pin the literal so a refactor that
-silently upgrades to ``BEGIN IMMEDIATE`` shows up in review (and would
-diverge from the Go / C peer clients).
-"""
+"""``transaction()`` emits a bare ``BEGIN``: dqlite's Raft FSM serializes regardless of the
+qualifier (always SERIALIZABLE), and a qualifier would diverge from the Go / C peer clients."""
 
 from __future__ import annotations
 
@@ -39,8 +32,6 @@ class TestTransactionEmitsBareBegin:
         assert sqls == ["BEGIN", "COMMIT"]
 
     async def test_no_immediate_or_exclusive_qualifier(self, conn: DqliteConnection) -> None:
-        """Negative pin: refactors that emit BEGIN IMMEDIATE / EXCLUSIVE
-        diverge from the C and Go peers and would break this test."""
         execute = AsyncMock(return_value=(0, 0))
         conn.execute = execute
 

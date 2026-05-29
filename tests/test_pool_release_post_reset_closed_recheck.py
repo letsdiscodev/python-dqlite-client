@@ -1,16 +1,8 @@
-"""Pin: pool ``_release`` re-checks ``_closed`` after the
-``_reset_connection`` yield.
+"""Pin: ``_release`` re-checks ``_closed`` after the ``_reset_connection`` yield.
 
-``pool.close()`` does not take ``_lock``, so it may flip
-``_closed=True`` and drain the queue while ``_release`` is
-suspended awaiting the ROLLBACK. Without the post-reset re-check,
-the conn would be put_nowait'd into a drained queue and orphaned
-(acquire() raises "Pool is closed", the conn is unreachable).
-
-Existing tests cover the connect-site analogous race; the
-``_release`` site post-reset re-check was untested. A future
-refactor that drops the re-check would silently re-introduce the
-orphan-into-drained-queue bug.
+pool.close() does not take _lock, so it may flip _closed=True and drain the queue
+while _release awaits the ROLLBACK. Without the re-check the conn is put_nowait'd
+into a drained queue and orphaned.
 """
 
 from __future__ import annotations
@@ -62,16 +54,13 @@ def _make_pool() -> ConnectionPool:
 
 @pytest.mark.asyncio
 async def test_release_post_reset_closes_conn_when_pool_closed_during_reset() -> None:
-    """``_release`` must observe a concurrent ``pool.close()`` that
-    landed during the ``_reset_connection`` yield, route the conn
-    through close + reservation release, and not orphan it in a
-    drained queue."""
+    """A concurrent pool.close() during the reset yield routes the conn through
+    close + reservation release rather than orphaning it in a drained queue."""
     pool = _make_pool()
     pool._size = 1
     conn = _FakeConn()
 
-    # Block _reset_connection on a controllable event so we can
-    # interleave a pool.close() before the ROLLBACK returns.
+    # Block _reset_connection so we can interleave pool.close() before ROLLBACK returns.
     reset_can_finish = asyncio.Event()
     reset_entered = asyncio.Event()
 
@@ -82,15 +71,12 @@ async def test_release_post_reset_closes_conn_when_pool_closed_during_reset() ->
 
     pool._reset_connection = _slow_reset  # type: ignore[assignment]
 
-    # Start _release on a background task; it parks inside _slow_reset.
     release_task = asyncio.create_task(pool._release(conn))  # type: ignore[arg-type]
     await reset_entered.wait()
     assert not release_task.done()
 
-    # Concurrently close the pool. The post-reset re-check must
-    # observe _closed=True after we let _slow_reset return.
     close_task = asyncio.create_task(pool.close())
-    # Give close() a tick to mark _closed=True before we let _slow_reset finish.
+    # Let close() mark _closed=True before _slow_reset finishes.
     for _ in range(5):
         await asyncio.sleep(0)
         if pool._closed:
@@ -101,8 +87,6 @@ async def test_release_post_reset_closes_conn_when_pool_closed_during_reset() ->
     await release_task
     await close_task
 
-    # The conn must have been close()'d (post-reset re-check
-    # branched into the close+release path), not orphaned in the
-    # drained queue.
+    # close()'d via the re-check's close+release path, not orphaned in the queue.
     assert conn.close_called is True
     assert conn._pool_released is True

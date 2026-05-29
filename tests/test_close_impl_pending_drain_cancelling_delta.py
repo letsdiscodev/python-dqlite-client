@@ -1,18 +1,7 @@
-"""Pin: ``DqliteConnection._close_impl``'s pending-drain re-snapshot
-loop uses the ``Task.cancelling()``-delta dance to distinguish a
-FRESH outer cancel landing during ``await pending`` from a
-third-party cancel that propagated through the pending task itself.
-
-The prior shape used ``contextlib.suppress(Exception,
-asyncio.CancelledError)``, which silently swallowed ANY
-CancelledError — including a fresh outer cancel from a TaskGroup
-sibling failure or a manual ``task.cancel()`` + ``await task``
-idiom. The caller's ``except CancelledError`` arm never fired; the
-structured-concurrency contract was broken.
-
-Symmetric with the ``_connect_impl`` sibling discipline (already
-pinned at ``test_connect_impl_pending_drain_resnapshot_loop``).
-"""
+"""The pending-drain re-snapshot loop uses the ``Task.cancelling()``-delta dance to tell a
+FRESH outer cancel during ``await pending`` from a third-party cancel propagated through the
+pending task itself; the prior ``suppress(CancelledError)`` swallowed both, breaking the
+structured-concurrency contract."""
 
 from __future__ import annotations
 
@@ -25,14 +14,9 @@ from dqliteclient.connection import DqliteConnection
 
 @pytest.mark.asyncio
 async def test_close_impl_propagates_fresh_outer_cancel_during_drain() -> None:
-    """A fresh outer ``task.cancel()`` landing while ``_close_impl``
-    is awaiting the pending drain must propagate as ``CancelledError``
-    to the awaiter. The prior ``suppress(CancelledError)`` swallowed
-    it, leaving the caller blind to a structured-concurrency cancel.
-    """
+    """A fresh outer cancel during ``await pending`` must propagate as CancelledError."""
     loop = asyncio.get_running_loop()
 
-    # Long-running drain so we have time to schedule the outer cancel.
     pending = loop.create_task(asyncio.sleep(0.5))
 
     conn = DqliteConnection.__new__(DqliteConnection)
@@ -54,8 +38,6 @@ async def test_close_impl_propagates_fresh_outer_cancel_during_drain() -> None:
         return "swallowed"
 
     closer_task = loop.create_task(closer())
-    # Schedule the fresh outer cancel to fire while close_impl is
-    # suspended in ``await pending``.
     loop.call_later(0.01, closer_task.cancel)
     try:
         outcome = await closer_task
@@ -65,17 +47,13 @@ async def test_close_impl_propagates_fresh_outer_cancel_during_drain() -> None:
         "fresh outer cancel during _close_impl's pending-drain await "
         "must propagate as CancelledError, not be silently swallowed"
     )
-    # Pending drain task was cancelled in the process.
     assert pending.cancelled() or pending.done()
 
 
 @pytest.mark.asyncio
 async def test_close_impl_consumes_third_party_cancel_on_pending() -> None:
-    """When the pending drain task is cancelled by a THIRD party
-    (not the current task's own ``task.cancel()``), the resulting
-    ``CancelledError`` on ``await pending`` must be consumed so the
-    close can proceed — OUR ``cancelling()`` counter is unchanged.
-    """
+    """A third-party cancel on the pending drain (not our own ``task.cancel()``) must be
+    consumed so the close proceeds; our ``cancelling()`` counter is unchanged."""
     loop = asyncio.get_running_loop()
 
     pending = loop.create_task(asyncio.sleep(0.5))
@@ -91,11 +69,7 @@ async def test_close_impl_consumes_third_party_cancel_on_pending() -> None:
     conn._invalidation_cause = None
     conn._bound_loop_ref = None
 
-    # Third party cancels the pending drain directly; the current
-    # task's cancelling-counter is NOT touched.
     loop.call_soon(pending.cancel)
-    # _close_impl must complete cleanly — the third-party cancel was
-    # consumed inside the resnapshot loop.
     await conn._close_impl()
     assert pending.cancelled()
     assert conn._pending_drain is None
@@ -103,13 +77,8 @@ async def test_close_impl_consumes_third_party_cancel_on_pending() -> None:
 
 @pytest.mark.asyncio
 async def test_close_impl_under_asyncio_timeout_surfaces_timeout_error() -> None:
-    """When ``_close_impl`` is wrapped by ``asyncio.timeout(epsilon)``
-    and the drain takes longer, the parent must observe
-    ``TimeoutError`` via the cancelling-counter detection in
-    ``asyncio.timeout.__aexit__`` — this remains true even after the
-    cancelling-delta migration because we do NOT call
-    ``Task.uncancel()`` on the consume path.
-    """
+    """``asyncio.timeout(epsilon)`` around a slow drain must surface TimeoutError: the
+    cancelling-delta path preserves this by never calling ``Task.uncancel()``."""
     loop = asyncio.get_running_loop()
 
     pending = loop.create_task(asyncio.sleep(0.5))

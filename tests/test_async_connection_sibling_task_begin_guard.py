@@ -1,19 +1,7 @@
-"""Pin: ``DqliteConnection`` raises a *sibling-task-specific*
-``InterfaceError`` when task B tries to ``begin_transaction()``
-while task A holds an in-flight transaction on the same
-connection.
+"""begin_transaction from a sibling task raises a sibling-specific InterfaceError.
 
-The owner-task arm at connection.py:2470 raises
-"Nested transactions are not supported; use SAVEPOINT directly".
-The sibling-task arm at connection.py:2473-2474 raises
-"Cannot start transaction: connection is in a transaction owned
-by another task ... Each task should use its own connection from
-the pool."
-
-A regression that collapses the two arms into the owner-task
-message would point cross-task users at SAVEPOINT — the wrong
-remedy. The fix the original tx-009 introduced disambiguated
-the messages; this pin guards against silent regression.
+The owner-task arm recommends SAVEPOINT; collapsing the two arms would point cross-task
+users at SAVEPOINT, the wrong remedy.
 """
 
 import asyncio
@@ -26,9 +14,7 @@ from dqliteclient.exceptions import InterfaceError
 
 
 def _prime_in_transaction(owner_task: asyncio.Task[object]) -> DqliteConnection:
-    """Build a DqliteConnection in mid-transaction owned by
-    ``owner_task``. Bypasses the wire — we exercise only the
-    pre-await sibling-task discriminator."""
+    """Build a mid-transaction DqliteConnection owned by owner_task, bypassing the wire."""
     import os
 
     conn = DqliteConnection.__new__(DqliteConnection)
@@ -46,11 +32,9 @@ def _prime_in_transaction(owner_task: asyncio.Task[object]) -> DqliteConnection:
 
 @pytest.mark.asyncio
 async def test_sibling_task_begin_raises_separate_connection_message() -> None:
-    """The owner is task A; task B's begin_transaction must see
-    the sibling-task message, NOT the SAVEPOINT message."""
+    """Task B's begin_transaction sees the sibling-task message, not SAVEPOINT."""
 
     async def task_a_holder() -> None:
-        # Hold the "owner" identity until the test releases.
         await asyncio.sleep(10)
 
     task_a = asyncio.create_task(task_a_holder())
@@ -62,10 +46,8 @@ async def test_sibling_task_begin_raises_separate_connection_message() -> None:
                 async with conn.transaction():
                     pytest.fail("should not reach")
             msg = str(ei.value)
-            # Sibling-task arm:
             assert "owned by another task" in msg
             assert "separate connection" in msg or "own connection" in msg
-            # NOT the owner-task arm:
             assert "SAVEPOINT" not in msg
 
         task_b = asyncio.create_task(sibling_task())
@@ -78,10 +60,7 @@ async def test_sibling_task_begin_raises_separate_connection_message() -> None:
 
 @pytest.mark.asyncio
 async def test_owner_task_nested_begin_raises_savepoint_message() -> None:
-    """Positive control: same task entering begin_transaction while
-    already in transaction must see the SAVEPOINT-recommendation
-    arm, not the cross-task message. Pins the owner-arm side of
-    the discriminator."""
+    """Same task re-entering begin_transaction sees the SAVEPOINT arm, not cross-task."""
     me = asyncio.current_task()
     assert me is not None
     conn = _prime_in_transaction(owner_task=me)
@@ -90,7 +69,5 @@ async def test_owner_task_nested_begin_raises_savepoint_message() -> None:
         async with conn.transaction():
             pytest.fail("should not reach")
     msg = str(ei.value)
-    # Owner-task arm:
     assert "Nested transactions" in msg or "SAVEPOINT" in msg
-    # NOT the sibling-task arm:
     assert "owned by another task" not in msg

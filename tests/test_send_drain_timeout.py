@@ -1,13 +1,6 @@
-"""Writer drain must respect the per-connection timeout.
-
-Every ``_read_data`` call is wrapped in ``asyncio.wait_for`` with the
-per-connection timeout, but ``_send`` awaits ``writer.drain()``
-unbounded. A peer that accepts the TCP connection but stops reading
-from its socket fills the kernel send buffer and stalls
-``drain()`` indefinitely on the high-water-mark future — the
-operator-configured timeout never fires on outbound messages. Wrap
-the drain the same way reads are wrapped.
-"""
+"""``_send`` must wrap ``writer.drain()`` in the per-connection timeout: a peer that
+accepts the TCP connection but stops reading fills the send buffer and stalls drain()
+forever on the high-water-mark future, so an unbounded drain ignores the timeout."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
@@ -31,9 +24,7 @@ class TestSendDrainTimeout:
     async def test_drain_timeout_raises_dqlite_connection_error(
         self, protocol: DqliteProtocol
     ) -> None:
-        """A drain() that never resolves must raise DqliteConnectionError
-        within ``self._timeout`` seconds rather than hanging forever.
-        """
+        """A drain() that never resolves must raise DqliteConnectionError, not hang."""
 
         async def _never_drain() -> None:
             await asyncio.Event().wait()
@@ -46,13 +37,10 @@ class TestSendDrainTimeout:
             await protocol._send(b"")
         elapsed = loop.time() - start
 
-        # Timeout is 0.1s; allow a generous slack for scheduling.
         assert elapsed < 1.0, f"drain did not respect timeout; elapsed={elapsed:.3f}s"
 
     async def test_drain_error_includes_address(self, protocol: DqliteProtocol) -> None:
-        """The wrap must preserve the address suffix so operators can tell
-        which peer stalled.
-        """
+        """The error must include the address suffix so operators can tell which peer stalled."""
 
         async def _never_drain() -> None:
             await asyncio.Event().wait()
@@ -65,15 +53,8 @@ class TestSendDrainTimeout:
 
 
 class TestSendDrainMessageShape:
-    """``_send`` must emit distinct message shapes for the
-    ``TimeoutError`` arm ("Write timeout ... after Xs") vs the
-    ``OSError`` / ``RuntimeError`` family ("Write failed: ...").
-
-    SQLAlchemy's ``is_disconnect`` substring scan keys on both
-    shapes; collapsing them into one would lose the diagnostic
-    distinction between a wedged peer (timeout) and an actively
-    closed transport (reset / broken pipe).
-    """
+    """``_send`` emits distinct shapes ("Write timeout" vs "Write failed") that SA's
+    ``is_disconnect`` keys on, distinguishing a wedged peer from a closed transport."""
 
     @pytest.mark.parametrize(
         "raised,expected_substr",
@@ -104,10 +85,7 @@ class TestSendDrainMessageShape:
             f"expected {expected_substr!r} in {msg!r}; the arm should "
             f"differentiate from 'Write timeout'"
         )
-        # Address suffix is part of the contract for both arms.
         assert "peer:9001" in msg
-        # __cause__ is preserved so the underlying class is still
-        # inspectable (used by SA-side retries).
         assert exc_info.value.__cause__ is raised
 
     async def test_timeout_error_raises_write_timeout(self) -> None:

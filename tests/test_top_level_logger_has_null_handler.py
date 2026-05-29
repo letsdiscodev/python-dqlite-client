@@ -1,5 +1,4 @@
-"""Pin: ``dqliteclient`` top-level logger has a ``logging.NullHandler``.
-See sibling test in ``python-dqlite-wire``."""
+"""``dqliteclient`` top-level logger has a ``logging.NullHandler``."""
 
 from __future__ import annotations
 

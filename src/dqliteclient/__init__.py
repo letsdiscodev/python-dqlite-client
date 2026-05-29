@@ -1,12 +1,8 @@
 """Async Python client for dqlite.
 
-Thread safety: connections and pools are NOT thread-safe. All operations
-must be performed within a single asyncio event loop. To submit work from
-other threads, use ``asyncio.run_coroutine_threadsafe()``. Free-threaded
-Python (no-GIL) is not supported — the guard lives in
-``dqlitewire.__init__`` (an unconditional transitive dependency via the
-``from dqliteclient.connection import DqliteConnection`` chain) and
-raises ``ImportError`` at import time.
+Connections and pools are NOT thread-safe and must be used within a single
+event loop; submit cross-thread work via ``asyncio.run_coroutine_threadsafe()``.
+Free-threaded Python (no-GIL) is unsupported (guarded in ``dqlitewire.__init__``).
 """
 
 import asyncio
@@ -57,12 +53,8 @@ from dqlitewire import (
     DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
 )
 
-# ``Final`` does not propagate through ``from X import Y`` aliases —
-# the re-export creates a new module-level binding that needs its
-# own annotation. Pull the source-side constants in as private
-# aliases above and re-pin each name here. Mirrors the
-# ``__version__`` / ``sqlite_version`` discipline applied across
-# the workspace.
+# ``Final`` does not propagate through ``from X import Y`` aliases; the
+# re-export is a new binding needing its own annotation, hence the re-pin.
 CLOSE_TIMEOUT_FLOOR: _Final[float] = _CLOSE_TIMEOUT_FLOOR
 CLOSE_TIMEOUT_FLOOR_RATIONALE: _Final[str] = _CLOSE_TIMEOUT_FLOOR_RATIONALE
 DEFAULT_CLOSE_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_CLOSE_TIMEOUT_SECONDS
@@ -72,11 +64,8 @@ DEFAULT_MAX_MESSAGE_SIZE: _Final[int] = _DEFAULT_MAX_MESSAGE_SIZE
 __version__: _Final[str] = "0.2.2"
 
 logger = logging.getLogger(__name__)
-# Convention from the Python logging HOWTO: attach a ``NullHandler``
-# to the library's top-level logger so applications that have not
-# configured logging don't see the ``lastResort`` stderr emission,
-# and downstream code can silence the library cleanly via
-# ``getLogger("dqliteclient").propagate = False``.
+# NullHandler suppresses the lastResort stderr emission for apps that have
+# not configured logging (Python logging HOWTO convention).
 logger.addHandler(logging.NullHandler())
 
 __all__ = [
@@ -134,43 +123,9 @@ async def connect(
 ) -> DqliteConnection:
     """Connect to a dqlite node.
 
-    Args:
-        address: Node address in "host:port" format
-        database: Database name to open
-        timeout: Per-RPC-phase timeout in seconds (forwarded). Each
-            phase of an operation gets the full budget independently;
-            wrap with ``asyncio.timeout(...)`` to enforce an end-to-end
-            deadline.
-        dial_timeout: Per-dial TCP-establish budget. Defaults to
-            ``timeout`` when ``None``. Mirrors go-dqlite's
-            ``Config.DialTimeout``.
-        attempt_timeout: Per-attempt envelope wrapping
-            dial + handshake + ``open_database``. Defaults to
-            ``timeout`` when ``None``. Mirrors go-dqlite's
-            ``Config.AttemptTimeout``.
-        max_total_rows: Cumulative row cap across continuation frames
-            for a single query. Forwarded to the underlying
-            DqliteConnection. None disables the cap.
-        max_continuation_frames: Per-query continuation-frame cap.
-            Forwarded to the underlying DqliteConnection.
-        trust_server_heartbeat: Let the server-advertised heartbeat
-            widen the per-read deadline. Default False.
-        close_timeout: Budget (seconds) for the transport-drain during
-            ``close()``. After ``writer.close()`` the local side of
-            the socket is gone; ``wait_closed`` is best-effort cleanup.
-            The 0.5s default is sized for LAN; increase for WAN
-            deployments where FIN/ACK round-trip is slower, or
-            decrease to tighten SIGTERM-shutdown budgets. See
-            ``DqliteConnection.__init__`` for full rationale.
-        dial_func: Optional caller-supplied dialer
-            (:data:`DialFunc`) replacing the default TCP path. When
-            supplied, the default helper's SO_KEEPALIVE / TCP keepalive
-            tunables / happy-eyeballs are bypassed — the caller's
-            dialer owns all socket options. ``None`` preserves
-            existing behaviour. Mirrors go-dqlite's ``WithDialFunc``.
-
-    Returns:
-        A connected DqliteConnection
+    ``timeout`` is per-RPC-phase, not end-to-end; wrap in ``asyncio.timeout(...)``
+    for a total deadline. A supplied ``dial_func`` owns all socket options,
+    bypassing the default SO_KEEPALIVE/happy-eyeballs setup.
     """
     conn = DqliteConnection(
         address,
@@ -188,42 +143,12 @@ async def connect(
     try:
         await conn.connect()
     except BaseException:
-        # Eager-connect failure: clean up the partially-constructed
-        # connection so loop-bound primitives (locks, transport
-        # handles, reader Task) are not left referenced only by the
-        # orphan ``conn`` until GC. Mirrors
-        # ``dqlitedbapi.aio.aconnect`` and
-        # ``sqlalchemydqlite.aio.DqliteDialect_aio.connect``.
-        #
-        # ``asyncio.shield`` lets the inner ``close()`` task run to
-        # completion even when a FRESH outer cancel (e.g. from an
-        # ``asyncio.timeout(...)`` wrapping the caller's
-        # ``await connect(...)``) lands while we are suspended in
-        # ``await conn.close()``. Without the shield, the close
-        # would be cancelled mid-flight and the bare ``raise`` below
-        # would re-raise a ``CancelledError`` from the close site
-        # instead of the original connect-time exception — the
-        # original would survive only as ``__context__``.
-        # ``contextlib.suppress(asyncio.CancelledError)`` absorbs
-        # the outer-await CancelledError so the bare ``raise``
-        # below re-delivers the ORIGINAL exception (asyncio will
-        # re-raise the cancel at the next await on this task).
-        # ``except Exception`` catches non-cancel close-time
-        # failures (e.g. OSError on a stale transport) and logs
-        # them at DEBUG so the original connect error remains
-        # user-visible. Mirrors the ``ClusterClient.connect``
-        # try_connect cleanup arm and the ``dqlitedbapi.aio.aconnect``
-        # cleanup-close shield.
-        # Schedule the cleanup-close as a Task with an explicit
-        # ``_observe_drain_exception`` done-callback BEFORE awaiting
-        # the shielded close. Without the explicit Task + observer,
-        # the implicit Task that ``asyncio.shield(coro)`` creates is
-        # orphaned on the outer ``CancelledError`` suppress; if the
-        # abandoned close later raises a non-OSError Exception,
-        # asyncio logs "Task exception was never retrieved" at GC.
-        # Mirrors the canonical pattern at
-        # ``connection.py::_connect_impl`` finally arm and the
-        # ``_abort_protocol`` shield discipline.
+        # Clean up the partially-built connection so loop-bound primitives
+        # are not left orphaned until GC. The shield lets close() finish even
+        # if a fresh outer cancel lands mid-await, so the bare ``raise`` below
+        # re-delivers the ORIGINAL connect error rather than a CancelledError.
+        # The explicit Task + observer prevents an orphaned shield-created Task
+        # from logging "Task exception was never retrieved" at GC.
         from dqliteclient.cluster import _observe_drain_exception
 
         inner_drain = asyncio.ensure_future(conn.close())
@@ -264,68 +189,11 @@ async def create_pool(
 ) -> ConnectionPool:
     """Create a connection pool with automatic leader detection.
 
-    Args:
-        addresses: List of node addresses in "host:port" format. Ignored if
-            ``cluster`` or ``node_store`` is provided. Validated
-            synchronously while the pool is constructed; a realistic list
-            (a handful of nodes) is negligible, but a very large list (up
-            to the 10_000-entry cap) runs its ``parse_address`` validation
-            inline on the loop — see :meth:`MemoryNodeStore.__init__`'s
-            construction-cost caveat.
-        database: Database name to open
-        min_size: Number of connections to pre-warm at
-            :meth:`ConnectionPool.initialize`. NOT a steady-state
-            floor — see :class:`ConnectionPool` for the post-cascade
-            refill semantics.
-        max_size: Maximum number of connections
-        timeout: Per-RPC-phase timeout in seconds (forwarded). Each
-            phase of an operation gets the full budget independently;
-            wrap with ``asyncio.timeout(...)`` to enforce an end-to-end
-            deadline.
-        dial_timeout: Per-dial TCP-establish budget. Defaults to
-            ``timeout`` when ``None``. Mirrors go-dqlite's
-            ``Config.DialTimeout``. Forwarded to the underlying
-            ``ClusterClient`` and ``DqliteConnection`` instances.
-        attempt_timeout: Per-attempt envelope wrapping dial +
-            handshake + ``open_database``. Defaults to ``timeout``
-            when ``None``. Mirrors go-dqlite's
-            ``Config.AttemptTimeout``.
-        cluster: Externally-owned ClusterClient shared across pools.
-        node_store: Externally-owned NodeStore used to build a new
-            ClusterClient. Mutually exclusive with ``cluster``.
-        max_total_rows: Cumulative row cap across continuation frames
-            for a single query. Forwarded to the underlying
-            ConnectionPool. None disables the cap.
-        max_continuation_frames: Per-query continuation-frame cap.
-            Forwarded to the underlying ConnectionPool.
-        trust_server_heartbeat: Let the server-advertised heartbeat
-            widen the per-read deadline. Default False.
-        close_timeout: Budget (seconds) for the transport-drain during
-            ``close()``. After ``writer.close()`` the local side of
-            the socket is gone; ``wait_closed`` is best-effort cleanup.
-            The 0.5s default is sized for LAN; increase for WAN
-            deployments where FIN/ACK round-trip is slower, or
-            decrease to tighten SIGTERM-shutdown budgets. See
-            ``DqliteConnection.__init__`` for full rationale.
-        max_attempts: Maximum leader-discovery attempts per pool
-            connect (forwarded to ``ClusterClient.connect``). ``None``
-            (default) uses the cluster client's default of 3. Must be
-            ``>= 1`` if not ``None``.
-        max_elapsed_seconds: Total wall-clock cap on the per-connect
-            retry loop (forwarded to ``ClusterClient.connect``).
-            ``None`` (default) means only ``max_attempts`` governs
-            termination. Set to a positive finite number for
-            go-dqlite-style total-time bounding.
-        dial_func: Optional caller-supplied dialer
-            (:data:`DialFunc`) forwarded to the auto-built
-            :class:`ClusterClient` and to every pooled
-            :class:`DqliteConnection`. Mutually exclusive with
-            ``cluster=``: an externally-owned cluster already carries
-            its own ``dial_func``, so supplying both raises
-            ``ValueError``. Mirrors go-dqlite's ``WithDialFunc``.
-
-    Returns:
-        An initialized ConnectionPool
+    ``min_size`` is a pre-warm count, not a steady-state floor (see
+    :class:`ConnectionPool` refill semantics). ``timeout`` is per-RPC-phase,
+    not end-to-end. ``addresses`` is validated inline on the loop, which can
+    be costly near the 10_000-entry cap. ``dial_func`` is mutually exclusive
+    with ``cluster=`` (raises ``ValueError``), which carries its own dialer.
     """
     pool = ConnectionPool(
         addresses,

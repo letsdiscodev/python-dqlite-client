@@ -1,19 +1,6 @@
-"""Pin: ``_pool_unclosed_warning`` finalizer is fork-safe — it
-skips the ResourceWarning emission when invoked in a forked child
-whose parent owned the captured ``closed_flag`` / ``reserved_flag``
-snapshots.
-
-Mirrors the dbapi sibling pin at
-``python-dqlite-dbapi/tests/aio/test_async_unclosed_warning_skips_in_fork_child.py``
-and the connection-side pin at
-``tests/test_connection_unclosed_finalizer_fork_safe.py``.
-
-Without the pid guard, a parent that constructed a
-``ConnectionPool``, called ``initialize()`` (flipping
-``reserved_flag[0] = True``) and forked, would have the child emit
-a false-positive "pool was garbage-collected" warning. AND the
-inherited queued ``DqliteConnection`` siblings would each emit
-their own false positive, for an N+1 cascade.
+"""_pool_unclosed_warning finalizer is fork-safe: a pid guard skips the
+ResourceWarning in a forked child, avoiding a false-positive N+1 cascade
+(pool + inherited queued connections) inherited from the parent's flags.
 """
 
 from __future__ import annotations
@@ -30,9 +17,7 @@ from dqliteclient.pool import _pool_unclosed_warning
 
 
 def test_pool_finalizer_short_circuits_on_pid_mismatch_no_warning() -> None:
-    """In a simulated forked child, ``_pool_unclosed_warning`` must
-    not emit a ResourceWarning even though ``reserved_flag=True`` and
-    ``closed_flag=False`` would otherwise trigger one."""
+    """Simulated forked child: no ResourceWarning despite reserved=True, closed=False."""
     closed_flag = [False]
     reserved_flag = [True]
     parent_pid = os.getpid()
@@ -53,8 +38,7 @@ def test_pool_finalizer_short_circuits_on_pid_mismatch_no_warning() -> None:
 
 
 def test_pool_finalizer_emits_warning_when_pid_matches() -> None:
-    """Negative pin: in-process, the warning still fires when
-    reserved_flag=True and closed_flag=False."""
+    """In-process the warning still fires when reserved=True, closed=False."""
     closed_flag = [False]
     reserved_flag = [True]
     same_pid = os.getpid()
@@ -76,8 +60,7 @@ def test_pool_finalizer_emits_warning_when_pid_matches() -> None:
 
 @pytest.mark.asyncio
 async def test_pool_finalizer_pid_mismatch_skips_even_with_nonempty_queue() -> None:
-    """Forked child path: even when the queue carries entries
-    (parent state), the child must not emit the warning."""
+    """Forked child must not emit even with a non-empty inherited queue."""
     closed_flag = [False]
     reserved_flag = [True]
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=10)
@@ -98,9 +81,7 @@ async def test_pool_finalizer_pid_mismatch_skips_even_with_nonempty_queue() -> N
 
 
 def test_pool_finalizer_registration_captures_creator_pid() -> None:
-    """Pin: the pool's finalize registration must include the
-    creator_pid so the pid guard has a parent-pid baseline. Future
-    refactors must not silently drop the arg and revert the fix."""
+    """Finalize registration must include creator_pid as the pid-guard baseline."""
     from dqliteclient.pool import ConnectionPool
 
     pool = ConnectionPool(addresses=["h:9001"], min_size=0, max_size=2)
@@ -119,10 +100,8 @@ def test_pool_finalizer_registration_captures_creator_pid() -> None:
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
 def test_pool_finalizer_in_forked_child_does_not_emit_warning() -> None:
-    """End-to-end pin: construct a ConnectionPool, simulate the
-    reserved_flag flip, fork, GC the inherited pool in the child,
-    and verify the child does not emit a false-positive
-    ResourceWarning to its stderr."""
+    """End-to-end: forked child GC'ing the inherited pool emits no
+    false-positive ResourceWarning to stderr."""
     import contextlib as _contextlib
     import gc
     import sys

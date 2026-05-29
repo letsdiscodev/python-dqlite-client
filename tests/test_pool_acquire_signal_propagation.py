@@ -1,20 +1,11 @@
-"""``ConnectionPool.acquire`` cleanup must not swallow KeyboardInterrupt / SystemExit.
+"""``ConnectionPool.acquire`` cleanup must not swallow KeyboardInterrupt /
+SystemExit.
 
-The four cancel-and-drain-task sites in ``acquire()`` (around the
-``closed_task`` / ``get_task`` cleanup) used to wrap the await in
-``contextlib.suppress(BaseException)``. The intent was to drain the
-cancelled task's ``CancelledError`` without re-raising. ``BaseException``
-is too broad: it also catches ``KeyboardInterrupt`` and ``SystemExit``,
-which the Python signal-propagation contract requires to bubble out.
-
-Pin the narrowed semantics: ``CancelledError`` from the cancelled await
-is silenced (existing happy-path); ``KeyboardInterrupt`` / ``SystemExit``
-from the await propagates.
-
-The tests intercept ``closed_event.wait()`` coroutines so the
-``closed_task`` produced by ``acquire`` raises the chosen exception
-when awaited during cleanup. The pool is pre-loaded so ``acquire``
-takes the at-capacity branch where the four sites live.
+The cancel-and-drain-task sites in ``acquire()`` silence only
+``CancelledError`` from the drained await; ``KeyboardInterrupt`` /
+``SystemExit`` (and any other BaseException) must propagate per the signal
+contract. The tests make the ``closed_task`` raise the chosen exception
+on cancel and drive ``acquire`` into the at-capacity branch.
 """
 
 from __future__ import annotations
@@ -27,15 +18,9 @@ from dqliteclient.pool import ConnectionPool
 
 
 class _ClosedEventStub:
-    """Stand-in for ``asyncio.Event`` whose cancelled ``wait()`` re-raises
-    a ``BaseException`` instead of ``CancelledError``.
-
-    The pool stores its closed-event under ``_closed_event``;
-    swapping it out makes ``closed_task = asyncio.create_task(
-    closed_event.wait())`` produce a task whose cancellation surfaces
-    as the chosen ``BaseException``. The cleanup site in ``acquire``
-    cancels then awaits this task — the exact path under test.
-    """
+    """``asyncio.Event`` stand-in whose cancelled ``wait()`` re-raises the
+    chosen ``BaseException`` instead of ``CancelledError``, so the
+    ``closed_task`` cleanup site in ``acquire`` surfaces it."""
 
     def __init__(self, exc: BaseException) -> None:
         self._exc = exc
@@ -50,9 +35,7 @@ class _ClosedEventStub:
         return False
 
     async def wait(self) -> bool:
-        # Park indefinitely. When the cleanup cancels this coroutine,
-        # convert the CancelledError into the test's chosen BaseException
-        # so we can assert it propagates out of ``acquire``.
+        # Park, then convert the cleanup's cancel into the chosen exception.
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
@@ -61,29 +44,22 @@ class _ClosedEventStub:
 
 
 def _force_at_capacity(pool: ConnectionPool, exc: BaseException) -> None:
-    """Make ``acquire`` enter the at-capacity ``asyncio.wait`` branch.
-
-    The pool reserves the first slot via ``_size`` accounting; pre-
-    setting ``_size = max_size`` plus an empty in-queue forces the
-    queue-wait path. The closed-event stub injects the chosen
-    exception when ``acquire`` awaits ``closed_event.wait()``.
-    """
+    """Force ``acquire`` into the at-capacity queue-wait branch via
+    ``_size = max_size`` and an empty queue, with the stub injecting the
+    chosen exception on ``closed_event.wait()``."""
     pool._size = pool._max_size  # at capacity
     pool._closed_event = _ClosedEventStub(exc)  # type: ignore[assignment]
 
 
 class _SentinelBaseException(BaseException):
-    """Custom ``BaseException`` (not ``Exception``) that bypasses
-    pytest's special-cased KeyboardInterrupt/SystemExit handling so
-    we can assert ``BaseException``-class propagation cleanly."""
+    """``BaseException`` that bypasses pytest's special-cased
+    KeyboardInterrupt/SystemExit handling for a clean propagation assert."""
 
 
 @pytest.mark.asyncio
 async def test_baseexception_during_cleanup_propagates() -> None:
-    """``KeyboardInterrupt`` / ``SystemExit`` and any other
-    ``BaseException`` from the cancelled-task drain must propagate.
-    The cleanup may not silently swallow them — only ``CancelledError``
-    is meant to be drained."""
+    """A non-CancelledError ``BaseException`` from the cancelled-task drain
+    must propagate; only ``CancelledError`` is meant to be drained."""
     pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1, timeout=5.0)
     _force_at_capacity(pool, _SentinelBaseException("signal"))
 

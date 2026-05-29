@@ -1,20 +1,6 @@
-"""Pin: ``DqliteConnection.transaction()`` raises
-``AmbiguousCommitError`` when the COMMIT mid-flight failure is not a
-deterministic-rollback shape.
-
-The transaction context manager already discriminates between
-deterministic rollback (server-side auto-rolled-back; connection
-healthy) and ambiguous commit (transport / cancellation /
-non-rollback codes; commit state genuinely unknown). The ambiguous
-branch invalidated the connection but re-raised the original
-exception verbatim, leaving retry middleware unable to programmatic-
-ally distinguish "safe to retry" from "may double-apply because
-COMMIT may have already replicated." Mirror the dbapi-side
-``AmbiguousCommitError`` so callers can branch on the class.
-
-The class is a subclass of ``OperationalError`` so existing
-``except OperationalError:`` arms continue to catch it.
-"""
+"""``transaction()`` raises ``AmbiguousCommitError`` (an ``OperationalError`` subclass) when the
+mid-flight COMMIT failure is not a deterministic-rollback shape, so retry middleware can branch
+on "safe to retry" vs "may double-apply"."""
 
 from __future__ import annotations
 
@@ -70,10 +56,7 @@ def test_ambiguous_commit_pickles_losslessly() -> None:
 
 @pytest.mark.asyncio
 async def test_dqlite_connection_error_mid_commit_raises_ambiguous_commit() -> None:
-    """A transport-class failure mid-COMMIT must surface as
-    ``AmbiguousCommitError``. The original exception is preserved
-    via ``__cause__``.
-    """
+    """Transport failure mid-COMMIT surfaces as AmbiguousCommitError, original via __cause__."""
     conn = _make_connection_in_transaction()
     invalidate_called = MagicMock()
     conn._invalidate = invalidate_called
@@ -96,14 +79,7 @@ async def test_dqlite_connection_error_mid_commit_raises_ambiguous_commit() -> N
 
 @pytest.mark.asyncio
 async def test_cancelled_mid_commit_propagates_verbatim() -> None:
-    """``CancelledError`` mid-COMMIT MUST propagate verbatim — it
-    carries structured-concurrency semantics that asyncio relies on
-    (TaskGroup teardown). The ambiguous-commit promotion explicitly
-    skips ``CancelledError`` / ``KeyboardInterrupt`` / ``SystemExit``.
-    The connection is still invalidated (the server-side state IS
-    ambiguous from the cancel), but the exception surface is the
-    structured-concurrency signal.
-    """
+    """CancelledError mid-COMMIT propagates verbatim (not promoted), but still invalidates."""
     conn = _make_connection_in_transaction()
     invalidate_called = MagicMock()
     conn._invalidate = invalidate_called
@@ -119,19 +95,12 @@ async def test_cancelled_mid_commit_propagates_verbatim() -> None:
         async with conn.transaction():
             pass
 
-    # Connection is still invalidated — the server-side state is
-    # genuinely ambiguous — but the exception surface preserves the
-    # cancel signal.
     invalidate_called.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_deterministic_rollback_code_does_not_raise_ambiguous_commit() -> None:
-    """SQLite primary code 19 (SQLITE_CONSTRAINT) on COMMIT — a
-    deterministic rollback shape — leaves the server in a known
-    no-tx state. The exception must remain a bare
-    ``OperationalError``, NOT promoted to ``AmbiguousCommitError``.
-    """
+    """Deterministic-rollback code 19 (SQLITE_CONSTRAINT) stays a bare OperationalError."""
     conn = _make_connection_in_transaction()
     invalidate_called = MagicMock()
     conn._invalidate = invalidate_called
@@ -147,8 +116,6 @@ async def test_deterministic_rollback_code_does_not_raise_ambiguous_commit() -> 
         async with conn.transaction():
             pass
 
-    # Must NOT be AmbiguousCommitError — deterministic rollback codes
-    # are explicitly the "connection healthy, retry safe" path.
     assert not isinstance(excinfo.value, AmbiguousCommitError), (
         "deterministic rollback codes (SQLITE_CONSTRAINT etc.) must NOT "
         "promote to AmbiguousCommitError"
@@ -158,10 +125,7 @@ async def test_deterministic_rollback_code_does_not_raise_ambiguous_commit() -> 
 
 @pytest.mark.asyncio
 async def test_legacy_except_operational_error_still_catches_ambiguous() -> None:
-    """Backwards-compat pin: an existing call site that catches
-    ``OperationalError`` continues to catch
-    ``AmbiguousCommitError`` (via subclass inheritance).
-    """
+    """``except OperationalError`` still catches AmbiguousCommitError via subclassing."""
     conn = _make_connection_in_transaction()
     conn._invalidate = MagicMock()
 
@@ -175,6 +139,4 @@ async def test_legacy_except_operational_error_still_catches_ambiguous() -> None
     with pytest.raises(OperationalError) as excinfo:
         async with conn.transaction():
             pass
-    # The promoted exception class is reachable via OperationalError —
-    # the subclass relationship preserves backwards compat.
     assert isinstance(excinfo.value, AmbiguousCommitError)

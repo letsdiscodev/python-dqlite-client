@@ -1,19 +1,6 @@
-"""Pin: ``MemoryNodeStore(initial_addresses=...)`` emits a
-``DeprecationWarning`` so callers see the migration roadmap to
-``addresses=...`` rather than only the docstring tag.
+"""``MemoryNodeStore(initial_addresses=...)`` emits a DeprecationWarning.
 
-The constructor accepts both ``addresses`` (preferred) and
-``initial_addresses`` (deprecated). The docstring marks the latter
-deprecated; this pin ensures the runtime signal exists too, with
-``stacklevel=2`` so the warning points at the caller's
-``MemoryNodeStore(...)`` line, not the line in ``__init__`` itself.
-
-The stacklevel pin matters: an implementer who sets
-``stacklevel=1`` (or omits it) would still pass a basic count-and-
-category assertion, but the warning would surface from
-``node_store.py`` rather than the user's call site — defeating the
-operator's "find every deprecated usage" grep over the test
-suite.
+``stacklevel=2`` must point the warning at the caller, not ``node_store.py``.
 """
 
 from __future__ import annotations
@@ -40,20 +27,13 @@ def test_initial_addresses_emits_deprecation_warning() -> None:
 
 
 def test_initial_addresses_warning_stacklevel_points_at_caller() -> None:
-    """The warning must point at the caller's invocation line, not at
-    the line inside ``MemoryNodeStore.__init__``. Verified by the
-    captured ``filename`` matching this test file rather than
-    ``node_store.py``.
-    """
+    """The warning points at the caller's line, not inside __init__."""
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
         MemoryNodeStore(initial_addresses=["leader:9001"])
 
     deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
     assert len(deprecations) == 1
-    # ``stacklevel=2`` makes the warning appear to come from this
-    # test file. ``stacklevel=1`` (default) would surface
-    # ``node_store.py``; that's what this assertion fences against.
     assert deprecations[0].filename.endswith(
         "test_memory_node_store_initial_addresses_deprecation.py"
     ), (
@@ -63,7 +43,7 @@ def test_initial_addresses_warning_stacklevel_points_at_caller() -> None:
 
 
 def test_addresses_kwarg_emits_no_warning() -> None:
-    """Positive control: the preferred kwarg path stays silent."""
+    """The preferred kwarg path stays silent."""
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
         MemoryNodeStore(addresses=["leader:9001"])
@@ -73,7 +53,7 @@ def test_addresses_kwarg_emits_no_warning() -> None:
 
 
 def test_no_args_emits_no_warning() -> None:
-    """Empty-construction path stays silent (no kwarg used at all)."""
+    """Empty-construction path stays silent."""
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
         MemoryNodeStore()
@@ -83,10 +63,7 @@ def test_no_args_emits_no_warning() -> None:
 
 
 def test_initial_addresses_path_still_seeds_the_store() -> None:
-    """Functional regression check: the deprecated kwarg still
-    populates the store. Run under ``filterwarnings`` to ignore the
-    expected DeprecationWarning so a global ``-W error`` test
-    configuration doesn't flip this into a failure."""
+    """The deprecated kwarg still populates the store."""
     import asyncio
 
     with warnings.catch_warnings():
@@ -100,10 +77,7 @@ def test_initial_addresses_path_still_seeds_the_store() -> None:
 
 @pytest.mark.parametrize("kwarg", ["initial_addresses", "addresses"])
 def test_both_kwargs_rejected_before_warning(kwarg: str) -> None:
-    """The TypeError for "both kwargs" must fire BEFORE any warning,
-    regardless of which kwarg name comes second. Pinning ordering so
-    a future refactor that warns first then raises does not flip the
-    user-visible behaviour."""
+    """The "both kwargs" TypeError fires before any warning, regardless of kwarg order."""
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
         with pytest.raises(TypeError, match="Pass only one"):

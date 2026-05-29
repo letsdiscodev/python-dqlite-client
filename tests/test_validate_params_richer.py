@@ -1,13 +1,6 @@
-"""``DqliteConnection._validate_params`` rejects scalar-iterable and
-unordered containers.
-
-Previously only ``str | bytes`` were rejected, leaving ``bytearray``,
-``memoryview``, ``Mapping``, and ``set`` / ``frozenset`` as silent
-footguns at the bind layer — they iterate in ways that scramble the
-positional qmark binding. Match the richer dbapi-layer
-``_reject_non_sequence_params`` validator so callers that go direct
-to the client layer are not silently exposed.
-"""
+"""``DqliteConnection._validate_params`` rejects bytearray / memoryview /
+Mapping / set / frozenset: they iterate in ways that scramble positional
+qmark binding (mirrors the dbapi ``_reject_non_sequence_params`` validator)."""
 
 from __future__ import annotations
 

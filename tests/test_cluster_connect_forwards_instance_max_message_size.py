@@ -1,21 +1,6 @@
-"""Pin: ``ClusterClient.connect()`` falls back to
-``self._max_message_size`` when the per-call ``max_message_size`` kwarg
-is not supplied.
-
-Sibling sites (``_query_leader`` at cluster.py:1428 and an admin path
-at cluster.py:2828) correctly consult ``self._max_message_size``. The
-``connect()`` path took a kwarg-only ``max_message_size: int | None =
-None`` and forwarded it verbatim into ``DqliteConnection(...)``, so a
-caller doing ``ClusterClient(..., max_message_size=N)`` followed by
-``await cluster.connect()`` (no per-call override) silently dropped
-the constructor-supplied value. ``DqliteProtocol`` then resolved
-``None`` to ``DEFAULT_MAX_MESSAGE_SIZE`` (the wire default ~64 MiB),
-silently bypassing the operator's DoS-hardening cap or the operator's
-"raise the cap to handle large rowsets" knob.
-
-Same shape as the ``policy=`` precedent at cluster.py:744-756 ("per-
-call overrides instance default; None falls back").
-"""
+"""connect() falls back to self._max_message_size when the per-call kwarg is
+omitted; previously it forwarded None verbatim, silently dropping the
+constructor-supplied value and bypassing the operator's DoS-hardening cap."""
 
 from __future__ import annotations
 
@@ -39,8 +24,7 @@ def _stub_open_connection() -> tuple[AsyncMock, MagicMock]:
 
 @pytest.mark.asyncio
 async def test_connect_forwards_instance_max_message_size_when_kwarg_omitted() -> None:
-    """Construction-time ``max_message_size`` is honored by ``connect()``
-    when the caller doesn't supply a per-call override."""
+    """Construction-time max_message_size is honored when no per-call override."""
     store = MemoryNodeStore(["localhost:9001"])
     cluster = ClusterClient(store, timeout=1.0, max_message_size=128 * 1024 * 1024)
 
@@ -73,8 +57,7 @@ async def test_connect_forwards_instance_max_message_size_when_kwarg_omitted() -
 
 @pytest.mark.asyncio
 async def test_connect_per_call_override_wins_over_instance_default() -> None:
-    """Per-call ``max_message_size`` kwarg wins over the instance value
-    — matches the ``policy=`` precedent at cluster.py:744-756."""
+    """Per-call max_message_size kwarg wins over the instance value."""
     store = MemoryNodeStore(["localhost:9001"])
     cluster = ClusterClient(store, timeout=1.0, max_message_size=128 * 1024 * 1024)
 
@@ -107,10 +90,8 @@ async def test_connect_per_call_override_wins_over_instance_default() -> None:
 
 @pytest.mark.asyncio
 async def test_connect_with_no_instance_default_and_no_kwarg_passes_none() -> None:
-    """Regression: an unset construction-time value AND an omitted
-    per-call kwarg result in ``None`` propagating to ``DqliteConnection``
-    (which then resolves to the wire default). No silent default
-    injection at the cluster layer."""
+    """Unset construction value and omitted kwarg propagate None (no cluster-layer
+    default injection); DqliteConnection resolves it to the wire default."""
     store = MemoryNodeStore(["localhost:9001"])
     cluster = ClusterClient(store, timeout=1.0)  # no max_message_size
 

@@ -1,21 +1,7 @@
-"""Pool ``_reset_connection`` must skip ROLLBACK when the protocol's
-decoder buffer is poisoned.
-
-The pool consults ``protocol.is_wire_coherent`` inside
-``_socket_looks_dead`` so a doomed wire is not chased with a wasted
-RTT — the next ``_read_response`` would raise ``ProtocolError``
-anyway and force an ``_invalidate``. The contract:
-
-* ``is_wire_coherent == False`` →
-  ``_socket_looks_dead == True`` →
-  ``_reset_connection`` returns False without sending ROLLBACK.
-
-The wire layer pins the decoder's poison/recovery semantics
-(``test_server_failure_mid_stream.py``); the pool-side short-circuit
-on the poisoned-decoder branch is the only branch in
-``_socket_looks_dead`` not directly exercised by an existing test.
-A regression that loosens the check (e.g., dropping the
-``is_wire_coherent`` line) would silently restore the wasted RTT.
+"""Pool _reset_connection skips ROLLBACK when the protocol's decoder
+is poisoned: is_wire_coherent==False makes _socket_looks_dead True and
+_reset_connection returns False without sending ROLLBACK (the next
+_read_response would raise ProtocolError anyway — a wasted RTT).
 """
 
 from __future__ import annotations
@@ -28,18 +14,14 @@ from dqliteclient.pool import ConnectionPool, _socket_looks_dead
 
 
 def _make_conn_with_poisoned_protocol(*, in_transaction: bool) -> MagicMock:
-    """Build a stub connection whose ``_protocol.is_wire_coherent``
-    reports False and whose other transport attributes look healthy
-    (so ``_socket_looks_dead`` only fires the wire-coherence branch,
-    not a transport-closed branch). Mirrors the real shape closely
-    enough for ``_reset_connection`` and ``_socket_looks_dead`` to
-    operate."""
+    """Stub conn with is_wire_coherent=False but otherwise healthy
+    transport, so _socket_looks_dead fires only the wire-coherence branch."""
     transport = MagicMock()
-    transport.is_closing.return_value = False  # transport not closing
+    transport.is_closing.return_value = False
     writer = MagicMock()
     writer.transport = transport
     reader = MagicMock()
-    reader.at_eof.return_value = False  # reader not at EOF
+    reader.at_eof.return_value = False
 
     protocol = MagicMock()
     protocol.is_wire_coherent = False  # the load-bearing signal
@@ -61,9 +43,8 @@ def _make_conn_with_poisoned_protocol(*, in_transaction: bool) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_socket_looks_dead_returns_true_on_poisoned_decoder() -> None:
-    """Direct unit pin on the helper. ``_socket_looks_dead`` must
-    return True when the protocol's wire-coherence accessor reports
-    False — even when the transport / reader look healthy."""
+    """_socket_looks_dead returns True on is_wire_coherent=False even
+    when transport/reader look healthy."""
     conn = _make_conn_with_poisoned_protocol(in_transaction=True)
 
     assert _socket_looks_dead(conn) is True
@@ -71,9 +52,7 @@ async def test_socket_looks_dead_returns_true_on_poisoned_decoder() -> None:
 
 @pytest.mark.asyncio
 async def test_reset_connection_skips_rollback_on_poisoned_decoder() -> None:
-    """Higher-level pin: with an in-transaction stub conn whose
-    decoder is poisoned, ``_reset_connection`` must return False
-    WITHOUT sending ROLLBACK over the wire."""
+    """In-tx + poisoned decoder: _reset_connection returns False with no ROLLBACK."""
     pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
     conn = _make_conn_with_poisoned_protocol(in_transaction=True)
 
@@ -91,12 +70,8 @@ async def test_reset_connection_skips_rollback_on_poisoned_decoder() -> None:
 
 @pytest.mark.asyncio
 async def test_reset_connection_drops_poisoned_decoder_even_without_rollback() -> None:
-    """A poisoned wire is unrecoverable regardless of tx state — even
-    without an open transaction, the slot must be dropped so a future
-    acquirer doesn't dequeue it, retrip ``_socket_looks_dead`` on the
-    way out, and pay one wasted slot churn. The wire-coherence check
-    runs at the top of ``_reset_connection``, before the
-    ``needs_rollback`` calculation."""
+    """Poisoned wire is dropped even with no open tx — the wire-coherence
+    check runs before the needs_rollback calculation."""
     pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
     conn = _make_conn_with_poisoned_protocol(in_transaction=False)
 
@@ -111,13 +86,11 @@ async def test_reset_connection_drops_poisoned_decoder_even_without_rollback() -
 
 @pytest.mark.asyncio
 async def test_reset_connection_skips_rollback_when_only_savepoint_stack_set() -> None:
-    """Pin: the poisoned-decoder short-circuit fires regardless of
-    WHICH transaction-tracking flag triggered ``needs_rollback``.
-    Use the ``_savepoint_stack`` branch to prove the short-circuit
-    isn't gated on ``_in_transaction`` specifically."""
+    """Short-circuit fires regardless of which flag triggered needs_rollback
+    (here _savepoint_stack, not _in_transaction)."""
     pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
     conn = _make_conn_with_poisoned_protocol(in_transaction=False)
-    conn._savepoint_stack = ["sp1"]  # any tracked SAVEPOINT triggers needs_rollback
+    conn._savepoint_stack = ["sp1"]
 
     result = await pool._reset_connection(conn)
 
@@ -127,9 +100,7 @@ async def test_reset_connection_skips_rollback_when_only_savepoint_stack_set() -
 
 @pytest.mark.asyncio
 async def test_reset_connection_skips_rollback_when_only_untracked_savepoint_flag_set() -> None:
-    """Pin: same coverage extended to ``_has_untracked_savepoint``
-    (the quoted-SAVEPOINT autobegun-tx case). The short-circuit must
-    drop the slot rather than chase a doomed RTT."""
+    """Same short-circuit via _has_untracked_savepoint."""
     pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
     conn = _make_conn_with_poisoned_protocol(in_transaction=False)
     conn._has_untracked_savepoint = True
@@ -142,13 +113,10 @@ async def test_reset_connection_skips_rollback_when_only_untracked_savepoint_fla
 
 @pytest.mark.asyncio
 async def test_reset_connection_attempts_rollback_when_decoder_coherent() -> None:
-    """Negative pin (control): with a coherent decoder, the pool
-    DOES issue ROLLBACK over the wire. Confirms the short-circuit
-    is the ONLY thing skipping the round-trip — drop it and this
-    test stays green, change it the other way and it goes red."""
+    """Control: with a coherent decoder the pool DOES issue ROLLBACK."""
     pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
     conn = _make_conn_with_poisoned_protocol(in_transaction=True)
-    conn._protocol.is_wire_coherent = True  # flip the signal
+    conn._protocol.is_wire_coherent = True
 
     result = await pool._reset_connection(conn)
 

@@ -1,15 +1,6 @@
-"""Pin: ``DqliteConnection._close_impl``'s final
-``wait_for(protocol.wait_closed())`` is wrapped in
-``ensure_future + add_done_callback(_observe_drain_exception) +
-shield`` — mirroring the discipline at ``_abort_protocol``.
-
-Without the shield, an outer cancel landing mid-``wait_closed``
-discards the underlying StreamReader task, surfacing later as a
-"Task was destroyed but it is pending" diagnostic at GC. Direct
-``await conn.close()`` callers (notably the dbapi-aio adapter's
-``_async_conn.close()`` path) are NOT covered by ``__aexit__``'s
-shield, so they are exposed without the discipline at this site.
-"""
+"""Without the shield, an outer cancel mid-``wait_closed`` discards the underlying
+StreamReader task, surfacing as "Task was destroyed but it is pending" at GC; direct
+``await conn.close()`` callers are not covered by ``__aexit__``'s shield."""
 
 from __future__ import annotations
 
@@ -25,15 +16,8 @@ from dqliteclient.connection import DqliteConnection
 async def test_close_impl_final_wait_closed_inner_task_not_cancelled_by_outer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The shield's load-bearing property: a cancel landing while
-    ``wait_closed`` is in flight must NOT cancel the inner drain task.
-    The outer ``CancelledError`` propagates out of ``_close_impl``,
-    but the inner ``wait_closed`` Task keeps running so the
-    StreamReader's pending-task warning does not surface at GC.
-
-    Pre-fix: ``wait_for(protocol.wait_closed(), ...)`` had no shield,
-    so the inner task was cancelled along with the outer await.
-    """
+    """A cancel during ``wait_closed`` must not cancel the inner drain task: the outer
+    CancelledError propagates but the inner Task keeps running."""
     loop = asyncio.get_running_loop()
 
     inner_entered = asyncio.Event()
@@ -63,11 +47,8 @@ async def test_close_impl_final_wait_closed_inner_task_not_cancelled_by_outer(
     conn._close_timeout = 5.0
     conn._address = "127.0.0.1:1"
 
-    # Capture the inner shielded task by hooking ``asyncio.ensure_future``
-    # on the stdlib ``asyncio`` module — the module under test calls
-    # ``asyncio.ensure_future(...)``, which resolves through the stdlib
-    # binding at call time. (The Task type itself is C-implemented and
-    # immutable, so we cannot patch ``add_done_callback`` directly.)
+    # Capture the inner shielded task via asyncio.ensure_future: the Task type is
+    # C-implemented, so we cannot patch add_done_callback directly.
     captured_inner: list[asyncio.Task[object]] = []
 
     from typing import Any
@@ -89,25 +70,20 @@ async def test_close_impl_final_wait_closed_inner_task_not_cancelled_by_outer(
     with pytest.raises(asyncio.CancelledError):
         await close_task
 
-    # Load-bearing assertion: the inner shielded task is NOT
-    # cancelled by the outer cancel.
     assert not inner.done(), (
         "inner wait_closed task must outlive outer cancel "
         "(shield keeps it running); the pre-fix unshielded "
         "wait_for would have cancelled it here"
     )
 
-    # Release the parked drain so the inner task completes cleanly.
     finalise.set()
     await inner
 
 
 @pytest.mark.asyncio
 async def test_close_impl_final_wait_closed_observer_attached() -> None:
-    """Pin the observer wiring: the inner ``wait_closed`` task must
-    have ``_observe_drain_exception`` attached as a done-callback so
-    eventual drain exceptions are surfaced (and not silently retained
-    on the task as ``"Task exception was never retrieved"``)."""
+    """The inner ``wait_closed`` task must have ``_observe_drain_exception`` attached as a
+    done-callback so drain exceptions are surfaced."""
     loop = asyncio.get_running_loop()
 
     observed_tasks: list[asyncio.Task[None]] = []

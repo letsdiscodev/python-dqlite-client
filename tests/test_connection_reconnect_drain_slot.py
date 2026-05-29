@@ -1,11 +1,5 @@
-"""connect() must clear ``_pending_drain`` on reconnect so a second
-``_invalidate`` does not overwrite an un-awaited prior drain task.
-
-Scenario: invalidate → (reconnect path leading back to connect()) →
-invalidate overwrites the slot without cancelling the first task,
-violating the documented single-ref discipline. Pinning ``connect()``
-to cancel-and-await a pending prior drain closes the loop.
-"""
+"""connect() must cancel-and-await a prior ``_pending_drain`` so a later
+``_invalidate`` cannot clobber an un-awaited drain task (single-ref discipline)."""
 
 from __future__ import annotations
 
@@ -22,8 +16,7 @@ from dqliteclient.connection import DqliteConnection
 async def test_connect_cancels_prior_pending_drain() -> None:
     conn = DqliteConnection("localhost:9001", timeout=1.0, close_timeout=1.0)
 
-    # Simulate a still-running drain task scheduled by a prior
-    # invalidate.
+    # A still-running drain task from a prior invalidate.
     ran: list[str] = []
 
     async def never_completing() -> None:
@@ -34,27 +27,20 @@ async def test_connect_cancels_prior_pending_drain() -> None:
             raise
 
     prior = asyncio.get_running_loop().create_task(never_completing())
-    # Let it actually start running so cancel has something to deliver to.
+    # Let it start so cancel has something to deliver to.
     await asyncio.sleep(0)
     conn._pending_drain = prior
 
-    # Force connect() through the open_connection path and make it fail
-    # promptly so we don't need a real server. We only need to prove
-    # connect() processed ``_pending_drain`` before doing its work.
     called: list[object] = []
 
     async def fake_open_connection(host: str, port: int, **_kwargs: object):
         called.append((host, port))
-        # Return a never-read/writer pair via mocks; handshake will
-        # be mocked to raise immediately below.
         reader = MagicMock()
         writer = MagicMock()
         writer.close = MagicMock()
         writer.wait_closed = AsyncMock()
         return reader, writer
 
-    # Stub out DqliteProtocol so handshake() raises an
-    # OperationalError that does NOT trigger reconnect-worthy branches.
     import dqliteclient.connection as conn_mod
 
     real_proto = conn_mod.DqliteProtocol  # type: ignore[attr-defined]
@@ -90,29 +76,20 @@ async def test_connect_cancels_prior_pending_drain() -> None:
         asyncio.open_connection = real_open
         DqliteConnection._abort_protocol = original_abort
 
-    # Either the prior task was cancelled-and-awaited, or the slot was
-    # explicitly reset — both satisfy the invariant that a subsequent
-    # _invalidate cannot clobber a live task reference.
     assert prior.done(), (
         "connect() must cancel-and-await any prior pending drain so a "
         "subsequent _invalidate does not overwrite a live task reference"
     )
-    # Drain the task result so we don't leak a pending task.
     with pytest.raises(asyncio.CancelledError):
         await prior
 
 
 @pytest.mark.asyncio
 async def test_connect_propagates_outer_cancel_during_pending_drain_retire() -> None:
-    """An outer ``task.cancel()`` delivered while ``connect()`` is
-    awaiting a prior pending-drain task MUST propagate. Without this,
-    a broad suppress-after-cancel-and-await would silently consume
-    the parent's cancel signal and ``connect()`` would proceed to
-    invoke ``asyncio.open_connection`` despite the parent's intent."""
+    """An outer cancel delivered while connect() awaits the prior drain must
+    propagate, not be swallowed (which would let connect() proceed to dial)."""
     conn = DqliteConnection("localhost:9001", timeout=5.0, close_timeout=5.0)
 
-    # Long-running drain task standing in for a prior _invalidate's
-    # bounded wait. Holds onto execution until externally cancelled.
     started = asyncio.Event()
     proceed = asyncio.Event()
 
@@ -121,8 +98,7 @@ async def test_connect_propagates_outer_cancel_during_pending_drain_retire() -> 
         try:
             await proceed.wait()
         except asyncio.CancelledError:
-            # Yield before propagating so the outer cancel of driver_task
-            # has a chance to land while connect() is awaiting us.
+            # Yield so the outer cancel lands while connect() is awaiting us.
             await asyncio.sleep(0)
             raise
 
@@ -130,17 +106,13 @@ async def test_connect_propagates_outer_cancel_during_pending_drain_retire() -> 
     await started.wait()
     conn._pending_drain = prior
 
-    # Patch open_connection so we can detect whether the cancel signal
-    # was honored. If connect() proceeds past the pending-retire, this
-    # mock fires and we record the call — that's the regression we are
-    # guarding against.
+    # If connect() proceeds past the pending-retire, this mock fires —
+    # that's the regression we guard against.
     open_connection_called: list[object] = []
     real_open = asyncio.open_connection
 
     async def fake_open(host: str, port: int, **_kwargs: object):
         open_connection_called.append((host, port))
-        # Hand back enough to survive a first read; never reached on
-        # the success path, so an assertion error here is a clear bug.
         return MagicMock(), MagicMock()
 
     asyncio.open_connection = fake_open  # type: ignore[assignment]
@@ -154,8 +126,6 @@ async def test_connect_propagates_outer_cancel_during_pending_drain_retire() -> 
         for _ in range(3):
             await asyncio.sleep(0)
 
-        # Cancel the outer driver task. connect()'s pending-drain await
-        # MUST surface the cancel to the next checkpoint.
         driver_task.cancel()
 
         with pytest.raises(asyncio.CancelledError):

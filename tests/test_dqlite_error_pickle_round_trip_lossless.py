@@ -1,17 +1,7 @@
-"""Pin: every ``DqliteError`` subclass round-trips through pickle /
-deepcopy without losing the ``raw_message`` (base) or ``code``
-(``DqliteConnectionError``) fields.
+"""DqliteError subclasses round-trip raw_message/code through pickle and deepcopy.
 
-The fields were added so the wire-level signal would survive
-cross-process boundaries — ``ProcessPoolExecutor``,
-``multiprocessing.Queue.put(exception)``, Celery task results, SA's
-multiprocess pool. Without overriding ``__reduce__`` the default
-``Exception`` pickle path (``(cls, self.args)``) silently drops every
-attribute set on the instance after ``Exception.__init__``.
-
-Pin lossless round-trip on every subclass that takes ``raw_message=``
-or ``code=`` so a future regression on the ``__reduce__`` discipline
-fails this test.
+The default Exception pickle path ``(cls, self.args)`` drops attributes set after
+``Exception.__init__``; the subclasses override ``__reduce__`` to preserve them.
 """
 
 from __future__ import annotations
@@ -55,7 +45,6 @@ def test_dqlite_connection_error_deepcopy_preserves_code(protocol: int) -> None:
 
 
 def test_dqlite_connection_error_default_construction_pickle_round_trip() -> None:
-    """No-arg / message-only constructions still round-trip cleanly."""
     e = DqliteConnectionError("Connection refused")
     restored = pickle.loads(pickle.dumps(e))
     assert restored.code is None
@@ -85,15 +74,10 @@ def test_subclass_raw_message_round_trips_through_deepcopy(cls: type) -> None:
 
 
 def test_operational_error_pickle_lossless_within_caps() -> None:
-    """Defence pin: OperationalError pickle preserves code and the
-    bounded raw_message (the cap is applied at construction; the
-    bounded value survives the round-trip). Display message is
-    re-truncated."""
+    """OperationalError pickle preserves code and bounded raw_message; display re-truncated."""
     payload = "y" * 5000
     e = OperationalError(payload, 19)
     restored = pickle.loads(pickle.dumps(e))
-    # raw_message round-trips with whatever bounded value was set
-    # at construction.
     assert restored.raw_message == e.raw_message
     assert restored.code == 19
     assert len(restored.message) < 1200
@@ -101,9 +85,7 @@ def test_operational_error_pickle_lossless_within_caps() -> None:
 
 
 def test_pickle_round_trip_through_multiprocessing_queue() -> None:
-    """End-to-end: an exception sent through ``multiprocessing.Queue``
-    survives with code and raw_message intact. This is the canonical
-    cross-process surface these fields are intended for."""
+    """An exception sent through multiprocessing.Queue survives with code/raw_message intact."""
     import multiprocessing
 
     ctx = multiprocessing.get_context("spawn")

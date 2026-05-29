@@ -1,20 +1,6 @@
-"""Pin: server-redirected leader address that fails ``_canonicalize_host``
-validation surfaces as ``ClusterPolicyError`` (not bare ``ValueError``).
-
-The leader address comes from the wire (LeaderResponse). A hostile or
-buggy server can redirect to an address that doesn't pass our
-hostname / IP / IDN / character-class validation. ``DqliteConnection``
-raises bare ``ValueError`` for those; the cluster.connect() retry
-loop's narrow ``except (OSError, DqliteConnectionError, ClusterError)``
-would let the ValueError leak past, bypassing PEP 249 exception
-wrapping at higher layers.
-
-Wrap as ``ClusterPolicyError`` so:
-- The SA dialect's ``is_disconnect`` correctly classifies it as
-  non-retryable (not a transient transport failure).
-- The dbapi layer's PEP 249 wrap sees a known error class.
-- Operators reading logs see "invalid leader address" diagnostics
-  instead of an unrelated ValueError.
+"""A server-redirected leader address that fails _canonicalize_host surfaces as
+ClusterPolicyError, not bare ValueError: connect()'s narrow except would let a
+ValueError leak past, bypassing PEP 249 wrapping and is_disconnect classification.
 """
 
 from __future__ import annotations
@@ -30,15 +16,11 @@ from dqliteclient.node_store import MemoryNodeStore
 
 @pytest.mark.asyncio
 async def test_server_redirect_to_invalid_address_raises_cluster_policy_error() -> None:
-    """A leader address with embedded NUL / control bytes fails
-    ``_canonicalize_host`` with bare ValueError. Pin the wrap."""
+    """An address with control bytes fails _canonicalize_host; the wrap holds."""
     store = MemoryNodeStore(["localhost:9001"])
     client = ClusterClient(store, timeout=0.1)
 
     async def _fake_find_leader(*, trust_server_heartbeat: bool = False, policy=None) -> str:
-        # Hostile address with embedded control character — fails
-        # _canonicalize_host's "no whitespace/CR/LF" check (since it
-        # also fails the hostname-label regex).
         return "host\nnewline:9001"
 
     with (
@@ -50,7 +32,7 @@ async def test_server_redirect_to_invalid_address_raises_cluster_policy_error() 
 
 @pytest.mark.asyncio
 async def test_server_redirect_to_non_ascii_address_raises_cluster_policy_error() -> None:
-    """Non-ASCII host (IDN) is rejected; pin the wrap."""
+    """Non-ASCII host (IDN) is rejected; the wrap holds."""
     store = MemoryNodeStore(["localhost:9001"])
     client = ClusterClient(store, timeout=0.1)
 
@@ -66,7 +48,7 @@ async def test_server_redirect_to_non_ascii_address_raises_cluster_policy_error(
 
 @pytest.mark.asyncio
 async def test_server_redirect_to_oversized_hostname_raises_cluster_policy_error() -> None:
-    """Hostname > 253 chars exceeds DNS limit; pin the wrap."""
+    """Hostname > 253 chars exceeds the DNS limit; the wrap holds."""
     store = MemoryNodeStore(["localhost:9001"])
     client = ClusterClient(store, timeout=0.1)
 

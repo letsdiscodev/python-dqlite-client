@@ -1,13 +1,6 @@
-"""Pin: ``_invalidate(cause)``'s first-cause-wins guard preserves
-``BaseException``-not-``Exception`` causes (CancelledError,
-KeyboardInterrupt, SystemExit) across a subsequent invalidate from
-an Exception subclass.
-
-The contract docstring at ``connection.py`` describes the cancel-
-during-COMMIT case where the first invalidation's cause is
-``CancelledError``. A future refactor that tightened the guard to
-``isinstance(cause, Exception)`` would silently drop the cancel /
-interrupt context — there's no test today that catches that.
+"""Pin: ``_invalidate``'s first-cause-wins guard preserves BaseException
+causes (CancelledError, KeyboardInterrupt, SystemExit), guarding against
+a refactor that tightens the guard to ``isinstance(cause, Exception)``.
 """
 
 from __future__ import annotations
@@ -31,10 +24,7 @@ from dqliteclient.exceptions import OperationalError
 def test_first_baseexception_cause_preserved_across_subsequent_exception(
     first_cause: BaseException,
 ) -> None:
-    """A first-invalidation cause from a BaseException-not-Exception
-    subclass MUST survive a subsequent invalidate from an Exception
-    subclass — the guard at ``connection.py`` is type-agnostic on
-    ``cause is not None and self._invalidation_cause is None``."""
+    """A first BaseException cause survives a subsequent Exception invalidate."""
     conn = DqliteConnection("localhost:9001")
     conn._invalidate(first_cause)
     assert conn._invalidation_cause is first_cause
@@ -45,8 +35,7 @@ def test_first_baseexception_cause_preserved_across_subsequent_exception(
 
 
 def test_first_exception_preserved_across_baseexception() -> None:
-    """Inverse: a first ordinary-Exception cause is preserved when a
-    subsequent BaseException invalidation lands."""
+    """Inverse: a first Exception cause survives a subsequent BaseException invalidate."""
     conn = DqliteConnection("localhost:9001")
     first = OSError("first transport error")
     conn._invalidate(first)

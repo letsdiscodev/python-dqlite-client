@@ -1,20 +1,6 @@
-"""Pin: the seven release/drain close sites that previously used
-``contextlib.suppress(*_POOL_CLEANUP_EXCEPTIONS)`` now route through
-``ConnectionPool._close_best_effort``, which logs the absorbed
-exception at DEBUG with ``exc_info=True`` rather than silently
-dropping it.
-
-Pre-fix the sites suppressed silently — an OSError /
-DqliteConnectionError / OperationalError from ``conn.close()`` during
-release/drain dissolved with no trace, asymmetric with
-``_initialize_close_unqueued`` (which logged via ``exc_info=True``).
-An operator investigating "the pool kept hitting close_timeout under
-load" had nothing to find at any verbosity.
-
-This test drives the closed-pool release branch (representative of the
-seven sites) and asserts a DEBUG record naming the site lands with
-``exc_info`` populated. Pairs with
-``test_pool_initialize_unqueued_survivor_close_log.py``.
+"""Pin: the release/drain close sites route through
+``ConnectionPool._close_best_effort``, which logs the absorbed exception at DEBUG
+with ``exc_info=True`` rather than dropping it silently.
 """
 
 from __future__ import annotations
@@ -77,11 +63,8 @@ def _make_pool_with_fake_cluster(fake_conn: _FakeConn) -> ConnectionPool:
 async def test_release_closed_branch_logs_close_error_at_debug(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The closed-pool release branch routes through
-    ``_close_best_effort``: a ``DqliteConnectionError`` from
-    ``conn.close()`` is absorbed but emits a DEBUG record naming the
-    site (``"pool.release-closed: close error"``) with ``exc_info``
-    populated."""
+    """The closed-pool branch absorbs a DqliteConnectionError from close() but
+    emits a DEBUG record naming the site with exc_info populated."""
     fake = _FakeConn(close_side_effect=DqliteConnectionError("transport broken"))
     pool = _make_pool_with_fake_cluster(fake)
 
@@ -96,7 +79,6 @@ async def test_release_closed_branch_logs_close_error_at_debug(
 
     assert fake.close_calls >= 1
 
-    # A DEBUG record named for the site, with exc_info populated.
     debug_records = [
         r for r in caplog.records if r.levelno == logging.DEBUG and "close error" in r.message
     ]
@@ -115,9 +97,5 @@ async def test_release_closed_branch_logs_close_error_at_debug(
 
 
 def test_close_best_effort_helper_exists_with_logging_shape() -> None:
-    """Static pin: ``ConnectionPool`` exposes ``_close_best_effort``, the
-    DRY helper that replaced the seven ``contextlib.suppress(
-    *_POOL_CLEANUP_EXCEPTIONS)`` sites. Detects accidental removal of
-    the helper or rename that would silently drop the logging on the
-    release path again."""
+    """ConnectionPool exposes _close_best_effort; pin against removal/rename."""
     assert hasattr(ConnectionPool, "_close_best_effort")

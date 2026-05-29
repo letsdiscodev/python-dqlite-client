@@ -1,21 +1,6 @@
-"""Pin: ``dqliteclient.cluster`` does NOT expose a ``NodeInfo``
-attribute that silently shadows ``dqliteclient.NodeInfo`` (the
-user-facing class).
-
-There are two ``NodeInfo`` dataclasses in this package:
-``dqlitewire.messages.responses.NodeInfo`` (wire-layer; used
-internally to decode ``ServersResponse``) and
-``dqliteclient.node_store.NodeInfo`` (user-facing; re-exported
-as ``dqliteclient.NodeInfo``). They share field shape but are
-distinct types. Before the rename, the cluster module imported
-the wire class without an alias and exposed it as
-``dqliteclient.cluster.NodeInfo``, silently shadowing
-``dqliteclient.NodeInfo`` for any caller doing
-``from dqliteclient.cluster import NodeInfo``.
-
-The rename aliases the wire import as ``_WireNodeInfo`` inside
-``cluster.py``. The module attribute ``NodeInfo`` is now absent,
-so the shadow is closed.
+"""dqliteclient.cluster exposes no NodeInfo attribute: the wire NodeInfo is
+imported as _WireNodeInfo so it cannot silently shadow the distinct user-facing
+dqliteclient.NodeInfo (node_store) for callers importing from cluster.
 """
 
 

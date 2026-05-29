@@ -1,8 +1,5 @@
-"""``transfer_leadership`` and ``remove_node`` invalidate the
-``_last_known_leader`` cache. Without this, the next ``find_leader``
-takes the fast path and probes the now-stale leader (one wasted RTT),
-falls through, and only then re-discovers via the full sweep.
-"""
+"""Membership-mutating admin RPCs invalidate ``_last_known_leader`` so the next
+``find_leader`` doesn't waste an RTT probing a now-stale leader before the full sweep."""
 
 from __future__ import annotations
 
@@ -80,10 +77,7 @@ async def test_remove_node_invalidates_last_known_leader() -> None:
 
 @pytest.mark.asyncio
 async def test_add_node_invalidates_last_known_leader() -> None:
-    """Adding a new VOTER changes quorum size; the new majority can
-    elect a different leader during commit. Invalidate the cache so
-    the next find_leader runs the full sweep rather than paying a
-    fast-path miss against the (possibly former) leader."""
+    """A new VOTER changes quorum size; the new majority may elect a different leader."""
     cluster = _make_cluster_with_cached_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
@@ -105,8 +99,7 @@ async def test_add_node_invalidates_last_known_leader() -> None:
 
 @pytest.mark.asyncio
 async def test_assign_role_invalidates_last_known_leader() -> None:
-    """Promoting STANDBY → VOTER widens the voting set; the
-    election window applies. Invalidate the cache."""
+    """Promoting STANDBY → VOTER widens the voting set; the election window applies."""
     from dqlitewire import NodeRole
 
     cluster = _make_cluster_with_cached_leader()
@@ -129,13 +122,7 @@ async def test_assign_role_invalidates_last_known_leader() -> None:
 
 @pytest.mark.asyncio
 async def test_set_weight_preserves_last_known_leader_on_success() -> None:
-    """``set_weight`` is a read-mostly admin RPC: on SUCCESS the
-    responding leader has provably just answered the RPC, so the
-    leader cache stays warm. Matches go-dqlite's ``Client.Weight``
-    which does not touch the leader tracker on success. Failure-
-    path invalidation is exercised by the sibling test
-    ``test_set_weight_per_node_does_not_invalidate_on_failure`` and
-    by ``test_admin_rpcs_preserve_cache_on_success``."""
+    """On SUCCESS the cache stays warm — matches go-dqlite's ``Client.Weight``."""
     cluster = _make_cluster_with_cached_leader()
     cached = cluster._get_last_known_leader()
     fake_proto = MagicMock()
@@ -157,10 +144,7 @@ async def test_set_weight_preserves_last_known_leader_on_success() -> None:
 
 @pytest.mark.asyncio
 async def test_transfer_leadership_invalidates_cache_on_failure() -> None:
-    """Pin: a leader-flip-induced failure during admin RPC must also
-    invalidate the cache. Previously the success-path-only invalidation
-    left the cache pointing at the rejecter for one wasted RTT on the
-    next ``find_leader``."""
+    """A leader-flip failure mid-RPC must invalidate too, not just the success path."""
     from dqliteclient.exceptions import OperationalError
 
     cluster = _make_cluster_with_cached_leader()
@@ -183,21 +167,19 @@ async def test_transfer_leadership_invalidates_cache_on_failure() -> None:
         for p in reversed(patches):
             p.stop()
 
-    # Cache invalidated even though the RPC failed.
     assert cluster._get_last_known_leader() is None
 
 
 @pytest.mark.asyncio
 async def test_add_node_invalidates_cache_on_failure() -> None:
-    """add_node failure (e.g. ASSIGN second-phase fails after ADD
-    landed) must also invalidate the cache."""
+    """add_node failure (e.g. ASSIGN fails after ADD landed) must also invalidate."""
     from dqliteclient.exceptions import OperationalError
 
     cluster = _make_cluster_with_cached_leader()
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
     fake_proto.negotiate_protocol_only = AsyncMock()
-    fake_proto.add = AsyncMock()  # ADD succeeds
+    fake_proto.add = AsyncMock()
     fake_proto.assign = AsyncMock(
         side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
     )
@@ -217,21 +199,13 @@ async def test_add_node_invalidates_cache_on_failure() -> None:
     assert cluster._get_last_known_leader() is None
 
 
-# ---------------------------------------------------------------------------
-# Read-only admin RPCs (cluster_info / leader_info / dump / describe) —
-# the membership-mutating RPCs above already invalidate the leader cache on
-# failure. The four read-only RPCs that ALSO call ``find_leader`` (every one
-# except ``describe(address=<specific>)``) MUST mirror that discipline so a
-# leader-flip mid-RPC doesn't leave the cache pointing at a now-stale peer.
-# ---------------------------------------------------------------------------
+# Read-only RPCs that also call ``find_leader`` (all but ``describe(address=...)``) must
+# mirror the membership-RPC discipline: invalidate on failure so a flip doesn't strand the cache.
 
 
 @pytest.mark.asyncio
 async def test_cluster_info_invalidates_cache_on_failure() -> None:
-    """``cluster_info`` is sent to the leader. A leader-flip mid-RPC
-    surfaces as ``OperationalError`` / ``DqliteConnectionError`` and
-    must invalidate the cache so the next ``find_leader`` runs a full
-    sweep instead of paying a fast-path miss against the dead peer."""
+    """A leader-flip mid-RPC must invalidate the cache."""
     from dqliteclient.exceptions import OperationalError
 
     cluster = _make_cluster_with_cached_leader()
@@ -240,8 +214,7 @@ async def test_cluster_info_invalidates_cache_on_failure() -> None:
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock()
     fake_proto.negotiate_protocol_only = AsyncMock()
-    # Re-confirm leadership round-trip succeeds; the failure surfaces
-    # from the subsequent ``cluster()`` call (the wire RPC).
+    # Leadership re-confirm succeeds; the failure comes from the ``cluster()`` wire RPC.
     fake_proto.get_leader = AsyncMock(return_value=(1, "node1:9001"))
     fake_proto.cluster = AsyncMock(
         side_effect=OperationalError("not leader", code=1001, raw_message="not leader")
@@ -262,8 +235,7 @@ async def test_cluster_info_invalidates_cache_on_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_leader_info_invalidates_cache_on_failure() -> None:
-    """``leader_info`` is sent to the leader (after ``find_leader``).
-    A leader-flip mid-RPC must invalidate the cache."""
+    """A leader-flip mid-RPC must invalidate the cache."""
     from dqliteclient.exceptions import OperationalError
 
     cluster = _make_cluster_with_cached_leader()
@@ -289,10 +261,7 @@ async def test_leader_info_invalidates_cache_on_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_dump_invalidates_cache_on_failure() -> None:
-    """``dump`` is sent to the leader (Python design choice). A
-    leader step-down mid-dump is plausible given the long-lived
-    socket; invalidate the cache so the next ``find_leader`` runs a
-    full sweep instead of probing the dead peer."""
+    """``dump`` targets the leader; a step-down mid-dump must invalidate the cache."""
     from dqliteclient.exceptions import OperationalError
 
     cluster = _make_cluster_with_cached_leader()
@@ -318,10 +287,7 @@ async def test_dump_invalidates_cache_on_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_describe_no_address_invalidates_cache_on_failure() -> None:
-    """``describe(address=None)`` calls ``find_leader`` and sends to
-    the leader. A leader-flip mid-RPC must invalidate the cache.
-    ``describe(address=<specific>)`` does NOT call ``find_leader``
-    and is covered by a separate negative pin below."""
+    """``describe(address=None)`` targets the leader; a flip mid-RPC must invalidate."""
     from dqliteclient.exceptions import OperationalError
 
     cluster = _make_cluster_with_cached_leader()
@@ -347,11 +313,8 @@ async def test_describe_no_address_invalidates_cache_on_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_describe_with_specific_address_preserves_cache_on_failure() -> None:
-    """Negative twin: ``describe(address=<specific>)`` bypasses
-    ``find_leader`` entirely — the request lands on the named peer,
-    not the leader. The leader cache is unrelated to the call and
-    MUST NOT be invalidated on a per-peer failure (over-aggressive
-    invalidation would force an avoidable sweep)."""
+    """Negative twin: ``describe(address=...)`` bypasses ``find_leader``, so a per-peer
+    failure must not invalidate the unrelated leader cache."""
     from dqliteclient.exceptions import OperationalError
 
     cluster = _make_cluster_with_cached_leader()
@@ -372,5 +335,4 @@ async def test_describe_with_specific_address_preserves_cache_on_failure() -> No
         for p in reversed(patches):
             p.stop()
 
-    # Cache untouched — the call did not target the leader.
     assert cluster._get_last_known_leader() == "node1:9001"

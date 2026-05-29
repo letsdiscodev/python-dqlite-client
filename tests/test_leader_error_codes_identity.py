@@ -1,19 +1,10 @@
-"""Pin: ``LEADER_ERROR_CODES`` is the single source of truth for the
-leader-change SQLite extended codes, owned by ``dqlitewire`` and
-imported as-is by ``dqliteclient``. Identity equality is the
-contract — a future SA-only override or accidental local copy would
-fail this test.
-"""
+"""Pin: ``dqliteclient`` imports ``dqlitewire.LEADER_ERROR_CODES`` by identity, not copy."""
 
 from __future__ import annotations
 
 
 def test_dqliteclient_uses_wire_leader_error_codes_identity() -> None:
-    # The constants live inside each module but are deliberately NOT
-    # in ``__all__`` (they're re-imports of a wire-layer public
-    # constant, not the module's own public surface). Direct
-    # attribute access works at runtime; the mypy ignores reflect
-    # the re-import-without-export pattern.
+    # Deliberately not in ``__all__`` (re-imports, not own surface); mypy ignores cover that.
     import dqliteclient.connection as _conn_mod
     import dqliteclient.pool as _pool_mod
     from dqlitewire import LEADER_ERROR_CODES as wire_codes

@@ -43,12 +43,8 @@ class TestClusterClient:
             await client.find_leader()
 
     async def test_find_leader_all_unreachable_via_timeout_error(self) -> None:
-        """TimeoutError is an OSError subclass (Python 3.10+). The
-        ``_query_leader`` open-connection except clause is narrowed to
-        a single OSError entry; pin that a TimeoutError from
-        ``asyncio.wait_for(asyncio.open_connection(...))`` is still
-        caught and surfaces as "node unreachable" rather than leaking.
-        """
+        """TimeoutError (an OSError subclass) from the connect must still be caught by
+        ``_query_leader``'s narrowed OSError clause and surface as "node unreachable"."""
         store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
         client = ClusterClient(store, timeout=0.1)
 
@@ -73,9 +69,8 @@ class TestClusterClient:
 
         from dqlitewire.messages import LeaderResponse
 
-        # Upstream raft_leader sets id and address atomically: a voter
-        # that IS the leader returns its own id AND its own address
-        # (never (nonzero, "")).
+        # Upstream raft_leader sets id and address atomically: a leader voter returns its
+        # own id AND address (never (nonzero, "")).
         responses = [
             LeaderResponse(node_id=1, address="localhost:9001").encode(),
         ]
@@ -98,8 +93,7 @@ class TestClusterClient:
 
         from dqlitewire.messages import LeaderResponse
 
-        # First probe: localhost:9001 redirects to localhost:9002.
-        # Second probe (N1 verification): localhost:9002 self-confirms.
+        # First probe redirects to 9002; second probe (N1 verification) self-confirms.
         responses = [
             LeaderResponse(node_id=2, address="localhost:9002").encode(),
             LeaderResponse(node_id=2, address="localhost:9002").encode(),
@@ -125,7 +119,7 @@ class TestClusterClient:
         from dqlitewire.messages import LeaderResponse
 
         responses = [
-            LeaderResponse(node_id=0, address="").encode(),  # No leader known
+            LeaderResponse(node_id=0, address="").encode(),
         ]
         mock_reader.read.side_effect = responses
 
@@ -136,12 +130,9 @@ class TestClusterClient:
             await client.find_leader()
 
     async def test_find_leader_all_nodes_no_leader_message_lists_them(self) -> None:
-        """When every node responds with the legitimate ``(node_id=0,
-        address="")`` no-leader-yet reply, the raised ``ClusterError``
-        message must enumerate the responding nodes — operators need
-        to distinguish "cluster reachable, no leader elected" from
-        "all nodes unreachable", and the strict pre-fix ``Errors: ``
-        empty list was uninformative."""
+        """When every node replies ``(node_id=0, address="")``, the ClusterError must
+        enumerate the responding nodes so operators can tell "reachable, no leader" from
+        "all unreachable"."""
         store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
         client = ClusterClient(store)
 
@@ -153,8 +144,6 @@ class TestClusterClient:
 
         from dqlitewire.messages import LeaderResponse
 
-        # Each node consumed independently — the connect handler is
-        # called twice and replays the same Welcome+NoLeader pair.
         def fresh_no_leader_responses() -> list[bytes]:
             return [
                 LeaderResponse(node_id=0, address="").encode(),
@@ -187,7 +176,6 @@ class TestClusterClient:
         mock_writer.close = MagicMock()
         mock_writer.wait_closed = AsyncMock()
 
-        # Server accepts connection but never sends a response
         async def hang_forever(*args, **kwargs):
             await asyncio.sleep(100)
             return b""
@@ -203,11 +191,8 @@ class TestClusterClient:
     async def test_find_leader_logs_per_node_attempts_on_failure(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """find_leader's retry loop should emit a DEBUG log for each
-        node's failure. Without per-node tracing, a slow leader-discovery
-        stall is only visible as a single accumulated ClusterError
-        string; operators cannot distinguish one slow node from a
-        cluster-wide problem."""
+        """The retry loop must emit a per-node DEBUG log on failure, so a slow-node stall is
+        distinguishable from a cluster-wide problem."""
         import logging
 
         from dqliteclient.exceptions import DqliteConnectionError
@@ -234,12 +219,9 @@ class TestClusterClient:
         )
 
     async def test_query_leader_awaits_wait_closed_on_success(self) -> None:
-        """The leader-probe socket should close cleanly: ``close()`` is
-        fire-and-forget, so a bare ``writer.close()`` leaves the
-        transport in FIN-WAIT until the OS reclaims it. Awaiting
-        ``wait_closed()`` with a bounded timeout matches the asyncio
-        documented full-close idiom and keeps FD pressure low under
-        heavy connect churn (pool warm-up after a leader flip)."""
+        """The leader-probe socket must close cleanly: bare ``writer.close()`` is
+        fire-and-forget, so awaiting ``wait_closed()`` keeps FD pressure low under connect
+        churn (pool warm-up after a leader flip)."""
         store = MemoryNodeStore(["localhost:9001"])
         client = ClusterClient(store)
 
@@ -273,8 +255,7 @@ class TestClusterClient:
         mock_writer.close = MagicMock()
         mock_writer.wait_closed = AsyncMock()
 
-        # Handshake data that triggers a protocol error
-        mock_reader.read.side_effect = [b"\x00" * 64]
+        mock_reader.read.side_effect = [b"\x00" * 64]  # triggers a protocol error
 
         with (
             patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
@@ -282,7 +263,6 @@ class TestClusterClient:
         ):
             await client.find_leader()
 
-        # The writer must have been closed to avoid socket leak
         mock_writer.close.assert_called()
 
     async def test_query_leader_closes_writer_on_protocol_init_error(self) -> None:
@@ -308,16 +288,12 @@ class TestClusterClient:
         ):
             await client.find_leader()
 
-        # Even though DqliteProtocol() failed, the writer must be closed
         mock_writer.close.assert_called()
 
     async def test_find_leader_skips_node_with_bad_handshake(self) -> None:
-        """When a node's handshake round-trip fails (malformed response
-        triggers a wire-level ProtocolError), ``find_leader`` must move
-        on to the next node and succeed. Guards the skip-and-continue
-        loop at cluster.py:109-132 against regressions — a bug in the
-        except tuple would turn one bad peer into a cluster-wide failure.
-        """
+        """A node's bad-handshake ProtocolError must make ``find_leader`` skip to the next
+        node and succeed — a bug in the except tuple would turn one bad peer into a
+        cluster-wide failure."""
         store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
         client = ClusterClient(store, timeout=1.0)
 
@@ -329,18 +305,9 @@ class TestClusterClient:
 
         from dqlitewire.messages import LeaderResponse
 
-        # Probes use ``negotiate_protocol_only`` (no Welcome consumed),
-        # so each probe expects exactly one LeaderResponse to be read
-        # back. Node A responds with 64 bytes of zeros which the wire
-        # decoder interprets as a FAILURE-typed frame with a too-short
-        # body; the resulting wire ProtocolError is wrapped into the
-        # client ProtocolError by DqliteProtocol._read_response and
-        # caught by find_leader, which moves on to Node B.
-        # Node B responds with a valid LeaderResponse so find_leader
-        # returns Node B's address.
-        # Extra LeaderResponse pairs are appended so that — under the
-        # parallel sweep + N1 verify-redirect interleaving — every
-        # probe finds a response regardless of probe-order.
+        # Node A's 64 zero bytes decode to a too-short FAILURE frame -> ProtocolError ->
+        # skip to Node B. Extra LeaderResponse copies cover any probe-order under the
+        # parallel sweep + N1 verify-redirect interleaving.
         leader_b = LeaderResponse(node_id=2, address="localhost:9002").encode()
         responses = [
             b"\x00" * 64,
@@ -354,8 +321,7 @@ class TestClusterClient:
             leader = await client.find_leader()
 
         assert leader in {"localhost:9001", "localhost:9002"}
-        # Two open_connection attempts expected (one per node); the
-        # failing node's writer was closed before the skip.
+        # The failing node's writer was closed before the skip (one attempt per node).
         assert mock_writer.close.call_count >= 2
 
     async def test_query_leader_does_not_hang_on_slow_wait_closed(self) -> None:
@@ -370,7 +336,6 @@ class TestClusterClient:
         mock_writer.drain = AsyncMock()
         mock_writer.close = MagicMock()
 
-        # wait_closed blocks forever (simulates unresponsive peer)
         async def hang_forever():
             await asyncio.sleep(999)
 
@@ -384,7 +349,6 @@ class TestClusterClient:
         mock_reader.read.side_effect = responses
 
         with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            # This should complete within the timeout, not hang on wait_closed
             try:
                 leader = await asyncio.wait_for(client.find_leader(), timeout=2.0)
                 assert leader == "localhost:9001"
@@ -397,10 +361,8 @@ class TestClusterClient:
         mock_writer.close.assert_called()
 
     async def test_find_leader_propagates_programming_bugs(self) -> None:
-        """Programming bugs (TypeError etc.) must propagate, not be swallowed
-        into a generic ClusterError. ClusterError is retryable upstream, so
-        stringifying a bug here amplifies it N*retries times.
-        """
+        """Programming bugs (TypeError etc.) must propagate, not collapse into a retryable
+        ClusterError that amplifies the bug N*retries times."""
         store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
         client = ClusterClient(store, timeout=0.5)
 
@@ -414,10 +376,7 @@ class TestClusterClient:
             await client.find_leader()
 
     async def test_find_leader_transport_error_chains_cause(self) -> None:
-        """When every node yields a transport error, the final ClusterError
-        must have __cause__ set so logs show the underlying reason, not just
-        the generic message.
-        """
+        """The final ClusterError must chain __cause__ so logs show the underlying reason."""
         from dqliteclient.exceptions import DqliteConnectionError
 
         store = MemoryNodeStore(["localhost:9001"])
@@ -436,9 +395,8 @@ class TestClusterClient:
         assert exc_info.value.__cause__ is boom
 
     async def test_find_leader_randomizes_node_order(self) -> None:
-        """find_leader must not always probe the first-listed node first —
-        otherwise stampedes and stale-cache biases concentrate on it.
-        """
+        """find_leader must not always probe the first-listed node first, or stampedes and
+        stale-cache biases concentrate on it."""
         from collections import Counter
 
         store = MemoryNodeStore(["n1:9001", "n2:9001", "n3:9001", "n4:9001"])
@@ -455,25 +413,14 @@ class TestClusterClient:
                 with contextlib.suppress(ClusterError):
                     await client.find_leader()
 
-        # Record the first probe of each call.
         firsts = [first_probed[i] for i in range(0, len(first_probed), 4)]
         counts = Counter(firsts)
         assert len(counts) >= 2, f"find_leader always probed the same node first: {counts}"
 
     async def test_find_leader_calls_random_shuffle_on_candidate_list(self) -> None:
-        """Deterministic pin complementing the probabilistic test above:
-        ``find_leader`` invokes the cluster shuffle on its candidate
-        list.
-
-        The probabilistic test catches "shuffle disabled entirely"
-        (``len(counts) == 1``) but not "shuffle replaced by some other
-        deterministic permutation that still produces ≥ 2 distinct
-        firsts" — a regression vector that would silently slip past.
-        Patching the bound ``shuffle`` method on the module-level
-        ``_cluster_random`` directly lets us assert the call happens.
-        We swap to a deterministic identity-function so ``find_leader``
-        still terminates cleanly.
-        """
+        """Deterministic complement to the probabilistic test: assert ``find_leader`` calls
+        the cluster shuffle, catching a shuffle replaced by another permutation that still
+        yields >= 2 distinct firsts."""
         from dqliteclient import cluster as cluster_module
 
         store = MemoryNodeStore(["n1:9001", "n2:9001", "n3:9001", "n4:9001"])
@@ -497,7 +444,6 @@ class TestClusterClient:
             "find_leader must invoke the cluster shuffle on its candidate list — "
             "without the shuffle, parallel callers stampede the first-listed node"
         )
-        # The first positional arg is the list being shuffled in place.
         shuffled_arg = mock_shuffle.call_args[0][0]
         assert isinstance(shuffled_arg, list), (
             "shuffle must be called on a list (the per-role candidate "
@@ -505,15 +451,14 @@ class TestClusterClient:
         )
 
     async def test_find_leader_probes_voters_before_non_voters(self) -> None:
-        """Non-voter nodes (standby/spare) cannot become leader; probing them
-        first wastes an RTT. find_leader must prefer voters.
-        """
+        """Non-voters (standby/spare) cannot become leader; find_leader must prefer voters
+        to avoid wasting an RTT."""
         store = MemoryNodeStore()
-        # Seed with a non-voter first, then a voter.
+        # Seed non-voters before voters to test ordering.
         await store.set_nodes(
             [
-                NodeInfo(node_id=2, address="spare:9002", role=NodeRole.SPARE),  # spare
-                NodeInfo(node_id=1, address="standby:9003", role=NodeRole.STANDBY),  # standby
+                NodeInfo(node_id=2, address="spare:9002", role=NodeRole.SPARE),
+                NodeInfo(node_id=1, address="standby:9003", role=NodeRole.STANDBY),
                 NodeInfo(node_id=3, address="voter1:9001", role=NodeRole.VOTER),
                 NodeInfo(node_id=4, address="voter2:9004", role=NodeRole.VOTER),
             ]
@@ -524,7 +469,7 @@ class TestClusterClient:
 
         async def track(address: str, **_kwargs: object) -> str | None:
             order.append(address)
-            return None  # no leader known — keep probing
+            return None  # no leader known — keep probing all nodes
 
         from contextlib import suppress
 
@@ -534,7 +479,6 @@ class TestClusterClient:
         ):
             await client.find_leader()
 
-        # Both voters must be probed before the spare.
         voter_positions = [i for i, a in enumerate(order) if a.startswith("voter")]
         non_voter_positions = [i for i, a in enumerate(order) if not a.startswith("voter")]
         assert voter_positions, "no voters were probed"
@@ -544,10 +488,8 @@ class TestClusterClient:
         )
 
     async def test_connect_does_not_retry_plain_sql_errors(self) -> None:
-        """OperationalError without a leader code is a SQL-level error, not
-        a transport issue — connect() should NOT retry it. Otherwise a
-        schema mismatch takes 5x find_leader round trips to propagate.
-        """
+        """A leaderless OperationalError is a SQL-level error, not transport — connect()
+        must not retry it (else a schema mismatch costs 5x find_leader round trips)."""
         from dqliteclient.exceptions import OperationalError
 
         store = MemoryNodeStore(["localhost:9001"])
@@ -572,12 +514,7 @@ class TestClusterClient:
 
 
 class TestConnectMaxAttempts:
-    """connect() exposes a max_attempts parameter.
-
-    The previous hardcoded ``max_attempts=3`` forced operators to patch
-    the library to tune retry behavior. The default is unchanged; the
-    knob simply becomes adjustable.
-    """
+    """connect() exposes a max_attempts parameter (default unchanged at 3)."""
 
     async def test_max_attempts_defaults_to_three(self) -> None:
         from dqliteclient.cluster import _DEFAULT_CONNECT_MAX_ATTEMPTS
@@ -585,7 +522,7 @@ class TestConnectMaxAttempts:
         assert _DEFAULT_CONNECT_MAX_ATTEMPTS == 3
 
     async def test_max_attempts_override_honored(self) -> None:
-        store = MemoryNodeStore(["localhost:1"])  # unreachable
+        store = MemoryNodeStore(["localhost:1"])
         client = ClusterClient(store, timeout=0.1)
 
         call_count = [0]
@@ -613,7 +550,7 @@ class TestConnectObservability:
     async def test_failed_attempts_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         import logging
 
-        store = MemoryNodeStore(["localhost:1"])  # unreachable
+        store = MemoryNodeStore(["localhost:1"])
         client = ClusterClient(store, timeout=0.1)
 
         async def fake_find_leader(**_kwargs: object) -> str:
@@ -625,7 +562,6 @@ class TestConnectObservability:
         with contextlib.suppress(DqliteConnectionError):
             await client.connect(max_attempts=2)
 
-        # Every attempt should emit a debug log.
         attempt_logs = [r for r in caplog.records if "connect attempt" in r.message]
         assert len(attempt_logs) == 2, (
             f"Expected 2 per-attempt log lines, got {len(attempt_logs)}: "
@@ -704,14 +640,9 @@ class TestQueryLeaderTrustsHeartbeat:
 
 
 class TestQueryLeaderTreatsRaftNomemAsNoLeader:
-    """A ``(node_id=N, address="")`` reply is reachable on a real
-    follower after ``RAFT_NOMEM`` in ``recvUpdateLeader``: the
-    follower assigns ``current_leader.id = N`` in step 1 and may
-    then fail to malloc the address in step 4. The Go and C clients
-    both treat this as "leader unknown"; we match that behaviour
-    rather than raising ``ProtocolError`` and killing the cluster
-    probe.
-    """
+    """A ``(node_id=N, address="")`` reply happens on a follower that hit ``RAFT_NOMEM`` in
+    ``recvUpdateLeader`` (id assigned, address malloc failed); match the Go/C clients and
+    treat it as "leader unknown" rather than raising ProtocolError."""
 
     async def test_nonzero_id_with_empty_address_returns_none(self) -> None:
         store = MemoryNodeStore(["localhost:9001"])
@@ -744,13 +675,8 @@ class TestQueryLeaderTreatsRaftNomemAsNoLeader:
         assert result is None
 
     async def test_find_leader_multi_node_all_no_leader_known(self) -> None:
-        """Parity with the single-node case in
-        ``test_find_leader_no_leader_known``: when every node in a
-        multi-node store returns ``None`` from the leader probe, the
-        retry loop must exhaust and raise ``ClusterError`` rather than
-        hang or return ``None``. Pin the exhaustion path so a future
-        refactor of the loop cannot regress into a silent-succeed.
-        """
+        """When every node in a multi-node store probes ``None``, the loop must exhaust and
+        raise ClusterError rather than hang or return None."""
         store = MemoryNodeStore(["node-a:9001", "node-b:9002", "node-c:9003"])
         client = ClusterClient(store, timeout=0.2)
 
@@ -767,20 +693,18 @@ class TestQueryLeaderTreatsRaftNomemAsNoLeader:
         ):
             await client.find_leader()
 
-        # Every node must have been probed — if the loop short-circuited
-        # on the first ``None`` it would only hit one.
+        # Every node must be probed; short-circuiting on the first None would hit only one.
         assert call_count == 3
 
     async def test_find_leader_mixed_no_leader_and_failure(self) -> None:
-        """Mix a no-leader-known response with a transport failure. Both
-        error paths are exhausted before the final ClusterError raises.
-        """
+        """Both a no-leader-known response and a transport failure are exhausted before the
+        final ClusterError raises."""
         store = MemoryNodeStore(["node-a:9001", "node-b:9002"])
         client = ClusterClient(store, timeout=0.2)
 
         async def mixed(address: str, **_kw: Any) -> str | None:
             if "node-a" in address:
-                return None  # no-leader-known
+                return None
             raise DqliteConnectionError("probe refused")
 
         with (
@@ -792,11 +716,8 @@ class TestQueryLeaderTreatsRaftNomemAsNoLeader:
     async def test_raft_nomem_transient_is_debug_logged(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """The point-of-detection DEBUG breadcrumb must include the
-        queried address and the leader_id so an operator can
-        correlate the discovery stall in logs alone, even though the
-        arm no longer raises (it returns ``None``).
-        """
+        """The RAFT_NOMEM DEBUG breadcrumb must include the queried address and leader_id so
+        a discovery stall is correlatable from logs, even though the arm returns None."""
         import logging
 
         store = MemoryNodeStore(["node-3:9000"])
@@ -871,10 +792,8 @@ class TestQueryLeaderTreatsRaftNomemAsNoLeader:
 
 
 class TestClusterErrorMessageTruncation:
-    """Per-node error snippets are capped before concatenation so a
-    verbose server message cannot inflate the ClusterError payload to
-    O(N * M).
-    """
+    """Per-node error snippets are capped before concatenation so a verbose server message
+    cannot inflate the ClusterError payload to O(N * M)."""
 
     async def test_large_per_node_error_is_truncated(self) -> None:
         store = MemoryNodeStore(["a:9001", "b:9001", "c:9001"])
@@ -892,16 +811,13 @@ class TestClusterErrorMessageTruncation:
             await client.find_leader()
 
         message = str(exc_info.value)
-        # Each per-node snippet is capped to ~200 chars + truncation
-        # marker; total upper bound well under the raw 150k.
         assert len(message) < 3_000
         assert "truncated" in message
 
 
 class TestTryConnectNarrowExcept:
-    """Programming bugs (TypeError, AttributeError, …) in the connect
-    path must propagate without being muted by the DEBUG-log instrument.
-    """
+    """Programming bugs in the connect path must propagate, not be muted by the DEBUG-log
+    instrument."""
 
     async def test_type_error_propagates(self) -> None:
         store = MemoryNodeStore(["localhost:9001"])

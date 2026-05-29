@@ -1,9 +1,5 @@
-"""``DqliteConnection._validate_params`` rejects single-shot iterators
-(generators, zip, map, filter, ...) with a friendly ``DataError`` at
-the call site rather than letting the wire encoder fail with
-``TypeError: object of type 'generator' has no len()`` deep inside
-``ExecSqlRequest.__post_init__``.
-"""
+"""``DqliteConnection._validate_params`` rejects single-shot iterators with a
+``DataError`` rather than a cryptic no-len TypeError deep in the wire encoder."""
 
 from __future__ import annotations
 
@@ -43,9 +39,7 @@ def test_validate_params_accepts_list_and_tuple() -> None:
 
 
 def test_validate_params_accepts_user_sequence() -> None:
-    """A class implementing ``__len__`` and ``__getitem__`` is an
-    explicit Sequence; let it through (matches the duck-type
-    behaviour of the wire encoder)."""
+    """A class with ``__len__`` and ``__getitem__`` is a Sequence; allow it."""
 
     class MySeq:
         def __init__(self, data: list[int]) -> None:

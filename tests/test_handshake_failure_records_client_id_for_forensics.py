@@ -1,16 +1,7 @@
-"""Pin: ``DqliteProtocol.handshake`` records ``self._client_id``
-BEFORE the wire write so a ``FailureResponse`` arm has the
-slot-allocation breadcrumb available.
-
-Upstream ``handle_client`` (``gateway.c:300-309``) writes
-``g->client_id = request.id`` BEFORE composing the response, so by
-the time any ``FailureResponse`` reaches the client the server-side
-per-gateway slot has been allocated. Reclamation happens at TCP
-close (the caller's ``_abort_protocol`` drives this via
-``writer.close() + wait_closed``); surfacing the id in the exception
-message lets operators triaging a handshake failure correlate the
-server-side trace without walking back to ``gateway.c``.
-"""
+"""Pin: ``handshake`` records ``self._client_id`` BEFORE the wire write so a
+``FailureResponse`` arm can surface the slot id. Upstream ``handle_client``
+allocates the per-gateway slot before composing the response (reclaimed at TCP
+close), so the id lets operators correlate the server-side trace."""
 
 from __future__ import annotations
 
@@ -24,10 +15,8 @@ from dqliteclient.protocol import DqliteProtocol
 
 @pytest.mark.asyncio
 async def test_handshake_failure_message_includes_slot_breadcrumb() -> None:
-    """A FailureResponse on the welcome reply produces an
-    OperationalError whose message documents the negotiated
-    ``client_id`` so the operator can grep server logs for the
-    matching slot."""
+    """A FailureResponse produces an OperationalError whose message carries the
+    negotiated ``client_id`` for grepping server logs."""
     from dqlitewire.messages import FailureResponse
 
     mock_reader = AsyncMock()
@@ -58,9 +47,7 @@ async def test_handshake_failure_message_includes_slot_breadcrumb() -> None:
 
 @pytest.mark.asyncio
 async def test_handshake_records_client_id_before_send() -> None:
-    """The negotiated id is set on the protocol BEFORE the wire
-    write — verifiable by patching ``_send`` to assert the state
-    when called."""
+    """The negotiated id is set on the protocol BEFORE the wire write."""
     from dqlitewire.messages import WelcomeResponse
 
     mock_reader = AsyncMock()
@@ -94,8 +81,7 @@ async def test_handshake_records_client_id_before_send() -> None:
 
 @pytest.mark.asyncio
 async def test_handshake_failure_message_uses_random_id_when_unspecified() -> None:
-    """When the caller does not pass ``client_id``, the randomly
-    generated id is still in the failure message."""
+    """Without a caller-supplied ``client_id``, the random id is still in the message."""
     from dqlitewire.messages import FailureResponse
 
     mock_reader = AsyncMock()
@@ -119,7 +105,5 @@ async def test_handshake_failure_message_uses_random_id_when_unspecified() -> No
     ):
         await protocol.handshake()
 
-    # The id is non-zero (63-bit random or 1) and matches what got
-    # recorded on the protocol instance.
     assert protocol._client_id != 0
     assert f"id={protocol._client_id}" in str(exc_info.value)

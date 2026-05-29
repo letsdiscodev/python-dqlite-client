@@ -10,50 +10,20 @@ from dqliteclient.exceptions import ClusterError, ClusterPolicyError, DqliteConn
 
 __all__ = ["retry_with_backoff"]
 
-# OS-entropy randomness for the jitter draw, mirroring the
-# ``_cluster_random`` discipline at ``cluster.py:159-165``. The
-# module-global ``random._inst`` (used by bare ``random.uniform``)
-# is inherited byte-for-byte across ``os.fork()`` — CPython's
-# ``Lib/random.py`` does not register an ``os.register_at_fork``
-# callback for it. Forked workers (gunicorn/uwsgi/multiprocessing
-# fork start method) therefore draw IDENTICAL jitter sequences from
-# their inherited state, defeating the stagger that jitter is meant
-# to provide. ``SystemRandom`` reads ``/dev/urandom`` per draw
-# (Linux ``getrandom(2)`` is fork-aware) so siblings diverge; it
-# also ignores ``random.seed()`` so a test suite that seeds the
-# global PRNG for determinism cannot accidentally pin every retry
-# to the same jitter draw.
+# SystemRandom (not bare random.uniform) so forked workers draw independent jitter:
+# random._inst is inherited byte-for-byte across os.fork() and would otherwise stagger-defeat.
 _retry_random: Final[random.Random] = random.SystemRandom()
 
-# Default retry set: transport- and cluster-level errors only.
-# Deterministic server / client errors (``OperationalError``,
-# ``DataError``, ``InterfaceError``) are NOT retried — retrying a
-# constraint violation or a type mismatch would burn the full
-# exponential-backoff window before surfacing the true cause. A
-# caller that actually wants broader catches must opt in by passing
-# an explicit ``retryable_exceptions`` tuple.
-#
-# ``OSError`` subsumes ``TimeoutError``, ``BrokenPipeError``,
-# ``ConnectionError``, and ``ConnectionResetError``, so a single
-# ``OSError`` entry covers every stdlib transport-error shape
-# (mirrors the classification in
-# ``sqlalchemy-dqlite/src/sqlalchemydqlite/base.py``'s
-# ``is_disconnect``).
+# Transport/cluster errors only; deterministic server/client errors (OperationalError etc.)
+# are NOT retried by default. OSError subsumes TimeoutError/BrokenPipeError/ConnectionError.
 _DEFAULT_RETRYABLE: Final[tuple[type[BaseException], ...]] = (
     OSError,
     DqliteConnectionError,
     ClusterError,
 )
 
-# ``ClusterPolicyError`` is a deterministic subclass of
-# ``ClusterError``: the redirect-policy gate rejected an address, and
-# retrying the same RPC against the same configured policy will land
-# on the same rejection. Excluding it by default short-circuits the
-# misuse where a caller wraps a policy-bounded RPC and burns the full
-# exponential-backoff window before surfacing the policy hit. The
-# in-tree ``ClusterClient.connect`` path passes the same exclusion
-# explicitly (``cluster.py``); external callers using the default get
-# the same behaviour without having to know about the subclass.
+# ClusterPolicyError is a deterministic ClusterError subclass (policy gate rejected an
+# address); retrying the same RPC against the same policy reproduces it, so exclude by default.
 _DEFAULT_EXCLUDED: Final[tuple[type[BaseException], ...]] = (ClusterPolicyError,)
 
 
@@ -69,95 +39,19 @@ async def retry_with_backoff[T](
 ) -> T:
     """Retry an async function with exponential backoff.
 
-    Safety note for SQL callables:
-        Retrying a callable that issues SQL against dqlite is UNSAFE for
-        non-idempotent statements. The cluster commits writes through
-        Raft replication; a transport-level failure (TCP reset, leader
-        flip, deadline exceeded) can fire AFTER the server has already
-        applied and Raft-replicated the change but BEFORE the client
-        receives the success response. Re-running the statement on
-        retry produces duplicate rows / double-applied updates with no
-        idempotence guarantees from the protocol.
+    UNSAFE for non-idempotent SQL: a transport failure can fire after the write is
+    Raft-committed but before the client sees success, so retry duplicates the write.
+    The default retryable set omits OperationalError to avoid retrying SQL-level failures.
 
-        The default ``retryable_exceptions`` tuple deliberately omits
-        ``OperationalError`` so the most common SQL-level failures do
-        not retry. Callers who broaden the tuple — or who wrap a SQL
-        callable in this helper at all — must restrict themselves to
-        idempotent shapes (UPSERT, INSERT OR IGNORE, plain SELECT,
-        application-level idempotency tokens) or accept at-least-once
-        application semantics.
-
-    Args:
-        func: Async function to retry. See the safety note above before
-            wrapping a SQL-mutating callable.
-        max_attempts: Maximum number of attempts
-        base_delay: Initial delay between retries in seconds
-        max_delay: Maximum delay between retries
-        jitter: Random jitter factor in ``[0, 1)`` — e.g. ``0.5``
-            means each delay is randomly scaled by ``[0.5, 1.5]``.
-            ``1.0`` is rejected: ``1 + uniform(-1, 1)`` can legally
-            draw 0, zeroing the backoff for that iteration and
-            defeating the exponential-backoff contract. Cap at
-            ``0.99`` for the strongest randomisation.
-        max_elapsed_seconds: Optional total wall-clock cap. ``None``
-            (default) means "only ``max_attempts`` governs termination."
-            Set to a positive finite number to abort the retry loop
-            once the cumulative elapsed time crosses the budget,
-            re-raising the last observed exception. Complements
-            ``max_attempts`` for scenarios where a single attempt has
-            its own long deadline (``ClusterClient.find_leader`` with
-            N slow peers, for example): without this cap the worst-case
-            wall clock is ``max_attempts * (per-attempt deadline +
-            max_delay)``, easily exceeding a caller's outer deadline.
-        retryable_exceptions: Exception types to retry on. The default
-            (``OSError``, ``DqliteConnectionError``, ``ClusterError``)
-            covers transport- and cluster-level failures only —
-            deterministic server/client errors (``OperationalError``,
-            ``DataError``, ``InterfaceError``) are NOT retried by
-            default. Callers that want broader catches should pass
-            their own tuple, but see the safety note above on the
-            at-least-once consequences of broadening this for SQL
-            callables.
-        excluded_exceptions: Subclasses of ``retryable_exceptions`` that
-            must NOT be retried — useful when a deterministic,
-            non-recoverable error (e.g. a policy rejection) is a subtype
-            of an otherwise-retryable family. Matched before the
-            retryable check so the exception re-raises immediately.
-            Default: ``(ClusterPolicyError,)`` — a redirect-policy
-            rejection is deterministic against the configured policy
-            and retrying would burn the full backoff window for the
-            same outcome. Pass an empty tuple to opt back into the
-            previous "retry every matching subclass" behaviour.
-
-    Returns:
-        Result of the function
-
-    Raises:
-        The last exception if all attempts fail, or immediately
-        for non-retryable exceptions
-
-    Comparison to ``ClusterClient.connect``:
-        The in-tree connect path invokes this helper with TIGHTER
-        defaults than the public signature for go-dqlite parity:
-        ``max_attempts=3`` (vs. 5 here) and ``max_delay=1.0`` (vs.
-        10.0 here), mirroring go-dqlite's ``BackoffCap = 1 * time.Second``.
-        External callers wrapping their own cluster-layer RPCs and
-        wanting that same shape should pass ``max_attempts=3``,
-        ``max_delay=1.0`` explicitly. The public defaults are looser
-        because non-cluster callers (admin tooling, third-party
-        wrappers) reasonably tolerate a longer worst-case wall-clock
-        in exchange for more attempts.
+    jitter must be in [0, 1): at 1.0, ``1 + uniform(-1, 1)`` can draw 0 and zero the backoff.
+    max_elapsed_seconds is an optional wall-clock cap complementing max_attempts.
+    excluded_exceptions are non-retryable subclasses of retryable_exceptions, matched first.
     """
     if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
         raise TypeError(f"max_attempts must be an int, got {type(max_attempts).__name__}")
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
-    # Validate the float knobs: a negative or non-finite base_delay /
-    # max_delay would later be handed to ``asyncio.sleep`` which rejects
-    # negative values with its own ValueError — surface the misuse at
-    # the retry helper's entry point instead, with a clearer message.
-    # ``jitter > 1`` is the same class of bug: ``1 + uniform(-j, j)``
-    # with ``j > 1`` can go negative and produce a negative sleep.
+    # Surface negative/non-finite delays here rather than later inside asyncio.sleep.
     for name, value in (("base_delay", base_delay), ("max_delay", max_delay)):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise TypeError(f"{name} must be a number, got {type(value).__name__}")
@@ -166,12 +60,7 @@ async def retry_with_backoff[T](
     if isinstance(jitter, bool) or not isinstance(jitter, (int, float)):
         raise TypeError(f"jitter must be a number, got {type(jitter).__name__}")
     if not math.isfinite(jitter) or not (0 <= jitter < 1):
-        # Half-open interval ``[0, 1)``: at ``jitter=1.0`` exactly,
-        # ``1 + uniform(-1, 1)`` can legally draw 0 (the lower bound
-        # is a legal return of ``random.uniform(a, b)``), which zeros
-        # the backoff for that iteration and defeats the documented
-        # exponential-backoff contract. Reject at the validator
-        # rather than admitting the degenerate value silently.
+        # At jitter=1.0, ``1 + uniform(-1, 1)`` can draw 0 and zero the backoff.
         raise ValueError(
             f"jitter must be in [0, 1) — values at or above 1 allow the "
             f"uniform(-jitter, jitter) draw to zero the backoff, defeating "
@@ -197,40 +86,20 @@ async def retry_with_backoff[T](
     history: list[BaseException] = []
 
     for attempt in range(max_attempts):
-        # Deadline re-check BEFORE the next func() call: a previous
-        # backoff sleep may have woken close to the deadline. Without
-        # this check the next func() runs entirely past the deadline,
-        # producing wall-clock overshoots that are visible to outer
-        # asyncio.wait_for callers as missed timeouts.
+        # Deadline re-check before func(): a prior backoff sleep may have woken near it.
         if attempt > 0 and deadline is not None and loop.time() >= deadline:
             break
         try:
             return await func()
         except excluded_exceptions:
-            # Deterministic-failure subclass of a retryable family —
-            # retrying would just reproduce it. Re-raise immediately.
             raise
         except BaseExceptionGroup as bg:
-            # PEP 654: ``func`` that wraps work in ``asyncio.TaskGroup``
-            # (or any structured-concurrency primitive that re-raises
-            # children as a group) escapes the leaf ``retryable_exceptions``
-            # arm below because ``BaseExceptionGroup`` is not a subclass
-            # of the leaf classes. Unwrap with ``split`` so a group whose
-            # every leaf is retryable participates in the retry loop —
-            # mirrors the recursive-unwrap discipline at
-            # ``_run_protocol``'s cancel-detection arm.
-            #
-            # Fail-fast on a mixed group containing any excluded leaf
-            # so a deterministic failure does not get masked as
-            # transient.
+            # PEP 654: unwrap groups (e.g. from asyncio.TaskGroup) since the group itself
+            # is not a subclass of the leaf retryable types. Fail fast if any leaf is excluded.
             excluded_matched, _ = bg.split(excluded_exceptions)
             if excluded_matched is not None:
                 raise
-            # Retryable group: every leaf must match the retryable set
-            # for the retry to be safe. ``unmatched is not None`` means
-            # at least one leaf is neither retryable nor excluded — a
-            # genuinely unexpected exception class slipping through;
-            # do not silently retry on it.
+            # Retry only if every leaf is retryable; unmatched means an unexpected leaf.
             matched, unmatched = bg.split(retryable_exceptions)
             if unmatched is not None or matched is None:
                 raise
@@ -240,25 +109,14 @@ async def retry_with_backoff[T](
             last_error = e
             history.append(e)
 
-        # Shared retry-loop continuation reached from both the
-        # ``BaseExceptionGroup`` arm and the leaf ``retryable_exceptions``
-        # arm. Either set ``last_error`` and ``history`` before falling
-        # through here.
         if attempt == max_attempts - 1:
             break
-        # Budget check BEFORE scheduling the sleep: if we're out
-        # of time, re-raise the last error now rather than burn
-        # another backoff.
         if deadline is not None and loop.time() >= deadline:
             break
 
-        # Calculate delay with exponential backoff
         delay = min(base_delay * (2**attempt), max_delay)
 
         # Add jitter, then re-clamp so max_delay stays a hard ceiling.
-        # ``_retry_random`` (SystemRandom) is used over ``random.uniform``
-        # to keep forked workers' jitter draws independent — see the
-        # module-level comment on ``_retry_random``.
         if jitter > 0:
             delay = min(delay * (1 + _retry_random.uniform(-jitter, jitter)), max_delay)
 
@@ -268,19 +126,7 @@ async def retry_with_backoff[T](
 
         await asyncio.sleep(delay)
 
-    # last_error is non-None here: every ``break`` inside the retry
-    # loop runs AFTER ``last_error = e`` in the relevant except arm,
-    # and ``max_attempts < 1`` is rejected at the top of the helper.
-    # Surface a defensive ``RuntimeError`` rather than ``assert``: a
-    # bare ``assert`` is stripped under ``python -O`` / ``-OO``, which
-    # leaves the only run-time check on the invariant absent on
-    # operator-optimised deployments. A future refactor that broke
-    # the loop-structure invariant (e.g. adding a ``break`` before
-    # ``last_error = e``) would otherwise ship ``raise None`` →
-    # confusing ``TypeError: exceptions must derive from
-    # BaseException`` with no link back to the actual retry context.
-    # mypy narrows from the if-raise form just as well as from
-    # ``assert``.
+    # last_error is non-None here; raise (not assert) so the invariant survives python -O.
     if last_error is None:
         raise RuntimeError(
             f"retry_with_backoff: internal invariant violated — exited "
@@ -288,13 +134,8 @@ async def retry_with_backoff[T](
             f"history_len={len(history)}). This is a bug in the retry helper."
         )
     if len(history) > 1:
-        # Chain prior-attempt failures so a forensic walker can see
-        # the full timeline rather than only the last error. Mirrors
-        # the discipline ``_find_leader_impl`` and
-        # ``ConnectionPool.initialize`` apply for per-node aggregates.
-        # ``_bounded_group`` caps children so the chain stays
-        # picklable for cross-process error capture. Local import to
-        # avoid the retry <-> cluster import cycle at module load.
+        # Chain prior failures so the full timeline is visible, not just the last error.
+        # _bounded_group caps children to stay picklable. Local import breaks an import cycle.
         from dqliteclient.cluster import _bounded_group
 
         raise last_error from _bounded_group(

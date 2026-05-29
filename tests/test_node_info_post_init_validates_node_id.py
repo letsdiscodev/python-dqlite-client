@@ -1,14 +1,4 @@
-"""Pin: ``NodeInfo.__post_init__`` validates ``node_id`` at
-construction, mirroring ``cluster._validate_node_id`` and the
-YAML loader's bool/int discipline.
-
-Pre-fix the constructor validated only ``role``. ID=0 (the upstream
-"no node" sentinel), bools (int subclass), and negatives all slipped
-through to ``MemoryNodeStore.set_nodes`` and on into wire-encoder
-land — caught only at the membership-change call site or the server
-reply, defeating the "keep the diagnostic at the construction site"
-rationale used elsewhere in the codebase.
-"""
+"""``NodeInfo.__post_init__`` validates node_id at construction (0 is the "no node" sentinel)."""
 
 from __future__ import annotations
 

@@ -1,22 +1,8 @@
-"""Pin close-race rechecks in ``ConnectionPool.acquire()`` and the
-``async with pool:`` lifecycle reported as uncovered by
-``pytest --cov``.
+"""Pin the in-lock ``_closed`` rechecks in ``acquire()`` (reservation and
+at-capacity-wait blocks) plus the ``async with pool:`` lifecycle.
 
-Lines covered:
-
-- 495 — outer lock-recheck: ``async with self._lock`` for the
-  reservation block, then ``if self._closed: raise``.
-- 523 — at-capacity wait recheck: ``async with self._lock`` for the
-  state-change wait block, then ``if self._closed: raise``.
-- 918-919, 927 — ``__aenter__`` / ``__aexit__`` (the async-with form
-  of pool lifecycle, exercised here with a mocked cluster so no
-  cluster fixture dependency).
-
-The L495 / L523 paths fire when ``close()`` lands AFTER the outer
-``_closed`` check but BEFORE the lock acquisition completes. Driven
-deterministically via an ``asyncio.Lock`` subclass that flips
-``_closed`` mid-``acquire()`` — a controlled simulation of the race
-window the rechecks defend against.
+The rechecks fire when ``close()`` lands after the outer ``_closed`` check but
+before the lock is acquired, simulated via a Lock that flips ``_closed``.
 """
 
 from __future__ import annotations
@@ -70,12 +56,8 @@ def _pool_with_factory(factory: Any, *, max_size: int = 1) -> ConnectionPool:
 
 
 def _counted_flipping_lock(target: ConnectionPool, flip_on: int) -> asyncio.Lock:
-    """Return an ``asyncio.Lock`` whose ``acquire()`` flips
-    ``target._closed`` to True on the ``flip_on``-th acquire.
-
-    A counter lets us flip selectively (e.g. only on the second
-    acquire so the first reservation succeeds before the close-race
-    fires)."""
+    """Lock whose ``acquire()`` flips ``target._closed`` True on the
+    ``flip_on``-th call (lets us flip selectively per acquire site)."""
 
     class _CountedFlipLock(asyncio.Lock):
         def __init__(self) -> None:
@@ -92,28 +74,16 @@ def _counted_flipping_lock(target: ConnectionPool, flip_on: int) -> asyncio.Lock
     return _CountedFlipLock()
 
 
-# ---------------------------------------------------------------------------
-# pool.py:495 — reservation lock-recheck
-# ---------------------------------------------------------------------------
-
-
 class TestAcquireReservationLockClosedRecheck:
     async def test_close_lands_during_reservation_lock_acquire(self) -> None:
-        """``acquire()``'s reservation block enters ``self._lock``;
-        if ``close()`` flips ``_closed`` between the outer check and
-        the lock acquisition, the in-lock recheck must surface it
-        as ``DqliteConnectionError("Pool is closed")`` rather than
-        proceeding to bump ``_size``. Drives pool.py:495."""
+        """If ``close()`` flips ``_closed`` while acquiring the reservation lock,
+        the in-lock recheck must raise rather than bump ``_size``."""
 
         async def _factory(**kwargs: Any) -> _FakeConn:  # pragma: no cover - never reached
             return _FakeConn()
 
         pool = _pool_with_factory(_factory, max_size=2)
-        # Initialize with min_size=0 so queue is empty and we enter
-        # the reservation block.
-        await pool.initialize()
-        # Replace the lock with a flipping variant that flips on
-        # the first acquire (the reservation lock entry).
+        await pool.initialize()  # min_size=0: empty queue, enter reservation block
         pool._lock = _counted_flipping_lock(pool, flip_on=1)
 
         with pytest.raises(DqliteConnectionError, match="Pool is closed"):
@@ -121,19 +91,11 @@ class TestAcquireReservationLockClosedRecheck:
                 pass  # pragma: no cover - acquire must raise
 
 
-# ---------------------------------------------------------------------------
-# pool.py:523 — at-capacity wait lock-recheck
-# ---------------------------------------------------------------------------
-
-
 class TestAcquireAtCapacityWaitLockClosedRecheck:
     async def test_close_lands_during_wait_state_lock_acquire(self) -> None:
-        """When the pool is at capacity, ``acquire()`` enters
-        ``self._lock`` to clear the closed-event before parking on
-        ``self._pool.get()``. If ``close()`` flips ``_closed`` between
-        the outer check and this lock acquisition, the recheck must
-        surface as ``DqliteConnectionError`` rather than parking on
-        a queue that will never fill. Drives pool.py:523."""
+        """At capacity, if ``close()`` flips ``_closed`` while acquiring the
+        wait-block lock, the recheck must raise rather than park on a queue
+        that will never fill."""
         c = _FakeConn(name="c")
         connections = iter([c])
 
@@ -143,42 +105,25 @@ class TestAcquireAtCapacityWaitLockClosedRecheck:
         pool = _pool_with_factory(_factory, max_size=1)
         await pool.initialize()
 
-        # Pre-acquire the only slot so the next acquire enters the
-        # at-capacity wait branch.
+        # Pre-acquire the only slot so the next acquire enters the wait branch.
         cm = pool.acquire()
         await cm.__aenter__()
 
-        # Replace the lock with a counted flipping variant. The
-        # second acquire's first lock entry is the reservation lock
-        # (n=1 — must NOT flip; flowing through reservation to
-        # ``reserved=False`` and dropping out to the wait branch).
-        # The wait branch's lock acquire is n=2 — flip there.
+        # n=1 is the reservation lock (must not flip — falls through to the
+        # wait branch); n=2 is the wait-branch lock — flip there.
         pool._lock = _counted_flipping_lock(pool, flip_on=2)
 
         with pytest.raises(DqliteConnectionError, match="Pool is closed"):
             async with pool.acquire():
                 pass  # pragma: no cover - acquire must raise
 
-        # Cleanup: release the held conn so close() can drain.
-        await cm.__aexit__(None, None, None)
-
-
-# ---------------------------------------------------------------------------
-# pool.py:918-919, 927 — async-with lifecycle (mocked cluster — no
-# cluster fixture dependency)
-# ---------------------------------------------------------------------------
+        await cm.__aexit__(None, None, None)  # release held conn so close() can drain
 
 
 class TestPoolAsyncWithLifecycle:
     async def test_async_with_initializes_and_closes_with_mock_cluster(self) -> None:
-        """``async with ConnectionPool(...) as pool:`` drives
-        ``__aenter__`` (which calls ``initialize()``) and
-        ``__aexit__`` (which calls ``close()``). Drives pool.py
-        lines 918-919 and 927.
-
-        Uses ``min_size=0`` + a mocked cluster to avoid the
-        cluster-fixture dependency that gates the analogous
-        ``create_pool`` integration test."""
+        """``async with pool:`` runs ``__aenter__`` (initialize) and
+        ``__aexit__`` (close)."""
         c = _FakeConn()
 
         async def _factory(**kwargs: Any) -> _FakeConn:
@@ -191,23 +136,12 @@ class TestPoolAsyncWithLifecycle:
             assert pool._initialized is True
             assert pool._closed is False
 
-        # __aexit__ ran → close() ran → pool is closed.
         assert pool._closed is True
-
-
-# ---------------------------------------------------------------------------
-# __init__.py:143-157 — create_pool body (mocked cluster)
-# ---------------------------------------------------------------------------
 
 
 class TestCreatePoolBody:
     async def test_create_pool_returns_initialized_pool_with_mock_cluster(self) -> None:
-        """``create_pool(...)`` constructs a ``ConnectionPool`` and
-        awaits ``initialize()`` before returning. The integration
-        version of this test (in ``tests/integration/test_query_raw_apis.py``)
-        is skipped pending cluster-fixture work — exercise the body
-        here against a mocked cluster so the public ``create_pool``
-        constructor is covered."""
+        """``create_pool(...)`` awaits ``initialize()`` before returning."""
         from dqliteclient import create_pool
 
         c = _FakeConn()

@@ -1,16 +1,6 @@
-"""``ClusterClient.cluster_info`` and ``transfer_leadership``.
-
-Mirrors the spec-level admin operations ``go-dqlite/client.Cluster``
-and ``go-dqlite/client.Transfer``. Both methods route through
-:meth:`ClusterClient.open_admin_connection`, which opens a one-shot
-connection to the current leader, runs a single round-trip, and
-tears the socket down with a bounded shutdown drain.
-
-Tests at this layer mock the transport so the protocol-level methods
-can be exercised without a live cluster. Live-cluster behaviour is
-covered by the integration suite when the test cluster is
-available.
-"""
+"""``ClusterClient.cluster_info`` and ``transfer_leadership`` (mirroring go-dqlite's
+``client.Cluster`` / ``client.Transfer``), both routed through ``open_admin_connection``.
+Transport is mocked; live behaviour is in the integration suite."""
 
 from __future__ import annotations
 
@@ -25,8 +15,6 @@ from dqliteclient.node_store import MemoryNodeStore
 from dqlitewire import NodeRole
 from dqlitewire.messages.responses import NodeInfo
 
-# Shape of ``open_connection_with_keepalive`` for the fake we
-# substitute in ``_patch_admin_connection``.
 _FakeOpenConnection = Callable[[str, int], Awaitable[tuple[MagicMock, MagicMock]]]
 
 
@@ -38,8 +26,7 @@ def _make_cluster() -> ClusterClient:
 def _patch_admin_connection(
     fake_proto: MagicMock,
 ) -> tuple[_FakeOpenConnection, MagicMock]:
-    """Patch the network primitives so ``open_admin_connection``
-    yields ``fake_proto`` without touching a real socket."""
+    """Patch network primitives so ``open_admin_connection`` yields ``fake_proto``."""
     reader = MagicMock()
     writer = MagicMock()
     writer.close = MagicMock()
@@ -53,13 +40,9 @@ def _patch_admin_connection(
     return fake_open_connection, writer
 
 
-# --- cluster_info ---
-
-
 @pytest.mark.asyncio
 async def test_cluster_info_returns_node_list_from_leader() -> None:
-    """Healthy path: leader replies with three voters; the call
-    returns the decoded :class:`NodeInfo` list verbatim."""
+    """The call returns the leader's decoded NodeInfo list verbatim."""
     cluster = _make_cluster()
     nodes = [
         NodeInfo(node_id=1, address="node1:9001", role=NodeRole.VOTER),
@@ -89,8 +72,7 @@ async def test_cluster_info_returns_node_list_from_leader() -> None:
 
 @pytest.mark.asyncio
 async def test_cluster_info_propagates_leader_unreachable_as_cluster_error() -> None:
-    """``find_leader`` raising ``ClusterError`` propagates unchanged
-    — admin methods do not retry; the caller decides."""
+    """``find_leader``'s ClusterError propagates unchanged — admin methods do not retry."""
     cluster = _make_cluster()
 
     with (
@@ -102,9 +84,7 @@ async def test_cluster_info_propagates_leader_unreachable_as_cluster_error() -> 
 
 @pytest.mark.asyncio
 async def test_cluster_info_propagates_operational_error_from_leader() -> None:
-    """A leader rejecting the request (e.g. mid-shutdown) surfaces as
-    ``OperationalError`` — same shape as any other dqlite failure
-    response."""
+    """A leader rejecting the request surfaces as OperationalError."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()
@@ -124,13 +104,9 @@ async def test_cluster_info_propagates_operational_error_from_leader() -> None:
         await cluster.cluster_info()
 
 
-# --- transfer_leadership ---
-
-
 @pytest.mark.asyncio
 async def test_transfer_leadership_sends_request_with_target_id() -> None:
-    """Healthy path: ``TransferRequest(target_node_id)`` is dispatched
-    to the current leader and the call returns ``None``."""
+    """``TransferRequest(target_node_id)`` is dispatched to the current leader."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()
@@ -145,9 +121,6 @@ async def test_transfer_leadership_sends_request_with_target_id() -> None:
         patch("dqliteclient._dial.open_connection_with_keepalive", new=fake_open),
         patch("dqliteclient.cluster.DqliteProtocol", return_value=fake_proto),
     ):
-        # ``transfer_leadership`` is typed as -> None; the assertion
-        # covered by mypy is ``no return value``. Call without binding,
-        # then verify the wire dispatch happened.
         await cluster.transfer_leadership(target_node_id=2)
 
     fake_proto.transfer.assert_awaited_once_with(2)
@@ -155,10 +128,8 @@ async def test_transfer_leadership_sends_request_with_target_id() -> None:
 
 @pytest.mark.asyncio
 async def test_transfer_leadership_rejects_non_int_target() -> None:
-    """``target_node_id`` must be ``int`` (not ``bool``, not ``str``,
-    not ``float``). Local validation surfaces ``TypeError`` at the
-    call site rather than a cryptic wire-decode error from the
-    server."""
+    """``target_node_id`` must be int; local validation raises TypeError at the call site
+    rather than a cryptic wire-decode error."""
     cluster = _make_cluster()
 
     for bad in (True, False, "2", 2.0, None):
@@ -168,9 +139,8 @@ async def test_transfer_leadership_rejects_non_int_target() -> None:
 
 @pytest.mark.asyncio
 async def test_transfer_leadership_rejects_zero_or_negative_target() -> None:
-    """Node id 0 is the upstream "no node" sentinel
-    (``LeaderResponse.node_id == 0`` means "no leader known"); a
-    non-positive id is never a valid promotion target."""
+    """Node id 0 is the upstream "no node" sentinel, so a non-positive id is never a valid
+    promotion target."""
     cluster = _make_cluster()
 
     for bad in (0, -1, -100):
@@ -192,8 +162,7 @@ async def test_transfer_leadership_propagates_leader_unreachable() -> None:
 
 @pytest.mark.asyncio
 async def test_transfer_leadership_propagates_server_rejection() -> None:
-    """A server rejecting the transfer (target not a voter, target
-    unreachable, cluster mid-flux) surfaces as ``OperationalError``."""
+    """A server rejecting the transfer surfaces as OperationalError."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()
@@ -212,13 +181,9 @@ async def test_transfer_leadership_propagates_server_rejection() -> None:
         await cluster.transfer_leadership(target_node_id=99)
 
 
-# --- open_admin_connection cleanup discipline ---
-
-
 @pytest.mark.asyncio
 async def test_admin_connection_closes_writer_on_normal_exit() -> None:
-    """Sanity: the asynccontextmanager closes the writer on the
-    happy path. Mirrors the discipline in ``_query_leader``."""
+    """The asynccontextmanager closes the writer on the happy path."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()
@@ -241,8 +206,8 @@ async def test_admin_connection_closes_writer_on_normal_exit() -> None:
 
 @pytest.mark.asyncio
 async def test_admin_connection_closes_writer_on_protocol_error() -> None:
-    """The writer must close even when the protocol method raises —
-    otherwise a failed transfer would leak a half-closed socket."""
+    """The writer must close even when the protocol method raises, or a failed transfer
+    leaks a half-closed socket."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()

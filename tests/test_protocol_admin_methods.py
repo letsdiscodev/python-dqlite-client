@@ -1,9 +1,5 @@
-"""Protocol-layer tests for ``DqliteProtocol.cluster`` and ``transfer``.
-
-Mirrors the existing protocol tests for ``get_leader`` /
-``open_database`` / ``prepare`` — the wire is mocked, the
-request-encode + response-decode contract is the unit of test.
-"""
+"""Protocol-layer tests for ``DqliteProtocol.cluster`` and ``transfer``
+(wire mocked; the request-encode + response-decode contract is the unit)."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -32,8 +28,7 @@ class TestProtocolCluster:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """Healthy path: ServersResponse decodes into the
-        ``list[NodeInfo]`` the public method returns."""
+        """ServersResponse decodes into the list[NodeInfo] the method returns."""
         nodes = [
             NodeInfo(node_id=1, address="node1:9001", role=NodeRole.VOTER),
             NodeInfo(node_id=2, address="node2:9002", role=NodeRole.VOTER),
@@ -50,9 +45,7 @@ class TestProtocolCluster:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """A FailureResponse from the server surfaces as
-        OperationalError carrying the upstream code+message — same
-        translation as every other protocol method."""
+        """A FailureResponse surfaces as OperationalError with code+message."""
         mock_reader.read.return_value = FailureResponse(
             code=1, message="cluster mid-shutdown"
         ).encode()
@@ -68,10 +61,8 @@ class TestProtocolCluster:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """A server returning the wrong response type indicates wire-
-        level protocol drift; raise ProtocolError so the caller can
-        invalidate the connection."""
-        # Server returns a LeaderResponse for a ClusterRequest — drift.
+        """A wrong response type (wire drift) raises ProtocolError so the
+        caller can invalidate the connection."""
         mock_reader.read.return_value = LeaderResponse(node_id=1, address="node1:9001").encode()
 
         with pytest.raises(ProtocolError, match="Expected ServersResponse"):
@@ -88,13 +79,7 @@ class TestProtocolTransfer:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """Healthy path: server replies with EmptyResponse and the
-        call returns (it is typed as ``-> None``).
-
-        The interesting contract is that the request encoded
-        successfully and the response decoded without raising — the
-        return value itself carries no information.
-        """
+        """Healthy path: EmptyResponse decodes without raising (returns None)."""
         mock_reader.read.return_value = EmptyResponse().encode()
 
         await protocol.transfer(target_node_id=2)
@@ -104,8 +89,7 @@ class TestProtocolTransfer:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """Server-side rejection (target not a voter, target
-        unreachable, mid-flux) surfaces as OperationalError."""
+        """Server-side rejection surfaces as OperationalError."""
         mock_reader.read.return_value = FailureResponse(
             code=1, message="target not a voter"
         ).encode()
@@ -122,7 +106,6 @@ class TestProtocolTransfer:
         mock_reader: AsyncMock,
     ) -> None:
         """Wire-level drift surfaces as ProtocolError."""
-        # Server returns a DbResponse for a TransferRequest — drift.
         mock_reader.read.return_value = DbResponse(db_id=1).encode()
 
         with pytest.raises(ProtocolError, match="Expected EmptyResponse"):

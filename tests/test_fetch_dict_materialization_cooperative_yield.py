@@ -1,30 +1,5 @@
-"""Pin: ``DqliteConnection.fetch`` yields cooperatively while building
-its list-of-dicts result, so a large query result does not monopolise
-the event loop after the (already loop-friendly) wire decode completes.
-
-``fetch`` reshapes the decoded ``rows`` into ``[dict(zip(columns, row))
-for row in rows]``. The prior single comprehension ran entirely on the
-loop thread with no suspension point; the result-set size is bounded
-only by ``max_total_rows`` (default ``DEFAULT_MAX_TOTAL_ROWS =
-10_000_000``), so a multi-100k/multi-million-row result froze the loop
-for the whole reshape — starving heartbeats, pool acquirers, and any
-concurrent connection sharing the loop, and preventing cancellation from
-landing.
-
-The decode side (``_read_response`` / ``_read_continuation`` /
-``_drain_continuations``) already yields per frame, but those run inside
-``_run_protocol``; the post-decode reshape in ``fetch`` is downstream of
-that and was the residual unguarded per-row Python pass. ``fetchall``
-(returns the rows directly) and ``fetchval`` (indexes ``rows[0][0]``) do
-no per-row build and are unaffected; ``fetchone`` inherits the yield via
-``fetch``.
-
-The fix gates the yield on ``len(rows) >= _FETCH_DICT_YIELD_EVERY`` —
-below it the straight comprehension runs with zero scheduler overhead —
-and fires ``await asyncio.sleep(0)`` every ``_FETCH_DICT_YIELD_EVERY``
-rows. The ``strict=True`` zip semantics (arity mismatch raises
-``ValueError``) and the dict contents/order are preserved byte-identical.
-"""
+"""``DqliteConnection.fetch`` yields cooperatively while building its
+list-of-dicts result, so a large result does not monopolise the loop."""
 
 from __future__ import annotations
 
@@ -49,8 +24,7 @@ def _make_conn_returning(columns: list[str], rows: list[list[Any]]) -> DqliteCon
 @pytest.mark.asyncio
 async def test_fetch_large_result_yields_between_batches() -> None:
     """A 50k-row fetch must let a sibling ticker run a non-trivial number
-    of times. Under the prior single comprehension the sibling got zero
-    ticks."""
+    of times."""
     columns = ["a", "b"]
     rows = [[i, i * 2] for i in range(50_000)]
     conn = _make_conn_returning(columns, rows)
@@ -86,7 +60,7 @@ async def test_fetch_large_result_yields_between_batches() -> None:
 @pytest.mark.asyncio
 async def test_fetch_small_result_no_yield() -> None:
     """Small results (below the threshold) must not pay any yield
-    overhead — keep the straight comprehension."""
+    overhead."""
     columns = ["a"]
     rows = [[i] for i in range(100)]
     conn = _make_conn_returning(columns, rows)
@@ -116,8 +90,7 @@ async def test_fetch_small_result_no_yield() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_large_result_dict_identity() -> None:
-    """The yielding build must be byte-identical to the prior
-    comprehension (same dicts, same order)."""
+    """The yielding build must produce the same dicts in the same order."""
     columns = ["x", "y"]
     rows = [[i, str(i)] for i in range(10_000)]
     conn = _make_conn_returning(columns, rows)
@@ -133,7 +106,7 @@ async def test_fetch_large_result_preserves_strict_zip() -> None:
     even on the large (yielding) path."""
     columns = ["a", "b"]
     rows: list[list[Any]] = [[i, i] for i in range(8_000)]
-    rows[5_000] = [42]  # arity mismatch, past the first yield boundary
+    rows[5_000] = [42]  # arity mismatch past the first yield boundary
     conn = _make_conn_returning(columns, rows)
 
     with pytest.raises(ValueError):
@@ -141,8 +114,8 @@ async def test_fetch_large_result_preserves_strict_zip() -> None:
 
 
 def test_fetch_dict_yield_constant_is_defined_locally() -> None:
-    """The yield stride must be a local client constant (no dbapi import,
-    which would invert the dependency direction)."""
+    """The yield stride must be a local client constant; a dbapi import
+    would invert the dependency direction."""
     from dqliteclient import connection as conn_mod
 
     assert isinstance(conn_mod._FETCH_DICT_YIELD_EVERY, int)

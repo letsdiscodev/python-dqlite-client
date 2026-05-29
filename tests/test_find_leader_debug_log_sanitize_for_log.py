@@ -1,29 +1,7 @@
-"""Pin: every DEBUG ``logger.debug`` call inside
-``ClusterClient._find_leader_impl`` and its cached fast-path that
-interpolates a peer-controlled address goes through
-``sanitize_for_log`` (LF-escaping) rather than
-``_sanitize_display_text`` (LF-preserving).
-
-The six call sites covered:
-
-- cached fast-path, redirect verify-failed
-- cached fast-path, no-leader-known
-- cached fast-path, transport failure
-- ``_probe_one`` timeout
-- ``_probe_one`` per-node failure
-- ``_probe_one`` no-leader-known
-
-CWE-117 log injection — a hostile peer pushing an LF into a node
-address would forge an extra log line in journald / syslog when the
-operator turns on DEBUG verbosity during an incident response.
-
-``MemoryNodeStore.set_nodes`` rejects malformed addresses at the
-store boundary, so these tests patch ``_safe_node_snapshot`` and
-inject a ``NodeInfo`` that bypasses ``set_nodes`` validation — the
-threat model is a third-party ``NodeStore`` implementation that
-does not validate, OR a server-returned redirect target that
-contains LF.
-"""
+"""Every DEBUG log inside ``_find_leader_impl`` / its fast-path that
+interpolates a peer-controlled address must use ``sanitize_for_log``
+(LF-escaping), not ``_sanitize_display_text`` (LF-preserving), to block
+CWE-117 log injection from an LF in a node address."""
 
 from __future__ import annotations
 
@@ -47,9 +25,9 @@ _LF_ADDR = "evil.example.com:9001\nFORGED log row"
 
 
 def _make_cluster_with_poisoned_node(addr: str) -> ClusterClient:
-    """Build a cluster whose ``_safe_node_snapshot`` returns a single
-    NodeInfo containing LF — bypasses the store-side validator since the
-    threat model is wire-supplied / 3rd-party-store-supplied LF."""
+    """Build a cluster whose ``_safe_node_snapshot`` returns an LF-bearing
+    NodeInfo, bypassing the store-side validator (threat model: wire-
+    supplied or 3rd-party-store-supplied LF)."""
     store = MemoryNodeStore(["127.0.0.1:9001"])
     cc = ClusterClient(store, timeout=0.5, attempt_timeout=0.05)
     poisoned = _StoreNodeInfo(node_id=1, address=addr, role=NodeRole.VOTER)
@@ -58,9 +36,8 @@ def _make_cluster_with_poisoned_node(addr: str) -> ClusterClient:
 
 
 def _assert_no_raw_lf_in_debug_records(caplog: pytest.LogCaptureFixture) -> None:
-    """Every DEBUG record from ``dqliteclient.cluster`` must be a single
-    line — a raw LF in the message would split into multiple records on
-    the SIEM-ingest side."""
+    """Every DEBUG record must be a single line; a raw LF would split into
+    multiple records on the SIEM-ingest side."""
     debug_records = [
         r for r in caplog.records if r.name == "dqliteclient.cluster" and r.levelno == logging.DEBUG
     ]
@@ -178,8 +155,7 @@ def test_cached_fast_path_redirect_verify_failed_debug_log_strips_lf(
     cc._set_last_known_leader(cached_lf)
 
     async def fake_query_leader(addr: str, **_kw: object) -> str | None:
-        # First call (cached node) returns a different leader; second
-        # call (verify on the redirect) raises so verification fails.
+        # Cached node returns a different leader; the verify probe raises.
         if addr == cached_lf:
             return redirect_lf
         raise ProtocolError("verify failed")

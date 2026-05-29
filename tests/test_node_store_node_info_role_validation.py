@@ -1,14 +1,4 @@
-"""Pin: ``dqliteclient.node_store.NodeInfo`` rejects unknown role
-values at construction time, mirroring the wire-side
-``dqlitewire.messages.responses.NodeInfo.__post_init__``.
-
-The client-side ``NodeInfo`` docstring claims to "match" the wire-
-side. Without symmetric construction-time validation, a caller-
-built ``NodeInfo(role=999)`` flows through ``MemoryNodeStore`` and
-``_validate_and_normalise_nodes`` (which doesn't check role) into
-the cluster routing logic; the diagnostic only surfaces remotely
-on the peer side.
-"""
+"""Client-side ``NodeInfo`` rejects unknown role values at construction, like the wire side."""
 
 from __future__ import annotations
 

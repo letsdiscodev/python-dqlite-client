@@ -1,12 +1,5 @@
-"""Pin: ``DqliteConnection.close()``'s fork-pid shortcut clears
-``self._in_use`` along with every other lifecycle field.
-
-A forked-after-init worker that inherits ``_in_use=True`` would
-otherwise be permanently locked out behind ``_check_in_use``'s
-"another operation is in progress" diagnostic. Every other lifecycle
-field cleared on this branch follows the same "drop parent-loop
-state" rationale; ``_in_use`` was the lone omission until this pin.
-"""
+"""``close()``'s fork-pid shortcut clears ``_in_use`` too; otherwise a forked
+worker inheriting ``_in_use=True`` is permanently locked out by ``_check_in_use``."""
 
 from __future__ import annotations
 
@@ -39,15 +32,10 @@ def _make_connection() -> DqliteConnection:
 
 @pytest.mark.asyncio
 async def test_close_fork_pid_shortcut_clears_in_use_flag() -> None:
-    """Set ``_in_use=True`` to simulate a mid-operation state at fork
-    time, then point ``_creator_pid`` at a different pid so the
-    fork-pid shortcut fires. After close(), ``_in_use`` must be
-    False so the next method call passes ``_check_in_use``."""
+    """A pid mismatch fires the fork-pid shortcut; close() must clear ``_in_use``."""
     conn = _make_connection()
     conn._in_use = True
-    # Simulate forked-from-parent state — pid mismatch triggers the
-    # shortcut branch.
-    conn._creator_pid = os.getpid() + 1_000_000
+    conn._creator_pid = os.getpid() + 1_000_000  # pid mismatch fires the shortcut
 
     await conn.close()
 

@@ -1,13 +1,5 @@
-"""When _run_protocol sees an OperationalError carrying a primary
-SQLite code that implies server-side auto-rollback, _in_transaction
-and _tx_owner must be cleared so the local state does not lie about
-what the engine is doing.
-
-The leader-class codes (NOT_LEADER, LEADERSHIP_LOST) trigger a full
-_invalidate; codes in {SQLITE_ABORT, SQLITE_INTERRUPT, SQLITE_IOERR,
-SQLITE_CORRUPT, SQLITE_FULL} only clear the tx flags — the connection
-itself is still healthy.
-"""
+"""_run_protocol clears tx flags on auto-rollback SQLite codes; leader-class
+codes additionally _invalidate, the rest leave the connection healthy."""
 
 from __future__ import annotations
 
@@ -33,12 +25,7 @@ from dqliteclient.exceptions import OperationalError
 )
 @pytest.mark.asyncio
 async def test_auto_rollback_codes_clear_tx_flags(code: int, description: str) -> None:
-    """Each auto-rollback primary code (or its extended variants)
-    must clear _in_transaction / _tx_owner / savepoint stack /
-    autobegin flag without invalidating the connection itself.
-    Server-side SQLite engine has discarded the transaction including
-    every savepoint frame; the local tracker must mirror that.
-    """
+    """Each auto-rollback code clears tx + savepoint state without invalidating."""
     conn = DqliteConnection("localhost:9001")
     conn._db_id = 1
     conn._protocol = object()  # type: ignore[assignment]
@@ -46,7 +33,6 @@ async def test_auto_rollback_codes_clear_tx_flags(code: int, description: str) -
     async def fake_send(protocol, db_id):
         raise OperationalError(f"simulated {description}", code)
 
-    # Set tx + savepoint state so we can observe them being cleared.
     conn._in_transaction = True
     conn._tx_owner = asyncio.current_task()
     conn._savepoint_stack = ["sp1", "sp2"]
@@ -55,10 +41,7 @@ async def test_auto_rollback_codes_clear_tx_flags(code: int, description: str) -
     with pytest.raises(OperationalError):
         await conn._run_protocol(fake_send)
 
-    # Connection must NOT be invalidated.
     assert conn._protocol is not None, f"{description}: connection unexpectedly invalidated"
-    # All four state fields must be cleared atomically — mirror the
-    # cleanup discipline already enforced by _invalidate / close.
     assert conn._in_transaction is False, f"{description}: _in_transaction still True"
     assert conn._tx_owner is None, f"{description}: _tx_owner not cleared"
     assert conn._savepoint_stack == [], f"{description}: _savepoint_stack not cleared"
@@ -77,9 +60,7 @@ async def test_auto_rollback_codes_clear_tx_flags(code: int, description: str) -
 )
 @pytest.mark.asyncio
 async def test_non_auto_rollback_codes_keep_tx_flags(code: int, description: str) -> None:
-    """Codes outside the auto-rollback set leave the local tx flags
-    intact — those errors do NOT cause the SQLite engine to clear the
-    transaction."""
+    """Codes outside the auto-rollback set leave tx flags intact (engine keeps the tx)."""
     conn = DqliteConnection("localhost:9001")
     conn._db_id = 1
     conn._protocol = object()  # type: ignore[assignment]
@@ -97,9 +78,6 @@ async def test_non_auto_rollback_codes_keep_tx_flags(code: int, description: str
         await conn._run_protocol(fake_send)
 
     assert conn._protocol is not None
-    # Flags preserved — user code must call ROLLBACK explicitly.
-    # The savepoint stack and autobegin flag are also preserved
-    # because the SQLite engine did NOT roll back the transaction.
     assert conn._in_transaction is True
     assert conn._tx_owner is owner
     assert conn._savepoint_stack == ["sp1"]
@@ -109,17 +87,9 @@ async def test_non_auto_rollback_codes_keep_tx_flags(code: int, description: str
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_busy_with_checkpoint_message_clears_tx_state() -> None:
-    """SQLITE_BUSY (5) with the upstream gateway's "checkpoint in
-    progress" wording is a Raft-side BUSY where the tx-state-clear is
-    safe — the in-flight write was not accepted, so the local tracker
-    must mirror the server's view.
-
-    The OperationalError is rewrapped as DqliteConnectionError so
-    SA's ``is_disconnect`` catches it via the connection-class arm
-    (SA's substring scan is gated on ``code is None`` and so cannot
-    catch a coded BUSY); the SA pool recycles the slot, closing the
-    SA-side transaction-tracker / server-side state divergence the
-    bare-OperationalError raise left open."""
+    """Raft-checkpoint SQLITE_BUSY clears tx state and rewraps as
+    DqliteConnectionError so SA's ``is_disconnect`` (gated on ``code is None``)
+    catches it via the connection-class arm and the pool recycles the slot."""
     from dqliteclient.exceptions import DqliteConnectionError
 
     conn = DqliteConnection("localhost:9001")
@@ -137,7 +107,6 @@ async def test_busy_with_checkpoint_message_clears_tx_state() -> None:
     with pytest.raises(DqliteConnectionError) as ei:
         await conn._run_protocol(fake_send)
 
-    # Original OperationalError chained via __cause__ for forensics.
     assert isinstance(ei.value.__cause__, OperationalError)
     assert conn._protocol is not None  # not invalidated at the wire
     assert conn._in_transaction is False
@@ -148,9 +117,7 @@ async def test_busy_with_checkpoint_message_clears_tx_state() -> None:
 
 @pytest.mark.asyncio
 async def test_busy_with_engine_message_preserves_tx_state() -> None:
-    """SQLITE_BUSY (5) with the standard SQLite-engine wording
-    ("database is locked") is engine-side; the user can retry. The
-    tracker stays in sync with the still-open tx."""
+    """Engine-side SQLITE_BUSY ("database is locked") leaves the tx open for retry."""
     conn = DqliteConnection("localhost:9001")
     conn._db_id = 1
     conn._protocol = object()  # type: ignore[assignment]
@@ -175,16 +142,13 @@ async def test_busy_with_engine_message_preserves_tx_state() -> None:
 
 
 async def test_leader_class_codes_invalidate_and_clear_flags() -> None:
-    """Leader-class codes still invalidate (existing behaviour) — the
-    invalidate path itself clears the tx flags AND the savepoint stack
-    AND the autobegin flag via the all-four-fields cleanup discipline."""
+    """Leader-class codes invalidate; the invalidate path clears all tx state."""
     conn = DqliteConnection("localhost:9001")
     conn._db_id = 1
     conn._protocol = object()  # type: ignore[assignment]
 
     async def fake_send(protocol, db_id):
-        # SQLITE_IOERR_NOT_LEADER (10250) — leader class.
-        raise OperationalError("not the leader", 10250)
+        raise OperationalError("not the leader", 10250)  # SQLITE_IOERR_NOT_LEADER
 
     conn._in_transaction = True
     conn._tx_owner = asyncio.current_task()
@@ -194,7 +158,6 @@ async def test_leader_class_codes_invalidate_and_clear_flags() -> None:
     with pytest.raises(OperationalError):
         await conn._run_protocol(fake_send)
 
-    # Leader codes invalidate AND clear all four state fields.
     assert conn._protocol is None
     assert conn._in_transaction is False
     assert conn._tx_owner is None
@@ -204,26 +167,16 @@ async def test_leader_class_codes_invalidate_and_clear_flags() -> None:
 
 @pytest.mark.asyncio
 async def test_busy_with_checkpoint_substring_only_in_raw_message_clears_tx_state() -> None:
-    """The "checkpoint in progress" substring scan must read
-    ``raw_message`` so a >1024-byte server message whose canonical
-    wording is shifted past the truncation boundary on ``message``
-    still classifies as Raft-BUSY. Without this, the tracker stays in
-    the (wrong) engine-BUSY state and the user's local
-    ``_in_transaction`` flag lies about server state.
-
-    Surfaces as DqliteConnectionError (the Raft-checkpoint rewrap);
-    see sibling test for the SA-pool-invalidate rationale.
-    """
+    """The "checkpoint in progress" scan reads ``raw_message`` so a >1024-byte
+    message whose wording is past ``message``'s truncation still classifies as
+    Raft-BUSY."""
     from dqliteclient.exceptions import DqliteConnectionError
 
     conn = DqliteConnection("localhost:9001")
     conn._db_id = 1
     conn._protocol = object()  # type: ignore[assignment]
 
-    # Build a >1024-byte message: a long context prefix with the
-    # canonical wording at the tail. ``OperationalError.__init__``
-    # truncates ``message`` to 1024 chars + "... [truncated, N bytes]"
-    # but preserves the full text on ``raw_message``.
+    # >1024-byte message: __init__ truncates ``message`` but keeps ``raw_message`` full.
     long_prefix = "context: " + ("X" * 1100)
     full = f"{long_prefix} checkpoint in progress"
     err = OperationalError(full, 5)

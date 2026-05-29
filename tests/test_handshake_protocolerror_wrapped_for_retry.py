@@ -1,12 +1,6 @@
-"""A wire-decode failure during the handshake (``ProtocolError``)
-must surface as ``DqliteConnectionError`` so the connect-retry
-loop's classifier matches it. Without the rewrap, a peer mid-restart
-producing a torn frame on first request would abandon on the first
-attempt instead of using the 3-attempt retry budget.
-
-The retry tuple in ``cluster.py`` is
-``(DqliteConnectionError, ClusterError, OSError)``.
-"""
+"""A handshake wire-decode ``ProtocolError`` must surface as
+``DqliteConnectionError`` so the connect-retry classifier matches it; otherwise a
+peer mid-restart producing a torn frame abandons instead of using the retry budget."""
 
 import asyncio
 from unittest.mock import AsyncMock, patch
@@ -19,9 +13,7 @@ from dqliteclient.exceptions import DqliteConnectionError, ProtocolError
 
 @pytest.mark.asyncio
 async def test_handshake_protocolerror_wrapped_as_dqlite_connection_error() -> None:
-    """A ``ProtocolError`` raised by ``protocol.handshake()`` is
-    rewrapped as ``DqliteConnectionError`` so the connect-retry
-    classifier sees a transient transport failure."""
+    """A ``ProtocolError`` from ``handshake()`` is rewrapped as ``DqliteConnectionError``."""
     conn = DqliteConnection("127.0.0.1:9001", database="db", timeout=2.0)
 
     fake_streams = (AsyncMock(spec=asyncio.StreamReader), AsyncMock(spec=asyncio.StreamWriter))
@@ -44,9 +36,7 @@ async def test_handshake_protocolerror_wrapped_as_dqlite_connection_error() -> N
 
 @pytest.mark.asyncio
 async def test_handshake_protocolerror_preserves_cause() -> None:
-    """The original ProtocolError remains as ``__cause__`` so
-    structured-error capture surfaces both the rewrap class and the
-    underlying wire diagnostic."""
+    """The original ProtocolError remains as ``__cause__``."""
     conn = DqliteConnection("127.0.0.1:9001", database="db", timeout=2.0)
 
     fake_streams = (AsyncMock(spec=asyncio.StreamReader), AsyncMock(spec=asyncio.StreamWriter))

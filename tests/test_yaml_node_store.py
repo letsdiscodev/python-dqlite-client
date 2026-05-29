@@ -1,11 +1,6 @@
-"""``YamlNodeStore`` is byte-compatible with go-dqlite's
-``NewYamlNodeStore`` (PascalCase keys, integer Role enum). Mixed-
-language deployments (Go service + Python service sharing one
-bootstrap file) require this exact shape.
+"""``YamlNodeStore`` is byte-compatible with go-dqlite (PascalCase keys, integer Role).
 
-The on-read parser also accepts lowercase keys and string Role
-aliases for ergonomics with hand-edited files. Writes always emit
-the canonical go-dqlite format.
+Reads also accept lowercase keys and string Role aliases; writes emit canonical format.
 """
 
 from __future__ import annotations
@@ -21,14 +16,10 @@ from dqliteclient.exceptions import ClusterError
 from dqliteclient.node_store import NodeInfo, YamlNodeStore
 from dqlitewire import NodeRole
 
-# ---------------------------------------------------------------- canonical format
-
 
 @pytest.mark.asyncio
 async def test_round_trip_canonical_format(tmp_path: Path) -> None:
-    """Write 3 NodeInfo, re-read raw bytes, assert PascalCase keys
-    + integer Role values. Pre-fix the format was lowercase strings;
-    the regression vector is "format drift makes Go reader reject"."""
+    """Regression vector: format drift makes the Go reader reject."""
     path = tmp_path / "cluster.yaml"
     store = YamlNodeStore(path)
     await store.set_nodes(
@@ -51,10 +42,7 @@ async def test_round_trip_canonical_format(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_go_dqlite_format_fixture_loads(tmp_path: Path) -> None:
-    """Hand-craft a byte string in go-dqlite's exact format and load
-    it. Load-bearing for the cross-language interop claim — pre-fix
-    the lowercase-keys parser silently accepted ``id``/``address``/
-    ``role`` and would have rejected this fixture."""
+    """Load go-dqlite's exact format; load-bearing for the cross-language interop claim."""
     path = tmp_path / "go-format.yaml"
     path.write_text(
         "- ID: 1\n"
@@ -78,12 +66,8 @@ async def test_go_dqlite_format_fixture_loads(tmp_path: Path) -> None:
     assert nodes[2] == NodeInfo(node_id=3, address="node3:9003", role=NodeRole.SPARE)
 
 
-# ---------------------------------------------------------------- empty / missing
-
-
 def test_missing_file_returns_empty_tuple(tmp_path: Path) -> None:
-    """Matches go-dqlite's ``NewYamlNodeStore`` which tolerates a
-    missing file at construction time."""
+    """go-dqlite parity: tolerate a missing file at construction time."""
     path = tmp_path / "does-not-exist.yaml"
     store = YamlNodeStore(path)
 
@@ -92,7 +76,7 @@ def test_missing_file_returns_empty_tuple(tmp_path: Path) -> None:
         assert nodes == ()
 
     asyncio.run(run())
-    assert not path.exists()  # eager file creation NOT performed
+    assert not path.exists()  # no eager file creation
 
 
 def test_empty_file_returns_empty_tuple(tmp_path: Path) -> None:
@@ -117,9 +101,6 @@ def test_whitespace_only_file_returns_empty_tuple(tmp_path: Path) -> None:
         assert nodes == ()
 
     asyncio.run(run())
-
-
-# ---------------------------------------------------------------- malformed input
 
 
 def test_corrupt_yaml_raises_clusterror(tmp_path: Path) -> None:
@@ -158,9 +139,7 @@ def test_missing_address_raises(tmp_path: Path) -> None:
 
 
 def test_invalid_address_rejected_at_load(tmp_path: Path) -> None:
-    """Same syntactic validation as ``MemoryNodeStore`` — surface
-    operator-facing errors at construction, not deep inside
-    ``find_leader``."""
+    """Surface operator-facing errors at construction, not deep inside find_leader."""
     path = tmp_path / "bad-addr.yaml"
     path.write_text("- ID: 1\n  Address: not-an-address\n", encoding="utf-8")
     with pytest.raises(ClusterError, match="invalid"):
@@ -190,15 +169,11 @@ def test_role_invalid_string_rejected(tmp_path: Path) -> None:
 
 
 def test_role_bool_rejected(tmp_path: Path) -> None:
-    """``bool`` slips through ``isinstance(_, int)``; explicit reject
-    so ``Role: true`` doesn't silently become ``StandBy``."""
+    """``bool`` slips through ``isinstance(_, int)``; reject so ``Role: true`` != StandBy."""
     path = tmp_path / "bad-role-bool.yaml"
     path.write_text("- ID: 1\n  Address: node1:9001\n  Role: true\n", encoding="utf-8")
     with pytest.raises(ClusterError, match="bool"):
         YamlNodeStore(path)
-
-
-# ---------------------------------------------------------------- ergonomic accept
 
 
 def test_lowercase_keys_accepted(tmp_path: Path) -> None:
@@ -241,9 +216,7 @@ def test_role_string_aliases_accepted(tmp_path: Path, value: str, expected: Node
 
 
 def test_role_missing_defaults_to_voter(tmp_path: Path) -> None:
-    """Matches ``MemoryNodeStore``'s seed-list path which assumes
-    Voter. Operator omits ``Role:`` and gets the most-common
-    default."""
+    """Omitting ``Role:`` defaults to Voter, matching MemoryNodeStore's seed-list path."""
     path = tmp_path / "no-role.yaml"
     path.write_text("- ID: 1\n  Address: node1:9001\n", encoding="utf-8")
     store = YamlNodeStore(path)
@@ -255,14 +228,9 @@ def test_role_missing_defaults_to_voter(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
-# ---------------------------------------------------------------- atomicity / file mode
-
-
 @pytest.mark.asyncio
 async def test_set_nodes_file_mode_0600(tmp_path: Path) -> None:
-    """Match go-dqlite's ``renameio.WriteFile(..., 0600)``. Bootstrap
-    files often contain implicit secrets via the addresses they
-    reference (private DSNs, internal hostnames)."""
+    """Mode 0600 (go-dqlite parity): addresses can leak private DSNs / internal hosts."""
     path = tmp_path / "perms.yaml"
     store = YamlNodeStore(path)
     await store.set_nodes([NodeInfo(node_id=1, address="node1:9001", role=NodeRole.VOTER)])
@@ -275,11 +243,9 @@ async def test_set_nodes_file_mode_0600(tmp_path: Path) -> None:
 async def test_set_nodes_atomic_rename_failure_preserves_original(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If ``os.replace`` fails, the original file must remain
-    intact and the temp file must be cleaned up."""
+    """If ``os.replace`` fails, the original file stays intact and the temp file is cleaned up."""
     path = tmp_path / "atomic.yaml"
     store = YamlNodeStore(path)
-    # Initial successful write to populate the original file.
     await store.set_nodes([NodeInfo(node_id=1, address="node1:9001", role=NodeRole.VOTER)])
     original_text = path.read_text(encoding="utf-8")
 
@@ -291,9 +257,7 @@ async def test_set_nodes_atomic_rename_failure_preserves_original(
     with pytest.raises(OSError, match="simulated rename failure"):
         await store.set_nodes([NodeInfo(node_id=2, address="node2:9002", role=NodeRole.VOTER)])
 
-    # Original file unchanged.
     assert path.read_text(encoding="utf-8") == original_text
-    # Temp file cleaned up — only the original exists.
     siblings = [p for p in tmp_path.iterdir() if p != path]
     assert siblings == [], f"unexpected temp files left behind: {siblings}"
 
@@ -302,13 +266,8 @@ async def test_set_nodes_atomic_rename_failure_preserves_original(
 async def test_set_nodes_fsyncs_parent_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """After ``os.replace``, the parent directory must be fsync'd so
-    the rename is durable across a hard reboot. Mirrors go-dqlite's
-    ``renameio.WriteFile`` discipline (which fsyncs both the temp
-    file and the parent directory). Without the parent-dir fsync,
-    POSIX guarantees the new content is on disk but the directory
-    entry change can revert after a power loss / kernel panic.
-    """
+    """Parent dir must be fsync'd after rename, else the directory entry can revert
+    on power loss even though the new content is durable."""
     import os as _os
     import stat as _stat
 
@@ -326,24 +285,17 @@ async def test_set_nodes_fsyncs_parent_directory(
 
     await store.set_nodes([NodeInfo(node_id=1, address="node1:9001", role=NodeRole.VOTER)])
 
-    # We expect two fsync calls: one for the temp file and one for
-    # the parent directory (after rename). Each fsync is on a
-    # distinct fd; we can't introspect fds post-close, but we can
-    # assert at least two were issued.
+    # Two fsyncs expected: temp file + parent dir (fds can't be introspected post-close).
     assert len(fsync_targets) >= 2, (
         f"expected at least 2 fsync calls (temp file + parent dir), got {len(fsync_targets)}"
     )
 
-    # Sanity: the parent dir must still be a directory after the
-    # operation (fsync on a dir fd shouldn't have closed it weirdly).
     assert _stat.S_ISDIR(_os.stat(tmp_path).st_mode)
 
 
 @pytest.mark.asyncio
 async def test_concurrent_set_nodes_last_writer_wins(tmp_path: Path) -> None:
-    """Two concurrent ``set_nodes`` calls must serialise via the
-    asyncio.Lock; the final state is one of the two payloads, not
-    a torn mix."""
+    """Concurrent ``set_nodes`` calls serialise via the asyncio.Lock; no torn mix."""
     path = tmp_path / "concurrent.yaml"
     store = YamlNodeStore(path)
 
@@ -356,14 +308,9 @@ async def test_concurrent_set_nodes_last_writer_wins(tmp_path: Path) -> None:
     assert final == tuple(payload_a) or final == tuple(payload_b)
 
 
-# ---------------------------------------------------------------- pyyaml import
-
-
 def test_pyyaml_missing_raises_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Without pyyaml installed, constructing ``YamlNodeStore``
-    must raise ``ImportError`` directing the operator to the
-    extra. The deferred import happens inside ``__init__`` so the
-    rest of the package keeps importing cleanly."""
+    """Deferred import inside __init__ raises ImportError pointing at the extra,
+    leaving the rest of the package importable."""
     import builtins
 
     real_import = builtins.__import__
@@ -379,14 +326,9 @@ def test_pyyaml_missing_raises_import_error(monkeypatch: pytest.MonkeyPatch) -> 
         YamlNodeStore("/tmp/does-not-matter.yaml")
 
 
-# ---------------------------------------------------------------- integration via cluster
-
-
 @pytest.mark.asyncio
 async def test_cluster_client_can_use_yaml_node_store(tmp_path: Path) -> None:
-    """End-to-end: ``ClusterClient`` works with a ``YamlNodeStore``
-    just like a ``MemoryNodeStore``. The Protocol-based ``NodeStore``
-    interface means no other code change is needed."""
+    """End-to-end: ``ClusterClient`` works with a ``YamlNodeStore`` unchanged."""
     from dqliteclient import ClusterClient
 
     path = tmp_path / "cluster.yaml"
@@ -397,11 +339,7 @@ async def test_cluster_client_can_use_yaml_node_store(tmp_path: Path) -> None:
     assert nodes[0].address == "node1:9001"
 
 
-# ---------------------------------------------------------------- top-level export
-
-
 def test_yaml_node_store_exported_from_top_level() -> None:
-    """``YamlNodeStore`` is importable from the package root."""
     from dqliteclient import YamlNodeStore as TopLevelYNS
 
     assert TopLevelYNS is YamlNodeStore

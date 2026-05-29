@@ -1,17 +1,4 @@
-"""Pool-level concurrent transactions interact with leader flip.
-
-The intersection of ``ConnectionPool.acquire``, the per-connection
-``transaction()`` context manager, ``_invalidate``, and the leader-
-flip-mid-tx response from the server is the load-bearing concurrent-
-transactions surface for the client. The unit suite covers each
-piece in isolation; these end-to-end tests pin the interaction.
-
-Both tests run against the python-dqlite-dev cluster (host
-networking + ``127.0.0.1:900N`` advertised addresses); the
-leader-flip test additionally uses the
-``cluster_control`` fixture from ``dqlitetestlib``, bootstrapped
-by the top-level ``tests/conftest.py``.
-"""
+"""End-to-end pool concurrent-transaction + leader-flip interaction tests."""
 
 from __future__ import annotations
 
@@ -37,20 +24,10 @@ _RETRY_BASE_DELAY_S = 0.01
 async def test_pool_two_concurrent_writers_no_lost_rows(
     cluster_address: str,
 ) -> None:
-    """Two pool-acquired connections each running their own write
-    transaction; both commits land. Each writer wraps its
-    transaction in a retry-on-BUSY loop — that is the application-
-    level pattern dqlite expects.
+    """Two concurrent write transactions both land; writers retry on BUSY.
 
-    Why retry rather than ``PRAGMA busy_timeout``: dqlite's
-    authorizer (``vfs.c::vfsAuthorizer``) explicitly denies
-    ``PRAGMA busy_timeout`` (along with ``journal_mode``,
-    ``synchronous``, ``wal_checkpoint``, ``locking_mode``,
-    ``read_uncommitted``) because their semantics conflict with
-    Raft-replicated write ordering. Concurrent writers in dqlite
-    are expected to handle ``SQLITE_BUSY`` (code 5) at the
-    application layer — same shape go-dqlite and the canonical
-    dqlite C client document. This test models that contract.
+    dqlite's authorizer denies ``PRAGMA busy_timeout``, so concurrent
+    writers must handle ``SQLITE_BUSY`` (code 5) at the application layer.
     """
     pool = ConnectionPool([cluster_address], min_size=2, max_size=2)
     try:
@@ -70,9 +47,7 @@ async def test_pool_two_concurrent_writers_no_lost_rows(
                         )
                     return
                 except OperationalError as e:
-                    # Code 5 is SQLITE_BUSY. Other OperationalErrors
-                    # (leader change, transport, ...) propagate — they
-                    # are not the contention this loop handles.
+                    # Only retry SQLITE_BUSY; leader-change/transport errors propagate.
                     if e.code != _SQLITE_BUSY or attempt == _RETRY_MAX_ATTEMPTS - 1:
                         raise
                     await asyncio.sleep(_RETRY_BASE_DELAY_S * (2**attempt))
@@ -92,37 +67,8 @@ async def test_pool_leader_flip_mid_tx_loser_rolled_back(
     cluster_node_addresses: list[str],
     cluster_control: TestClusterControl,
 ) -> None:
-    """A leader flip during an open transaction: the pending COMMIT
-    on the old leader fails with ``OperationalError`` (Raft has
-    demoted the server), the pool invalidates the broken slot on
-    release, and the next acquire returns a fresh connection bound
-    to the new leader.
-
-    Despite the file's "two concurrent transactions" framing, the
-    load-bearing contract here is the per-slot invalidation +
-    recovery sequence — and one held transaction demonstrates it
-    cleanly. Two SQLite writers contending for the BEGIN/INSERT
-    write-lock would surface ``SQLITE_BUSY`` from a parallel
-    operation rather than the leader-change error we want to
-    observe (see the ``test_pool_two_concurrent_writers_no_lost_rows``
-    xfail on the same lock-contention issue).
-
-    Test shape:
-
-    1. Snapshot the starting leader so we can restore on teardown.
-    2. Acquire one pool connection, ``BEGIN`` + ``INSERT``.
-    3. Force a leader transfer via ``cluster_control``. The new
-       leader is a different voter; the old leader has stepped down.
-    4. ``COMMIT`` on the held connection fails with
-       ``OperationalError`` (the old leader rejects further writes
-       — typically ``SQLITE_IOERR_NOT_LEADER``).
-    5. A fresh ``pool.acquire()`` succeeds: the pool re-runs
-       ``find_leader``, gets the new leader's address, and routes a
-       new connection there. A trivial ``INSERT`` + ``SELECT``
-       confirms the freshly-acquired connection can both write and
-       observe its own write.
-    6. Restore the original leader on the way out so subsequent
-       tests see a deterministic starting state.
+    """Leader flip during an open tx: COMMIT fails, pool invalidates the slot
+    on release, and the next acquire routes a fresh connection to the new leader.
     """
     starting_leader = await cluster_control.current_leader_node()
 
@@ -136,17 +82,11 @@ async def test_pool_leader_flip_mid_tx_loser_rolled_back(
 
         commit_error: OperationalError | None = None
 
-        # Hold the connection + open transaction across the leader
-        # flip. Manual BEGIN/COMMIT (rather than ``transaction()``)
-        # so we can assert on the COMMIT failure shape.
+        # Manual BEGIN/COMMIT (not transaction()) so we can assert COMMIT failure.
         async with pool.acquire() as conn:
             await conn.execute("BEGIN")
             await conn.execute("INSERT INTO leader_flip_t (marker) VALUES (?)", ["A"])
 
-            # Force the current leader to step down and a different
-            # voter to take over. The pending transaction is bound
-            # to the old leader's TCP slot — it cannot follow the
-            # transfer.
             flip = await cluster_control.force_leader_flip()
             assert flip.target.node_id != starting_leader.node_id
             assert flip.leader_after == flip.target.address
@@ -156,17 +96,13 @@ async def test_pool_leader_flip_mid_tx_loser_rolled_back(
             except OperationalError as e:
                 commit_error = e
 
-        # The held tx targeted the (now stepped-down) leader; the
-        # COMMIT must fail.
         assert commit_error is not None, (
             f"expected COMMIT to fail post-flip but it succeeded. "
             f"flip target was node {flip.target.node_id} "
             f"@ {flip.target.address}"
         )
 
-        # Pool slot recovery: the broken connection was released on
-        # the ``async with`` exit; a fresh acquire must succeed
-        # against the new leader.
+        # Pool slot recovery: a fresh acquire must succeed against the new leader.
         async with pool.acquire() as fresh, fresh.transaction():
             await fresh.execute("INSERT INTO leader_flip_t (marker) VALUES (?)", ["C"])
 
@@ -175,9 +111,7 @@ async def test_pool_leader_flip_mid_tx_loser_rolled_back(
             markers = {r[0] for r in rows}
             assert "C" in markers, f"post-flip INSERT did not commit; got rows {rows!r}"
 
-        # Restore: transfer leadership back so subsequent tests start
-        # from the same leader. Best-effort — failure here does not
-        # invalidate the load-bearing assertions above.
+        # Best-effort restore so subsequent tests start from the same leader.
         with contextlib.suppress(Exception):
             await cluster_control.transfer_leadership_to(starting_leader.node_id)
             await cluster_control.wait_for_leader_change(flip.leader_after)

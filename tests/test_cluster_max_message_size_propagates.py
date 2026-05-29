@@ -1,15 +1,6 @@
-"""Pin: ``max_message_size`` flows from ``ClusterClient.__init__`` (and
-from the ``Pool`` constructor that wraps it) into every
-``DqliteProtocol`` instance that the leader-probe and admin paths
-build.
-
-A prior parity fix wired ``trust_server_heartbeat`` /
-``max_total_rows`` / ``max_continuation_frames`` through the cluster
-client; ``max_message_size`` was added to the pool / dbapi / SA
-surface later and was not retrofitted, so operators tightening the
-cap cluster-wide as a DoS hardening lever saw the cap silently
-bypassed on the admin path (notably ``dump``, where a multi-GB
-database arrives as one frame per file content).
+"""``max_message_size`` from ClusterClient.__init__ reaches every DqliteProtocol
+the leader-probe and admin paths build; otherwise the DoS cap is silently
+bypassed on the admin path (notably dump's multi-GB single-frame content).
 """
 
 from __future__ import annotations
@@ -91,9 +82,7 @@ async def test_open_admin_connection_forwards_max_message_size() -> None:
 
 
 def test_cluster_client_default_is_none() -> None:
-    """When ``max_message_size`` is unset, ``None`` is stored — the
-    underlying DqliteProtocol falls back to the wire-layer default
-    (64 MiB)."""
+    """Unset max_message_size stores None; DqliteProtocol uses the wire default."""
     store = MemoryNodeStore(["localhost:9001"])
     client = ClusterClient(store, timeout=1.0)
     assert client._max_message_size is None

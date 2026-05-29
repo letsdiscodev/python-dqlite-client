@@ -1,12 +1,5 @@
-"""``DqliteConnection.__init__`` must reject ``bool`` for ``timeout`` /
-``close_timeout``.
-
-``bool`` subclasses ``int`` and ``isinstance(True, float)`` is False,
-but ``math.isfinite(True)`` returns True and ``True > 0`` is True —
-without an explicit isinstance guard, ``timeout=True`` silently gives
-a 1-second budget. Matches the sibling
-``_validate_positive_int_or_none`` in ``protocol.py``.
-"""
+"""__init__ must reject bool timeout/close_timeout: bool passes math.isfinite
+and ``> 0``, so without an isinstance guard ``timeout=True`` silently means 1s."""
 
 from __future__ import annotations
 

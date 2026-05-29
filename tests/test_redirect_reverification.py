@@ -1,11 +1,6 @@
-"""``ClusterClient._verify_redirect`` re-probes a redirect target to
-confirm it self-identifies as leader before trusting the hint.
-Mirrors go-dqlite's ``connector.go::connectAttemptOne`` re-probe
-(lines 285-294). A stale-state peer can hand back a node that no
-longer holds leadership; without re-verification, the sweep returns
-a stale hint and ``connect()`` wastes a full ``connect()``+Open round-
-trip before retrying.
-"""
+"""``ClusterClient._verify_redirect`` re-probes a redirect target to confirm it
+self-identifies as leader before trusting a possibly-stale hint
+(mirrors go-dqlite's ``connector.go::connectAttemptOne`` re-probe)."""
 
 from __future__ import annotations
 
@@ -27,9 +22,7 @@ def _query_leader_factory(
     *,
     raise_for: dict[str, Exception] | None = None,
 ) -> Callable[..., object]:
-    """Build a ``_query_leader`` mock that returns the configured
-    leader for each address, raising the configured exception if
-    listed. Records every call address."""
+    """Build a ``_query_leader`` mock that returns/raises per address and records calls."""
     raise_for = raise_for or {}
     calls: list[str] = []
 
@@ -43,20 +36,16 @@ def _query_leader_factory(
     return _impl
 
 
-# ---------------------------------------------------------------- happy path
-
-
 @pytest.mark.asyncio
 async def test_redirect_verified_against_self() -> None:
-    """Node A redirects to B; B confirms B as leader. The sweep must
-    return B."""
+    """A redirects to B; B confirms itself, so the sweep returns B."""
     store = MemoryNodeStore(["node-a:9001", "node-b:9001"])
     cluster = ClusterClient(store, timeout=5.0)
 
     impl = _query_leader_factory(
         {
-            "node-a:9001": "node-b:9001",  # A redirects to B
-            "node-b:9001": "node-b:9001",  # B confirms itself
+            "node-a:9001": "node-b:9001",
+            "node-b:9001": "node-b:9001",
         }
     )
     cluster._query_leader = AsyncMock(side_effect=impl)
@@ -65,22 +54,17 @@ async def test_redirect_verified_against_self() -> None:
     assert leader == "node-b:9001"
 
 
-# ---------------------------------------------------------------- stale hint
-
-
 @pytest.mark.asyncio
 async def test_redirect_stale_hint_falls_through() -> None:
-    """Node A redirects to B; B reports C as leader (stale hint).
-    The sweep must NOT trust B; with C also in the store and
-    self-confirming, the result is C."""
+    """A redirects to B; B reports C (stale hint), so the sweep falls through to C."""
     store = MemoryNodeStore(["node-a:9001", "node-b:9001", "node-c:9001"])
     cluster = ClusterClient(store, timeout=5.0)
 
     impl = _query_leader_factory(
         {
-            "node-a:9001": "node-b:9001",  # A redirects to B
-            "node-b:9001": "node-c:9001",  # B reports C (stale hint)
-            "node-c:9001": "node-c:9001",  # C self-confirms
+            "node-a:9001": "node-b:9001",
+            "node-b:9001": "node-c:9001",  # stale hint
+            "node-c:9001": "node-c:9001",
         }
     )
     cluster._query_leader = AsyncMock(side_effect=impl)
@@ -91,8 +75,7 @@ async def test_redirect_stale_hint_falls_through() -> None:
 
 @pytest.mark.asyncio
 async def test_redirect_target_unreachable_falls_through() -> None:
-    """A redirects to B; B is unreachable. The sweep must fall
-    through; with no other valid leader, the call raises."""
+    """A redirects to B; B is unreachable and no other leader exists, so the call raises."""
     store = MemoryNodeStore(["node-a:9001", "node-b:9001"])
     cluster = ClusterClient(store, timeout=5.0)
 
@@ -106,13 +89,9 @@ async def test_redirect_target_unreachable_falls_through() -> None:
         await cluster.find_leader()
 
 
-# ---------------------------------------------------------------- self-leader
-
-
 @pytest.mark.asyncio
 async def test_self_leader_does_not_trigger_verify() -> None:
-    """When the queried node returns ITS OWN address as leader,
-    that's not a redirect — verify must not run."""
+    """A node returning its own address is not a redirect, so verify must not run."""
     store = MemoryNodeStore(["node-a:9001"])
     cluster = ClusterClient(store, timeout=5.0)
 
@@ -121,29 +100,21 @@ async def test_self_leader_does_not_trigger_verify() -> None:
 
     leader = await cluster.find_leader()
     assert leader == "node-a:9001"
-    # Exactly one call: the initial probe, no verify needed.
     assert impl.calls == ["node-a:9001"]  # type: ignore[attr-defined]
-
-
-# ---------------------------------------------------------------- verify on cache hit
 
 
 @pytest.mark.asyncio
 async def test_fast_path_cached_redirect_verified() -> None:
-    """C3's fast-path probe of the cached leader: when the cached
-    node responds with a redirect, the verify_redirect step must
-    confirm the new target before trusting it."""
+    """Fast-path: a cached node that redirects must have its new target verified."""
     store = MemoryNodeStore(["node-a:9001", "node-b:9001"])
     cluster = ClusterClient(store, timeout=5.0)
 
-    # Prime the cache with node-a.
     impl_first = _query_leader_factory({"node-a:9001": "node-a:9001"})
     cluster._query_leader = AsyncMock(side_effect=impl_first)
     await cluster.find_leader()
     assert cluster._get_last_known_leader() == "node-a:9001"
 
-    # Second call: cached node-a redirects to node-b; node-b
-    # self-confirms. Cache must update to node-b.
+    # Cached node-a redirects to node-b, which self-confirms; cache must update to node-b.
     impl_second = _query_leader_factory(
         {"node-a:9001": "node-b:9001", "node-b:9001": "node-b:9001"}
     )
@@ -156,19 +127,16 @@ async def test_fast_path_cached_redirect_verified() -> None:
 
 @pytest.mark.asyncio
 async def test_fast_path_stale_redirect_clears_cache() -> None:
-    """When the cached node redirects but verification fails (stale
-    hint), the cache must be cleared and the full sweep must run."""
+    """When the cached node's redirect fails verification, the cache clears and the
+    full sweep runs."""
     store = MemoryNodeStore(["node-a:9001", "node-b:9001", "node-c:9001"])
     cluster = ClusterClient(store, timeout=5.0)
 
-    # Prime the cache with node-a.
     impl_first = _query_leader_factory({"node-a:9001": "node-a:9001"})
     cluster._query_leader = AsyncMock(side_effect=impl_first)
     await cluster.find_leader()
 
-    # Second call: cached node-a redirects to node-b, but node-b
-    # reports node-c (stale hint). Cache must clear and the full
-    # sweep finds node-c.
+    # Cached node-a redirects to node-b, but node-b reports node-c (stale hint).
     impl_second = _query_leader_factory(
         {
             "node-a:9001": "node-b:9001",
@@ -181,9 +149,6 @@ async def test_fast_path_stale_redirect_clears_cache() -> None:
 
     assert leader == "node-c:9001"
     assert cluster._get_last_known_leader() == "node-c:9001"
-
-
-# ---------------------------------------------------------------- _verify_redirect direct
 
 
 @pytest.mark.asyncio
@@ -208,8 +173,7 @@ async def test_verify_redirect_returns_none_on_address_mismatch() -> None:
 
 @pytest.mark.asyncio
 async def test_verify_redirect_returns_none_on_no_leader_known() -> None:
-    """The hinted node responds with no-leader-known. Treat as
-    unverifiable and fall through."""
+    """A no-leader-known response is unverifiable; fall through."""
     store = MemoryNodeStore(["node-a:9001"])
     cluster = ClusterClient(store, timeout=5.0)
     cluster._query_leader = AsyncMock(return_value=None)
@@ -220,7 +184,7 @@ async def test_verify_redirect_returns_none_on_no_leader_known() -> None:
 
 @pytest.mark.asyncio
 async def test_verify_redirect_returns_none_on_transport_error() -> None:
-    """Verification failure is not fatal — the sweep falls through."""
+    """A transport error during verification is not fatal; fall through."""
     store = MemoryNodeStore(["node-a:9001"])
     cluster = ClusterClient(store, timeout=5.0)
     cluster._query_leader = AsyncMock(side_effect=OSError("refused"))
@@ -233,8 +197,7 @@ async def test_verify_redirect_returns_none_on_transport_error() -> None:
 async def test_verify_redirect_logs_both_addresses_at_debug(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """On stale-hint, both responder and reported addresses appear
-    in DEBUG logs (sanitised)."""
+    """On stale-hint, both responder and reported addresses appear in DEBUG logs."""
     import logging as _logging
 
     store = MemoryNodeStore(["node-a:9001"])
@@ -251,5 +214,4 @@ async def test_verify_redirect_logs_both_addresses_at_debug(
 
 
 def test_verify_redirect_method_exists() -> None:
-    """Pin: the method exists with the expected name."""
     assert hasattr(ClusterClient, "_verify_redirect")

@@ -1,11 +1,6 @@
-"""``DqliteConnection.__repr__`` must include ``id(self)`` so two
-connections to the same ``host:port`` are visually distinguishable
-in logs.
-
-Every other repr in the family (``Cursor``, ``AsyncCursor``,
-``Connection``, ``AsyncConnection``, ``ConnectionPool``) carries
-``at 0x{id:x}>``; the ``DqliteConnection`` repr was the lone
-exception.
+"""``DqliteConnection.__repr__`` includes ``id(self)`` so two connections
+to the same ``host:port`` are distinguishable in logs (matching the rest
+of the repr family).
 """
 
 from dqliteclient.connection import DqliteConnection

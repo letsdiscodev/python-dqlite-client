@@ -1,16 +1,6 @@
-"""Pin: ``DqliteConnection._close_impl``'s pending-drain re-snapshot
-loop swallows non-cancel ``Exception`` raises (e.g.,
-``RuntimeError("Transport is closed")`` from a half-torn writer's
-``wait_closed``) and completes the close cleanly without leaking
-the exception or orphaning the pending task.
-
-The sibling cancel arm at connection.py:1925-1933 is pinned by
-``tests/test_close_impl_pending_drain_cancelling_delta.py``. The
-non-cancel ``except Exception`` arm at connection.py:1934-1940
-was previously uncovered — a regression that narrowed the catch or
-removed the swallow could let transport noise bubble up and
-abort the close path.
-"""
+"""The pending-drain re-snapshot loop swallows non-cancel ``Exception`` raises (e.g.
+``RuntimeError("Transport is closed")`` from a half-torn writer's ``wait_closed``) and
+completes the close without leaking the exception or orphaning the task."""
 
 from __future__ import annotations
 
@@ -26,12 +16,8 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_close_impl_swallows_non_cancel_exception_from_pending_drain() -> None:
-    """Construct a connection whose ``_pending_drain`` raises a
-    non-cancel ``Exception`` on await. ``_close_impl`` must absorb
-    it via the bare ``except Exception:`` arm, clear
-    ``_pending_drain``, and complete cleanly. No
-    "Task exception was never retrieved" warning at GC.
-    """
+    """A ``_pending_drain`` that raises a non-cancel Exception must be absorbed, the slot
+    cleared, and the close completed with no "Task exception was never retrieved" warning."""
     loop = asyncio.get_running_loop()
 
     async def _raises_non_cancel() -> None:
@@ -52,13 +38,9 @@ async def test_close_impl_swallows_non_cancel_exception_from_pending_drain() -> 
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        # close_impl must complete without raising — the resnapshot
-        # loop's Exception arm swallows the non-cancel raise.
         await conn._close_impl()
-        # Pending task is observed (done()), slot is cleared.
         assert pending.done()
         assert conn._pending_drain is None
-        # Force GC to surface any orphaned-task warnings.
         gc.collect()
 
     bad = [

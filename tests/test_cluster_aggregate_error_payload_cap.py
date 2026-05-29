@@ -1,14 +1,5 @@
-"""Pin: ``ClusterClient.find_leader``'s aggregate-of-per-node-errors
-payload is capped at ``_MAX_AGGREGATE_ERROR_PAYLOAD`` so the final
-``ClusterError`` does not grow O(N) in operator-configured node count.
-
-The per-node snippet cap (``_MAX_ERROR_MESSAGE_SNIPPET = 200``)
-already bounds M (per-node failure message size). Without the
-aggregate cap, a 500-node store of failing peers produced ≥100 KB
-held in the ClusterError args, in every traceback render, and in
-every ``__cause__`` walk on a long-lived process's pool retry
-loops.
-"""
+"""find_leader's aggregate per-node error payload is capped so ClusterError
+does not grow O(N) in operator-configured node count."""
 
 from __future__ import annotations
 
@@ -30,7 +21,7 @@ async def test_find_leader_aggregate_error_payload_is_capped(
     store = MemoryNodeStore(addrs)
     client = ClusterClient(store, timeout=0.01)
 
-    huge = "x" * 50_000  # per-node hostile message size
+    huge = "x" * 50_000
 
     async def _fake_query(self: ClusterClient, address: str, **kwargs: object) -> str:
         raise DqliteConnectionError(huge)
@@ -41,10 +32,7 @@ async def test_find_leader_aggregate_error_payload_is_capped(
         await client.find_leader()
 
     aggregate = str(exc_info.value)
-    # The error string is "Could not find leader. Errors: <joined>"
-    # plus a small truncation marker. Bound the test loosely on the
-    # aggregate cap plus a small fixed overhead (prefix +
-    # truncation marker).
+    # Bound on the aggregate cap plus fixed overhead (prefix + truncation marker).
     assert len(aggregate) <= _MAX_AGGREGATE_ERROR_PAYLOAD + 256, (
         f"Aggregate error payload {len(aggregate)} exceeds "
         f"_MAX_AGGREGATE_ERROR_PAYLOAD {_MAX_AGGREGATE_ERROR_PAYLOAD} "
@@ -52,6 +40,4 @@ async def test_find_leader_aggregate_error_payload_is_capped(
         f"operator-controlled and unbounded — without the aggregate "
         f"cap, a 500-node store of failing peers produced >100 KB."
     )
-    # Sanity: the truncation marker should be present (the test
-    # configuration is designed to exceed the cap).
     assert "[aggregate truncated" in aggregate

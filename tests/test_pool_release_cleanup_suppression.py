@@ -1,5 +1,4 @@
-"""_release's three close-during-release branches must share the same
-narrow suppression discipline: absorb _POOL_CLEANUP_EXCEPTIONS, let
+"""_release's three close branches absorb _POOL_CLEANUP_EXCEPTIONS but let
 CancelledError / KeyboardInterrupt / programmer bugs propagate.
 """
 
@@ -65,7 +64,6 @@ async def test_release_closed_branch_absorbs_cleanup_exception() -> None:
     pool._closed = True
     conn = _FakeConn(close_raises=BrokenPipeError("EPIPE"))
     pool._size = 1
-    # Branch 1: pool is closed.
     await pool._release(conn)  # type: ignore[arg-type]
     assert conn.close_called
     assert conn._pool_released is True
@@ -82,7 +80,6 @@ async def test_release_reset_fail_branch_absorbs_operational_error() -> None:
 
     pool._reset_connection = _reset_fail  # type: ignore[assignment]
 
-    # Branch 2: reset returned False.
     await pool._release(conn)  # type: ignore[arg-type]
     assert conn.close_called
     assert conn._pool_released is True
@@ -94,7 +91,6 @@ async def test_release_queuefull_branch_absorbs_cleanup_exception() -> None:
     conn = _FakeConn(close_raises=BrokenPipeError("EPIPE"))
     pool._size = 3  # over capacity so put_nowait raises
 
-    # Force the queue full by filling it with placeholders.
     filler = _FakeConn()
     filler2 = _FakeConn()
     pool._pool.put_nowait(filler)  # type: ignore[arg-type]
@@ -105,7 +101,6 @@ async def test_release_queuefull_branch_absorbs_cleanup_exception() -> None:
 
     pool._reset_connection = _reset_ok  # type: ignore[assignment]
 
-    # Branch 3: queue full on put_nowait.
     await pool._release(conn)  # type: ignore[arg-type]
     assert conn.close_called
     assert conn._pool_released is True
@@ -113,8 +108,7 @@ async def test_release_queuefull_branch_absorbs_cleanup_exception() -> None:
 
 @pytest.mark.asyncio
 async def test_release_closed_branch_propagates_programmer_bug() -> None:
-    """TypeError from close() is a programmer bug and must NOT be
-    absorbed — the narrow tuple excludes arbitrary Exceptions."""
+    """TypeError from close() is a programmer bug; the narrow tuple excludes it."""
     pool = _make_pool()
     pool._closed = True
     conn = _FakeConn(close_raises=TypeError("whoops"))

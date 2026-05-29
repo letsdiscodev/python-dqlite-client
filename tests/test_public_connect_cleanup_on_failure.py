@@ -1,14 +1,6 @@
-"""Pin: ``dqliteclient.connect()`` cleans up the partial
-``DqliteConnection`` when ``connect()`` raises, mirroring the
-``dqlitedbapi.aconnect`` discipline.
-
-Pre-fix the eager ``await conn.connect()`` had no try/except, so a
-failure during dial / handshake left the partially-bound asyncio
-primitives (loop-bound locks, transport handles, reader task)
-referenced only by the now-orphaned ``conn`` until GC. The dbapi
-sibling ``aconnect`` and the SA ``DqliteDialect_aio.connect`` both
-already wrap the partial-state cleanup; this test pins the parity
-on the client public API.
+"""Pin: ``dqliteclient.connect()`` closes the partial
+``DqliteConnection`` when ``connect()`` raises, so loop-bound asyncio
+primitives are not orphaned until GC.
 """
 
 from __future__ import annotations
@@ -49,14 +41,7 @@ async def test_public_connect_close_failure_during_cleanup_logged_at_debug(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A close-time exception during cleanup is suppressed and DEBUG-
-    logged so the original connect error propagates unchanged.
-
-    Pins both the suppression (the OSError propagates, not the
-    secondary RuntimeError from the cleanup-close) AND the DEBUG
-    record shape (carries exc_info pointing at the close-time
-    RuntimeError) so a refactor that drops, narrows, or re-orders
-    the suppression arm at ``__init__.py:175-181`` is caught.
-    """
+    logged (with exc_info) so the original connect error propagates."""
     import logging
 
     with (
@@ -91,9 +76,8 @@ async def test_public_connect_close_failure_during_cleanup_logged_at_debug(
 
 @pytest.mark.asyncio
 async def test_public_connect_baseexception_propagates_after_cleanup() -> None:
-    """A ``BaseException`` (e.g. CancelledError-shaped) during connect()
-    must still drive cleanup before propagating, so loop-bound state
-    isn't leaked under outer ``asyncio.timeout`` cancellation."""
+    """A ``BaseException`` during connect() still drives cleanup before
+    propagating, so loop-bound state is not leaked under outer cancel."""
     close_calls: list[None] = []
 
     real_close = DqliteConnection.close

@@ -1,16 +1,6 @@
-"""Pin: trigger splitter handles CASE...END expressions and comments
-between CREATE and TRIGGER.
-
-Two follow-ups:
-
-1. ``CASE WHEN ... END`` inside a trigger body must NOT decrement
-   ``trigger_depth`` (the END terminates the CASE expression, not
-   the BEGIN..END block).
-2. Comments (``--`` line, ``/* */`` block) between ``CREATE`` and
-   ``TRIGGER`` (or between ``TEMP`` / ``TEMPORARY`` and ``TRIGGER``)
-   must be skipped — migration-tool output routinely interleaves
-   metadata comments at this position.
-"""
+"""Trigger splitter: ``CASE..END`` inside a body must not decrement trigger_depth
+(it ends the CASE, not the block), and comments between CREATE and TRIGGER are
+skipped."""
 
 from __future__ import annotations
 
@@ -68,7 +58,6 @@ class TestTriggerPreambleComments:
 
 class TestBasicTriggerBodyRegression:
     def test_basic_trigger_body_kept_together(self) -> None:
-        """Sanity: the basic trigger-body regression test still passes."""
         sql = (
             "CREATE TRIGGER aud AFTER INSERT ON x BEGIN\n"
             "  UPDATE y SET v=1 WHERE id=NEW.id;\n"
@@ -79,7 +68,6 @@ class TestBasicTriggerBodyRegression:
         assert len(pieces) == 1
 
     def test_bare_begin_commit_still_split(self) -> None:
-        """Sanity: ordinary multi-statement batches still split."""
         sql = "BEGIN; INSERT INTO t VALUES (1); COMMIT;"
         pieces = _split_top_level_statements(sql)
         assert len(pieces) == 3

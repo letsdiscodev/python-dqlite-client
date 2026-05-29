@@ -1,15 +1,5 @@
-"""``ClusterClient.set_weight(address=<non-leader>)`` must NOT
-invalidate ``_last_known_leader``: the per-node form of the RPC dials
-``address`` directly via ``open_admin_connection`` and never touches
-the leader cache. Sibling ``describe`` gates the invalidation on a
-``leader_targeted = address is None`` flag; ``set_weight`` was
-unconditional.
-
-Pre-fix behaviour: an operator running ``set_weight(5,
-address='10.0.0.5:9001')`` against a non-leader voter burned one full
-parallel-sweep RTT on the next ``find_leader()`` call against a cache
-that had not been touched.
-"""
+"""``set_weight(address=<non-leader>)`` must NOT invalidate ``_last_known_leader``:
+the per-node form dials ``address`` directly and never touches the leader cache."""
 
 from __future__ import annotations
 
@@ -35,8 +25,6 @@ def _make_cluster_with_seeded_cache(cached: str) -> ClusterClient:
 
 @pytest.mark.asyncio
 async def test_set_weight_per_node_does_not_invalidate_leader_cache() -> None:
-    """Per-node form (``address=<non-leader>``) leaves the cache
-    intact."""
     cached = "10.0.0.1:9001"
     cc = _make_cluster_with_seeded_cache(cached)
 
@@ -51,10 +39,8 @@ async def test_set_weight_per_node_does_not_invalidate_leader_cache() -> None:
 
 @pytest.mark.asyncio
 async def test_set_weight_leader_targeted_preserves_cache_on_success() -> None:
-    """``address=None`` (leader-targeted) keeps the cache warm on
-    SUCCESS — the responding leader has provably just answered the
-    RPC. The failure-path invalidation (separate test) covers the
-    leader-step-down case. Matches go-dqlite's ``Client.Weight``."""
+    """``address=None`` keeps the cache warm on SUCCESS: the responding leader
+    has provably just answered the RPC. Matches go-dqlite's ``Client.Weight``."""
     cached = "10.0.0.1:9001"
     cc = _make_cluster_with_seeded_cache(cached)
     cc.find_leader = AsyncMock(return_value="10.0.0.1:9001")
@@ -66,9 +52,8 @@ async def test_set_weight_leader_targeted_preserves_cache_on_success() -> None:
 
 @pytest.mark.asyncio
 async def test_set_weight_per_node_does_not_invalidate_on_failure() -> None:
-    """Even when the per-node RPC raises mid-call, the leader cache
-    stays intact — the failure is on the targeted node, not on the
-    leader path."""
+    """Even when the per-node RPC raises mid-call, the leader cache stays intact:
+    the failure is on the targeted node, not on the leader path."""
     cached = "10.0.0.1:9001"
     cc = ClusterClient(MemoryNodeStore(["10.0.0.1:9001"]), timeout=2.0)
     cc._set_last_known_leader(cached)

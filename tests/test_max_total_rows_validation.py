@@ -30,7 +30,7 @@ class TestValidator:
             validate_positive_int_or_none(1.5, "max_total_rows")  # type: ignore[arg-type]
 
     def test_bool_rejected(self) -> None:
-        # True is technically int, but PEP-489-style APIs rightly reject it.
+        # bool is a subclass of int but must still be rejected here.
         with pytest.raises(TypeError, match="max_total_rows must be int or None"):
             validate_positive_int_or_none(True, "max_total_rows")
 

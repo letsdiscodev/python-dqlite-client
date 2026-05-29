@@ -1,10 +1,5 @@
-"""Pin: the ``max_attempts`` validation error wording is identical
-in ``ConnectionPool.__init__`` and ``ClusterClient.connect``.
-
-Operators triaging via grep should not have to remember which layer
-validated first; the same constraint must produce the same error
-message.
-"""
+"""Pin: ``max_attempts`` validation wording is identical in ``ConnectionPool.__init__``
+and ``ClusterClient.connect`` so operators can grep one message across layers."""
 
 from __future__ import annotations
 
@@ -33,9 +28,7 @@ async def test_cluster_max_attempts_validation_message(bad_value: int) -> None:
 
 @pytest.mark.asyncio
 async def test_pool_and_cluster_max_attempts_messages_share_wording() -> None:
-    """Both validators emit the same ``"must be at least 1"`` substring
-    plus the same ``"got X"`` shape, so a regex like
-    ``r"must be at least 1.*got"`` matches both."""
+    """Both validators emit ``must be at least 1`` plus ``got X``, matchable by one regex."""
     pool_msg: str | None = None
     cluster_msg: str | None = None
 
@@ -51,7 +44,6 @@ async def test_pool_and_cluster_max_attempts_messages_share_wording() -> None:
         cluster_msg = str(e)
 
     assert pool_msg is not None and cluster_msg is not None
-    # Same substring shape — operators can grep one regex for both.
     for msg in (pool_msg, cluster_msg):
         assert "must be at least 1" in msg
         assert "got 0" in msg

@@ -1,12 +1,7 @@
-"""Pin the pool's ``acquire()`` cancellation-cleanup branch where
-the inner ``_pool.get()`` task completed with an exception (not via
-cancellation), then the outer ``acquire()`` is cancelled.
-
-The path at ``pool.py`` consumes ``get_task.exception()`` via a broad
-``contextlib.suppress(BaseException)`` so the cancelled task isn't
-reported as "Task exception was never retrieved" at GC. Today the
-branch is uncovered (per ``--cov-report=term-missing``) — pin via a
-parametric test.
+"""Pin ``acquire()``'s cancellation-cleanup branch where the inner
+``_pool.get()`` task finished with an exception (not via cancellation) and
+the outer ``acquire()`` is then cancelled: the helper must consume
+``get_task.exception()`` so no "Task exception was never retrieved" fires.
 """
 
 from __future__ import annotations
@@ -23,27 +18,18 @@ from dqliteclient.pool import ConnectionPool
 
 @pytest.mark.asyncio
 async def test_acquire_consumes_get_task_exception_when_outer_cancelled() -> None:
-    """``acquire()``'s except path must consume the ``_pool.get()``
-    task's exception even when the outer task is cancelling, so no
-    "Task exception was never retrieved" diagnostic is emitted by
-    asyncio's loop exception handler.
+    """``acquire()`` must consume the ``_pool.get()`` task's exception even
+    while the outer task is cancelling, so no "Task exception was never
+    retrieved" diagnostic fires.
 
-    asyncio surfaces "Task exception was never retrieved" via
-    ``loop.call_exception_handler`` (i.e. through the loop's
-    exception handler / asyncio logger), NOT via ``warnings.warn``.
-    Use ``set_exception_handler`` to capture the diagnostic — a
-    ``warnings.catch_warnings`` capture would silently miss it and
-    the pin would pass against the regression it is meant to prevent.
-    Same pattern as ``test_close_impl_reaps_pending_drain_created_during_await.py``.
+    asyncio surfaces that diagnostic via ``loop.call_exception_handler``,
+    not ``warnings.warn`` — a ``catch_warnings`` capture would miss it and
+    pass against the regression, so capture via ``set_exception_handler``.
     """
     pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
-    # Force the pool to think a slot exists and the queue is empty
-    # so ``acquire()`` enters the wait-for-queue branch.
+    # Slot exists but queue empty so acquire enters the wait-for-queue branch.
     pool._size = 1
 
-    # Fake the pool's wait-for-conn task by raising OperationalError
-    # synchronously when the await happens. Patch the queue.get so we
-    # can drive both states.
     real_get = pool._pool.get
 
     async def boom_get() -> object:
@@ -57,17 +43,15 @@ async def test_acquire_consumes_get_task_exception_when_outer_cancelled() -> Non
     try:
         with patch.object(pool._pool, "get", new=boom_get):
             acquire_task = loop.create_task(pool.acquire().__aenter__())
-            # Yield to let acquire enter the get-await.
+            # Let acquire enter the get-await, then cancel while it suspends.
             await asyncio.sleep(0)
             await asyncio.sleep(0)
-            # Cancel the outer acquire while the inner get is suspending.
             acquire_task.cancel()
             with pytest.raises((asyncio.CancelledError, DqliteConnectionError)):
                 await acquire_task
 
-        # Force GC so any orphaned-task diagnostic surfaces.
+        # Force GC and drain the loop so any orphaned-task diagnostic surfaces.
         gc.collect()
-        # Let the loop drain so any deferred handler call lands.
         await asyncio.sleep(0)
     finally:
         loop.set_exception_handler(prior_handler)
@@ -79,6 +63,5 @@ async def test_acquire_consumes_get_task_exception_when_outer_cancelled() -> Non
     ]
     assert not leaked, f"Unretrieved exception diagnostics: {leaked}"
 
-    # Cleanup
     with patch.object(pool._pool, "get", new=real_get):
         await pool.close()

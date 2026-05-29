@@ -1,13 +1,5 @@
-"""End-to-end pin: ``FailureResponse`` with empty/whitespace message
-renders the placeholder text through every protocol path.
-
-The wire codec round-trips empty messages without issue, and the
-unit-level ``_failure_message`` helper is pinned in
-``test_protocol_failure_messages.py``. The integration through every
-protocol dispatcher (exec_sql / query_sql / etc.) is not pinned end-
-to-end. Add the missing pins so a regression in the helper invocation
-surfaces immediately.
-"""
+"""``FailureResponse`` with an empty/whitespace message renders the
+placeholder text through every protocol path."""
 
 from __future__ import annotations
 

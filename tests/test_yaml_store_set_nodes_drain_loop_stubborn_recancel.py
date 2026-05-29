@@ -1,28 +1,6 @@
-"""Pin: ``YamlNodeStore.set_nodes`` drain loop holds the lock until
-the shielded ``inner`` finishes under back-to-back cancels, and
-observes a non-cancel inner failure at DEBUG (so the disk-error
-event is not silently lost during a cancel cascade).
-
-Background
-----------
-The cancel-handling path catches ``asyncio.CancelledError`` and then
-runs a ``while not inner.done()`` drain loop that re-awaits the
-shielded task. Two contracts that were previously uncovered:
-
-1. **Stubborn-recancel coverage**: a second cancel landing while the
-   drain re-await is parked must NOT release the lock early. The loop
-   re-enters its re-await and the lock stays held until ``inner.done()``.
-   The final raise must be ``CancelledError`` (the current re-raise
-   behaviour is preserved).
-
-2. **Non-cancel inner exception observed at DEBUG**: if
-   ``_write_and_publish`` raises an ``OSError`` (ENOSPC / EROFS /
-   fsync failure) during a cancel drain, the exception supplants the
-   cancel (the caller still needs to see the disk error) but is also
-   logged at DEBUG so the observability gap is closed.
-   ``inner.exception()`` is implicitly observed because the drain
-   re-await raises it.
-"""
+"""``set_nodes``'s cancel drain loop holds the lock until the shielded ``inner``
+finishes under back-to-back cancels, and observes a non-cancel inner failure at DEBUG
+so a disk error is not silently lost during a cancel cascade."""
 
 from __future__ import annotations
 
@@ -43,11 +21,8 @@ async def test_stubborn_recancel_keeps_lock_until_inner_done(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two back-to-back cancels land: the first surfaces inside
-    ``set_nodes`` and enters the drain loop; the second lands while
-    the drain re-await is parked. The lock must remain held until
-    ``inner`` finishes; only then does the final ``raise`` propagate
-    ``CancelledError``."""
+    """A second cancel landing during the drain re-await must not release the lock
+    early; the lock stays held until ``inner`` finishes, then ``CancelledError`` raises."""
     store = YamlNodeStore(tmp_path / "nodes.yaml")
     new_nodes = [
         NodeInfo(node_id=1, address="127.0.0.1:9001", role=NodeRole.VOTER),
@@ -81,41 +56,32 @@ async def test_stubborn_recancel_keeps_lock_until_inner_done(
         await asyncio.sleep(0.01)
     assert started.is_set(), "worker did not enter slow_replace"
 
-    # The lock is held while inner is running.
     assert store._lock.locked(), "lock must be held while inner runs"
 
-    # First cancel: lands on the outer ``await asyncio.shield(inner)``.
+    # First cancel lands on the outer ``await asyncio.shield(inner)``; let it
+    # propagate to the drain re-await without releasing the worker yet.
     task.cancel()
-    # Let the cancel propagate up to the drain loop's re-await without
-    # releasing the worker yet — the loop must re-await ``inner``.
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
-    # Second cancel: lands WHILE the drain loop's ``await
-    # asyncio.shield(inner)`` is parked. The except arm must continue
-    # the loop instead of bubbling out.
+    # Second cancel lands while the drain re-await is parked; the except arm
+    # must continue the loop instead of bubbling out.
     task.cancel()
     await asyncio.sleep(0)
 
-    # Throughout the drain, the lock stays held — releasing it would
-    # let a concurrent set_nodes race the still-running worker.
     assert store._lock.locked(), "lock must remain held across stubborn-recancel drain loop"
 
-    # Release the worker — inner completes; drain loop exits; final
-    # ``raise`` propagates CancelledError.
     can_finish.set()
 
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    # Sanity: the worker did finish (disk-side commit ran).
     for _ in range(200):
         if finished.is_set():
             break
         await asyncio.sleep(0.01)
     assert finished.is_set(), "worker did not finish slow_replace"
 
-    # Lock must be released after the finally clause.
     assert not store._lock.locked(), "lock must be released after set_nodes returns"
 
 
@@ -125,13 +91,8 @@ async def test_inner_oserror_during_drain_observed_at_debug(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """When ``_write_and_publish`` raises ``OSError`` while a cancel
-    is being drained, the drain loop must observe the non-cancel
-    failure at DEBUG before letting it propagate. The exception
-    still supplants the cancel context (the caller needs to see the
-    disk error), but the DEBUG log closes the observability gap that
-    previously left a silent unwind.
-    """
+    """An ``OSError`` raised during a cancel drain is logged at DEBUG and then
+    propagates, supplanting the cancel so the caller still sees the disk error."""
     store = YamlNodeStore(tmp_path / "nodes.yaml")
     new_nodes = [
         NodeInfo(node_id=1, address="127.0.0.1:9001", role=NodeRole.VOTER),
@@ -149,7 +110,6 @@ async def test_inner_oserror_during_drain_observed_at_debug(
     ) -> None:
         started.set()
         can_finish.wait(timeout=5.0)
-        # Simulate a late rename / fsync failure (ENOSPC, EROFS, etc.).
         raise _Boom(28, "simulated disk-full at rename")
 
     monkeypatch.setattr("dqliteclient.node_store.os.replace", slow_then_raising_replace)
@@ -167,9 +127,6 @@ async def test_inner_oserror_during_drain_observed_at_debug(
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
-    # Release the worker — inner finishes with OSError; the drain
-    # loop re-await re-raises that OSError; the non-cancel except
-    # arm observes it at DEBUG and lets it propagate.
     can_finish.set()
 
     with (
@@ -183,7 +140,6 @@ async def test_inner_oserror_during_drain_observed_at_debug(
         "so the caller sees the disk error"
     )
 
-    # DEBUG log emitted by the drain-loop observation arm.
     debug_msgs = [
         r.getMessage()
         for r in caplog.records
@@ -193,7 +149,6 @@ async def test_inner_oserror_during_drain_observed_at_debug(
         f"expected DEBUG log mentioning the drain-loop observation; got {debug_msgs!r}"
     )
 
-    # Lock released even though the cancel + OSError raced.
     assert not store._lock.locked(), "lock must be released after drain"
 
 
@@ -203,24 +158,9 @@ async def test_set_nodes_observes_inner_exception_set_before_outer_cancel(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Pin the defensive ``inner.exception()`` read on the
-    pre-cancel-race arm: when ``inner`` is DONE with an exception
-    before the outer ``except asyncio.CancelledError`` catches the
-    cancel, the drain loop's ``while not inner.done()`` body never
-    enters; the defensive observe arm reads ``inner.exception()`` to
-    mark the task "retrieved" and emits a distinct DEBUG log
-    (``"inner write raised before cancel drain entry"``). Without
-    this read the asyncio ``-X dev`` / ``PYTHONASYNCIODEBUG`` would
-    surface "Task exception was never retrieved" at GC time.
-
-    Deterministic construction: replace ``asyncio.shield`` (the one
-    bound in ``node_store``) so the first call drives ``inner`` to
-    completion with an exception (synchronously, via
-    ``loop.run_until_complete``-style stepping using
-    ``asyncio.wait``), then raises ``CancelledError`` to the outer
-    await. With ``inner.done() is True`` the drain ``while`` never
-    enters and the defensive observe arm fires.
-    """
+    """When ``inner`` is done with an exception before the cancel is caught, the drain
+    ``while`` never enters; the defensive arm reads ``inner.exception()`` (marking it
+    retrieved, avoiding 'Task exception was never retrieved') and logs at DEBUG."""
     import asyncio as _asyncio_top
 
     store = YamlNodeStore(tmp_path / "nodes.yaml")
@@ -231,8 +171,6 @@ async def test_set_nodes_observes_inner_exception_set_before_outer_cancel(
     class _Boom(OSError):
         pass
 
-    # Inner failure surfaces before the outer cancel observes it:
-    # _write_and_publish raises OSError on the first run-step.
     async def raising_write_and_publish(*_args: object, **_kwargs: object) -> None:
         raise _Boom(28, "simulated disk-full before drain entry")
 
@@ -242,42 +180,26 @@ async def test_set_nodes_observes_inner_exception_set_before_outer_cancel(
     shield_calls: list[int] = []
 
     async def fake_shield(arg: object, *, loop: object = None) -> None:
-        # First shield call (the outer ``await asyncio.shield(inner)``
-        # at the top of the try): drive ``inner`` to completion with
-        # its exception, then raise CancelledError into the outer
-        # await. This synthesises the race where inner finished with
-        # an exception BEFORE the outer cancel arm catches the cancel
-        # — the drain loop's body therefore never runs.
+        # First call: drive inner to completion with its exception, then raise
+        # CancelledError so inner.done() is True when the outer cancel arm runs
+        # and the drain while-body never enters.
         shield_calls.append(1)
         if len(shield_calls) == 1:
             assert isinstance(arg, _asyncio_top.Future)
-            # Let inner run to completion (it will raise immediately).
             done, _ = await _asyncio_top.wait({arg})
             assert arg.done()
-            # Mark the inner exception as retrieved for the wait
-            # bookkeeping — we'll re-read it via inner.exception()
-            # inside set_nodes (the defensive arm). Suppress any
-            # warning here by reading it now too.
             assert arg.exception() is not None
             raise _asyncio_top.CancelledError()
-        # Subsequent calls (none expected on this path) fall back.
         return await real_shield(arg)  # type: ignore[arg-type]
 
     monkeypatch.setattr("dqliteclient.node_store.asyncio.shield", fake_shield)
 
     caplog.set_level(logging.DEBUG, logger="dqliteclient.node_store")
 
-    # set_nodes should re-raise CancelledError (per the defensive
-    # comment: "The original CancelledError is re-raised by raise
-    # below"), NOT the inner OSError.
+    # set_nodes re-raises CancelledError, not the inner OSError.
     with pytest.raises(_asyncio_top.CancelledError):
         await store.set_nodes(new_nodes)
 
-    # The distinct DEBUG message from the defensive observe arm at
-    # node_store.py L675-679 fires. This substring is intentionally
-    # different from the sibling drain-loop arm
-    # ("...raised during cancel drain") so the two pins are
-    # independently observable.
     debug_msgs = [
         r.getMessage()
         for r in caplog.records
@@ -288,9 +210,6 @@ async def test_set_nodes_observes_inner_exception_set_before_outer_cancel(
         f"defensive observe arm; got {debug_msgs!r}"
     )
 
-    # The defensive read marked the inner exception "retrieved" — no
-    # ``Task exception was never retrieved`` warning escapes. Lock
-    # released after the finally.
     assert not store._lock.locked(), "lock must be released after defensive observe arm fires"
 
 
@@ -299,13 +218,7 @@ async def test_no_cancel_inner_oserror_propagates_to_caller(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Boundary contract: when there is NO cancel and the inner
-    write fails with ``OSError``, the caller MUST see the OSError
-    (the disk error is not swallowed). This pins the documented
-    constraint "do NOT widen the catch to swallow OSError from the
-    outer await — caller still needs to see the disk error."
-    Failure of this test would mean the fix overreached.
-    """
+    """With no cancel, an inner ``OSError`` must reach the caller (not be swallowed)."""
     store = YamlNodeStore(tmp_path / "nodes.yaml")
     new_nodes = [
         NodeInfo(node_id=1, address="127.0.0.1:9001", role=NodeRole.VOTER),
@@ -324,9 +237,6 @@ async def test_no_cancel_inner_oserror_propagates_to_caller(
 
     with pytest.raises(OSError) as exc_info:
         await store.set_nodes(new_nodes)
-    # The original OSError surfaces to the caller — not a CancelledError,
-    # not a swallowed-then-None.
     assert exc_info.value.errno == 28
 
-    # Lock released after the finally.
     assert not store._lock.locked(), "lock must be released after OSError propagates"

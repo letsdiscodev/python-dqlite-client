@@ -1,23 +1,6 @@
-"""Pin: ``handshake`` writes the protocol-version word and the client
-registration request to the wire as a SINGLE ``self._send(frame)``
-call carrying a single assembled ``bytes`` payload.
-
-The dqlite server expects the 8-byte version word followed immediately
-by the ``ClientRequest`` frame. If a future refactor inserts an
-``await`` between writing the version word and writing the
-registration request, a ``CancelledError`` (or any suspension that
-ends with the connection being recycled) could leave the server with
-an incomplete handshake — the next handshake on the same socket
-would be misframed.
-
-The current code assembles both pieces into a single ``bytes`` object
-before the only ``self._send`` call (see ``protocol.py``). The
-``_send`` helper internally performs ``self._writer.write(frame)``
-followed by ``await self._writer.drain()`` inside a single try/except
-so a synchronous transport-closed RuntimeError surfaces as
-``DqliteConnectionError``. These tests pin the bundling contract so
-the assembly cannot drift.
-"""
+"""Pin: ``handshake`` writes the version word + ClientRequest as a SINGLE
+``self._send`` call with one assembled ``bytes`` payload. An ``await`` between the
+two writes could let a cancellation leave the server with a misframed handshake."""
 
 from __future__ import annotations
 
@@ -55,8 +38,7 @@ async def test_handshake_sends_version_and_request_in_single_call() -> None:
 
 @pytest.mark.asyncio
 async def test_handshake_single_send_payload_starts_with_version_word() -> None:
-    """Pin: the single buffer's first 8 bytes are the protocol-version
-    handshake (so a regression that swaps the order is caught here)."""
+    """Pin: the buffer's first 8 bytes are the version word (catches an order swap)."""
     from dqlitewire.codec import MessageEncoder
 
     proto = _make_protocol()

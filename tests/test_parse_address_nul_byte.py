@@ -1,13 +1,5 @@
-"""Pin: ``parse_address`` rejects NUL-containing inputs with a
-specific diagnostic, not the generic "not a valid hostname or IP
-literal" catch-all.
-
-A NUL byte in an operator-supplied address (env var, config file,
-binary-tainted memory) used to fall through to the regex / IDN /
-IPv6-bracket guards which produce the generic shape-failure
-message. The explicit guard surfaces the NUL itself so a binary-
-tainted-input bug is diagnosable from the error text.
-"""
+"""``parse_address`` rejects NUL-containing inputs with a specific diagnostic
+(the NUL offset) rather than the generic shape-failure message."""
 
 import pytest
 

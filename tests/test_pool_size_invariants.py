@@ -1,9 +1,5 @@
-"""Concurrent-access invariants of ConnectionPool.
-
-Verifies that _size never exceeds max_size under concurrent acquires,
-even when _create_connection is slow (simulating TCP handshake
-latency) — a regression would be the reservation pattern losing
-ordering between check and increment."""
+"""Concurrent-access invariants: _size never exceeds max_size under
+concurrent acquires even with a slow _create_connection."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,13 +21,8 @@ async def _make_conn() -> MagicMock:
 
 class TestPoolSizeInvariants:
     async def test_concurrent_acquires_respect_max_size(self) -> None:
-        """10 concurrent acquires with max_size=3 must create at most 3.
-
-        With the pre-fix implementation that held the lock across the
-        network call, this would pass — but slowly. The new
-        reservation pattern drops the lock for the create; this test
-        ensures it still respects the cap.
-        """
+        """10 concurrent acquires with max_size=3 must create at most 3,
+        even though the reservation pattern drops the lock for the create."""
         pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=3, timeout=5.0)
 
         create_count = 0
@@ -41,7 +32,7 @@ class TestPoolSizeInvariants:
             nonlocal create_count, peak_size
             create_count += 1
             peak_size = max(peak_size, pool._size)
-            # Simulate TCP handshake latency; allow other tasks to run.
+            # Simulate handshake latency; let other tasks run.
             for _ in range(5):
                 await asyncio.sleep(0)
             return await _make_conn()
@@ -61,8 +52,7 @@ class TestPoolSizeInvariants:
         await pool.close()
 
     async def test_create_failure_rolls_back_reservation(self) -> None:
-        """If _create_connection raises, the reservation must be released
-        so a subsequent acquire can succeed."""
+        """A failed _create_connection releases the reservation so a later acquire succeeds."""
         pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1, timeout=1.0)
 
         call_count = 0
@@ -80,14 +70,12 @@ class TestPoolSizeInvariants:
                 async with pool.acquire() as c:
                     assert c is not None
 
-            # First call fails — reservation must be released.
             import pytest
 
             with pytest.raises(OSError):
                 await borrow()
             assert pool._size == 0, f"reservation leaked after create failure; _size={pool._size}"
 
-            # Second call should succeed.
             await borrow()
 
         await pool.close()

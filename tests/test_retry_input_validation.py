@@ -1,9 +1,6 @@
-"""Input validation for ``retry_with_backoff``. Rejects bool /
-non-finite / out-of-range values at the entry point rather than
-letting them propagate into ``asyncio.sleep``, where the error
-surface is ``ValueError: sleep length must be non-negative`` with
-no hint about the caller's misuse.
-"""
+"""Input validation for ``retry_with_backoff``: bool / non-finite /
+out-of-range values are rejected at the entry point with an actionable
+message, not deep inside ``asyncio.sleep``."""
 
 from __future__ import annotations
 
@@ -51,19 +48,14 @@ async def test_max_delay_bad_values_rejected(bad: float) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad", [-0.1, 1.0, 1.1, float("inf"), float("nan")])
 async def test_jitter_bad_values_rejected(bad: float) -> None:
-    """Half-open ``[0, 1)``: at ``jitter=1.0`` exactly,
-    ``1 + uniform(-1, 1)`` can draw 0 and zero the backoff. Pin
-    the rejection so an operator copying ``jitter=1`` from a
-    benchmark snippet gets an actionable diagnostic instead of
-    occasional zero-backoff attempts."""
+    """Half-open ``[0, 1)``: at ``jitter=1.0`` a draw can zero the backoff."""
     with pytest.raises(ValueError, match=r"jitter must be in \[0, 1\)"):
         await retry_with_backoff(_ok, jitter=bad)
 
 
 @pytest.mark.asyncio
 async def test_jitter_one_message_explains_zero_backoff_risk() -> None:
-    """The diagnostic must explain WHY 1.0 is rejected — the
-    operator needs to know what to set instead."""
+    """The diagnostic must explain WHY 1.0 is rejected."""
     with pytest.raises(ValueError) as exc_info:
         await retry_with_backoff(_ok, jitter=1.0)
     msg = str(exc_info.value)
@@ -73,8 +65,7 @@ async def test_jitter_one_message_explains_zero_backoff_risk() -> None:
 
 @pytest.mark.asyncio
 async def test_jitter_zero_point_nine_nine_still_accepted() -> None:
-    """The closest practical max-randomisation value is still
-    accepted — pin that no off-by-one shrank the range further."""
+    """The closest practical max-randomisation value is still accepted."""
     result = await retry_with_backoff(_ok, max_attempts=1, jitter=0.99)
     assert result == 42
 
@@ -93,11 +84,7 @@ async def test_valid_inputs_still_work() -> None:
 
 @pytest.mark.asyncio
 async def test_max_elapsed_seconds_caps_retry_budget() -> None:
-    """``max_elapsed_seconds`` aborts the retry loop once the cumulative
-    elapsed time exceeds the budget, re-raising the last observed
-    exception. Complements ``max_attempts`` for scenarios where a
-    single attempt consumes significant wall-clock.
-    """
+    """``max_elapsed_seconds`` aborts the loop once the budget is exceeded."""
     import asyncio
     import time
 
@@ -106,7 +93,6 @@ async def test_max_elapsed_seconds_caps_retry_budget() -> None:
     async def _slow_fail() -> int:
         nonlocal calls
         calls += 1
-        # Each attempt sleeps ~30ms, simulating a slow per-attempt op.
         await asyncio.sleep(0.03)
         raise OSError("transport refused")
 
@@ -114,14 +100,13 @@ async def test_max_elapsed_seconds_caps_retry_budget() -> None:
     with pytest.raises(OSError):
         await retry_with_backoff(
             _slow_fail,
-            max_attempts=100,  # would take seconds without the budget
+            max_attempts=100,
             base_delay=0.0,
             max_delay=0.0,
             jitter=0.0,
             max_elapsed_seconds=0.1,
         )
     elapsed = time.monotonic() - start
-    # Budget + one in-flight attempt overshoot cap.
     assert elapsed < 0.5, f"retry loop blew past its wall-clock budget: {elapsed}s"
 
 
@@ -134,11 +119,8 @@ async def test_max_elapsed_seconds_bad_values_rejected(bad: float) -> None:
 
 @pytest.mark.asyncio
 async def test_deadline_rechecked_before_each_attempt_after_first() -> None:
-    """The deadline must be re-checked at the top of each iteration
-    (after the first), not only before the inter-attempt sleep. A
-    func() that takes longer than the remaining budget would otherwise
-    run entirely past the deadline before the next iteration's guard
-    can react. The fix re-checks at the top of every attempt > 0."""
+    """The deadline is re-checked at the top of each attempt > 0, not only
+    before the inter-attempt sleep, so a slow attempt cannot overrun it."""
     import asyncio
     import time
 
@@ -147,8 +129,6 @@ async def test_deadline_rechecked_before_each_attempt_after_first() -> None:
 
     async def _slow_fail() -> int:
         call_times.append(time.monotonic() - start)
-        # First attempt completes inside the budget; second attempt
-        # would start past the deadline.
         await asyncio.sleep(0.06)
         raise OSError("transport refused")
 
@@ -162,10 +142,6 @@ async def test_deadline_rechecked_before_each_attempt_after_first() -> None:
             max_elapsed_seconds=0.05,  # budget < first attempt's 0.06s
         )
 
-    # Without the deadline-recheck-at-top-of-iteration, attempt 2 would
-    # still have run because the previous "before the sleep" check
-    # passed when the sleep was 0. With the fix, attempt 2 is skipped
-    # because the budget is exhausted by then.
     assert len(call_times) == 1, (
         f"Expected exactly one call (deadline reached after first), "
         f"got {len(call_times)} calls at {call_times}"

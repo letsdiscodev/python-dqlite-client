@@ -1,13 +1,6 @@
-"""Pin: ``ConnectionPool.acquire`` peeks the transport via
-``_socket_looks_dead`` *before* yielding an idle connection to the
-caller, so a connection that saw a clean peer FIN (leader flip with
-graceful close) does not get handed out as a zombie.
-
-The protocol-level ``is_connected`` is just ``self._protocol is not
-None`` — it does NOT detect a half-closed socket. Without the
-transport-level peek, the user's first query after a leader flip
-fails on a dequeue path that the pool could have self-healed.
-"""
+"""``ConnectionPool.acquire`` peeks the transport via ``_socket_looks_dead`` before
+yielding an idle connection, since ``is_connected`` (``self._protocol is not None``)
+does not detect a half-closed socket after a clean peer FIN."""
 
 from __future__ import annotations
 
@@ -20,12 +13,8 @@ from dqliteclient.pool import ConnectionPool
 
 
 def _alive_conn(*, dead: bool = False) -> MagicMock:
-    """Build a MagicMock that mimics the slice of ``DqliteConnection``
-    the pool's acquire flow touches.
-
-    With ``dead=True``, the transport peek tells ``_socket_looks_dead``
-    the connection is gone (transport.is_closing() returns True).
-    """
+    """Mock the slice of ``DqliteConnection`` acquire touches; ``dead=True`` makes
+    transport.is_closing() return True so ``_socket_looks_dead`` sees it gone."""
     conn = MagicMock()
     conn.is_connected = True
     conn.close = AsyncMock()
@@ -46,14 +35,11 @@ def _alive_conn(*, dead: bool = False) -> MagicMock:
 async def test_acquire_drops_dead_idle_connection_and_returns_fresh_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An idle connection whose transport is closing must not be
-    yielded to the caller. The pool drains the idle queue and creates
-    a fresh connection."""
+    """An idle connection whose transport is closing must not be yielded; the pool
+    drains the queue and creates a fresh connection."""
     pool = ConnectionPool(["a:9001"], min_size=0, max_size=1)
-    # Skip real cluster bootstrap; we only exercise the acquire path.
     monkeypatch.setattr("dqliteclient.pool.ConnectionPool.initialize", AsyncMock())
     pool._initialized = True
-    # Seed one dead conn into the idle queue and reserve its slot.
     dead = _alive_conn(dead=True)
     pool._pool.put_nowait(dead)
     pool._size = 1
@@ -78,9 +64,7 @@ async def test_acquire_drops_dead_idle_connection_and_returns_fresh_one(
 async def test_acquire_yields_alive_idle_connection_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression pin: a healthy idle connection passes the peek and
-    is yielded unchanged — the pre-ping does NOT force unnecessary
-    reconnects."""
+    """A healthy idle connection passes the peek and is yielded unchanged."""
     pool = ConnectionPool(["a:9001"], min_size=0, max_size=1)
     monkeypatch.setattr("dqliteclient.pool.ConnectionPool.initialize", AsyncMock())
     pool._initialized = True
@@ -128,5 +112,5 @@ async def test_acquire_peeks_via_eof(
         assert conn is fresh
         assert eof_conn.close.called
 
-    # Avoid leaking the asyncio queue close-task on test teardown
+    # Drain the queue close-task so it doesn't leak on teardown.
     await asyncio.sleep(0)

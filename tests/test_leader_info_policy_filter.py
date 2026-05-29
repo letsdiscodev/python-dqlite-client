@@ -1,18 +1,6 @@
-"""``leader_info(policy=...)`` re-validates the responder's
-self-reported leader address against a redirect policy when
-leadership flipped between ``find_leader`` and the follow-up
-``protocol.get_leader()`` round-trip.
-
-Without this gate, a hostile follower reached on the second hop
-could return an attacker-controlled address as "leader" and the
-caller would receive that address verbatim — bypassing every check
-the instance-level ``redirect_policy`` was designed to enforce.
-
-The check is skipped when the responder confirms itself (the same
-address ``find_leader`` already approved through its own
-``_check_redirect`` arm). This matches the precedence used by
-:meth:`cluster_info` and the find-leader probe path.
-"""
+"""``leader_info(policy=...)`` re-validates a flipped responder's self-reported leader
+against a redirect policy; without it a hostile follower could smuggle an attacker address.
+Skipped when the responder confirms itself (already approved by ``find_leader``)."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -31,24 +19,14 @@ def _build_cluster_with_responder(
     verified_node_id: int | None = None,
     verified_address: str | None = None,
 ) -> ClusterClient:
-    """Cluster whose ``find_leader`` returns ``leader:9001`` and whose
-    admin protocol's ``get_leader()`` returns the configured tuple.
-
-    When the responder reports a flipped address (``responder_address``
-    != ``"leader:9001"``), ``leader_info`` re-probes via
-    ``_verify_redirect`` and then re-asks ``get_leader`` on the
-    verified target. ``verified_node_id`` / ``verified_address``
-    drive the verified responder's get_leader return; by default the
-    re-probe returns the responder_address unchanged."""
+    """Cluster whose ``find_leader`` returns ``leader:9001``; on a flipped responder it
+    re-probes via ``_verify_redirect`` then re-asks ``get_leader`` on the verified target."""
     cluster = ClusterClient(
         MemoryNodeStore(["leader:9001"]),
         timeout=2.0,
         redirect_policy=redirect_policy,
     )
     cluster.find_leader = AsyncMock(return_value="leader:9001")
-    # Mock the re-probe to succeed against the responder's address —
-    # this is the "verified" target. Returning a non-None mirrors the
-    # production path where the hint self-confirmed.
     cluster._verify_redirect = AsyncMock(return_value=responder_address)
 
     fake_proto = MagicMock()
@@ -64,9 +42,6 @@ def _build_cluster_with_responder(
 
     def admin_cm(target: str) -> MagicMock:
         cm = MagicMock()
-        # The first call (to leader_addr) returns fake_proto; the
-        # second call (to the verified target after the re-probe)
-        # returns verified_proto.
         if target == responder_address and responder_address != "leader:9001":
             cm.__aenter__ = AsyncMock(return_value=verified_proto)
         else:
@@ -81,9 +56,7 @@ def _build_cluster_with_responder(
 
 @pytest.mark.asyncio
 async def test_no_policy_returns_unchecked() -> None:
-    """Without ``policy=`` and without an instance-level
-    ``redirect_policy``, the responder's address passes through
-    unchecked (preserves prior callers)."""
+    """With no policy at all, the responder's address passes through unchecked."""
     cluster = _build_cluster_with_responder(7, "responder:9001")
     info = await cluster.leader_info()
     assert info is not None
@@ -93,10 +66,7 @@ async def test_no_policy_returns_unchecked() -> None:
 
 @pytest.mark.asyncio
 async def test_no_flip_skips_policy_check() -> None:
-    """When the responder confirms itself (same address as
-    ``find_leader`` returned), the policy is NOT consulted — the
-    responder was already approved by ``find_leader``'s own
-    ``_check_redirect`` arm."""
+    """A self-confirming responder skips the policy — already approved by ``find_leader``."""
 
     def reject_everything(_addr: str) -> bool:
         return False
@@ -109,8 +79,7 @@ async def test_no_flip_skips_policy_check() -> None:
 
 @pytest.mark.asyncio
 async def test_per_call_policy_rejects_flipped_address() -> None:
-    """``policy=...`` rejects a flipped responder's address even when
-    the instance-level ``redirect_policy`` would have admitted it."""
+    """Per-call ``policy=`` overrides the instance ``redirect_policy`` for a flipped address."""
     cluster = _build_cluster_with_responder(7, "10.99.99.99:9001")
 
     def reject_10_dot(addr: str) -> bool:
@@ -123,8 +92,7 @@ async def test_per_call_policy_rejects_flipped_address() -> None:
 
 @pytest.mark.asyncio
 async def test_instance_redirect_policy_used_when_no_per_call_policy() -> None:
-    """When no per-call ``policy`` is provided, the instance-level
-    ``redirect_policy`` is consulted on a flipped address."""
+    """Without a per-call policy, the instance ``redirect_policy`` is consulted on a flip."""
 
     def reject_10_dot(addr: str) -> bool:
         host, _ = addr.rsplit(":", 1)
@@ -138,17 +106,9 @@ async def test_instance_redirect_policy_used_when_no_per_call_policy() -> None:
 
 @pytest.mark.asyncio
 async def test_third_hop_vaddress_filtered_by_policy() -> None:
-    """The third-hop ``vaddress`` reported by the verified responder
-    must be policy-checked too. The verified responder is allowlisted
-    by the operator, but its reported leader can be any peer — a
-    compromised follower could return an attacker-controlled address
-    as its own leader hint, bypassing the defence the first-hop check
-    was designed to enforce."""
+    """The verified responder's reported leader (third hop) must be policy-checked too:
+    a compromised allowlisted follower could otherwise return an attacker address."""
 
-    # First flip is allowed by the policy: responder at 10.0.0.5
-    # confirms a leader at 10.0.0.7 (still in the 10.0.0.0/24 subnet).
-    # The verified responder then reports 192.168.1.1 as the third
-    # hop, which the policy must reject.
     def reject_outside_10_subnet(addr: str) -> bool:
         host, _ = addr.rsplit(":", 1)
         return host.startswith("10.")
@@ -166,8 +126,7 @@ async def test_third_hop_vaddress_filtered_by_policy() -> None:
 
 @pytest.mark.asyncio
 async def test_third_hop_vaddress_passes_when_within_policy() -> None:
-    """Sibling positive: when the third hop is within the policy, the
-    LeaderInfo round-trips cleanly."""
+    """Positive twin: a third hop within the policy round-trips cleanly."""
 
     def reject_outside_10_subnet(addr: str) -> bool:
         host, _ = addr.rsplit(":", 1)
@@ -188,9 +147,7 @@ async def test_third_hop_vaddress_passes_when_within_policy() -> None:
 
 @pytest.mark.asyncio
 async def test_no_leader_response_returns_none() -> None:
-    """When the responder reports ``(node_id=0, address="")`` (mid-
-    election sentinel), ``leader_info`` returns ``None`` and never
-    invokes the policy."""
+    """The ``(0, "")`` mid-election sentinel returns None and never invokes the policy."""
     cluster = _build_cluster_with_responder(0, "")
     info = await cluster.leader_info(policy=lambda _addr: False)
     assert info is None

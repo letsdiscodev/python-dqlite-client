@@ -1,14 +1,5 @@
-"""Pin: ``_query_leader``'s DEBUG log scrubs control / ANSI / bidi
-bytes from the server-supplied ``leader_addr``.
-
-The exception message that follows already routes ``leader_addr``
-through ``_sanitize_display_text``; the DEBUG log used to emit it
-verbatim via ``%r``. A hostile (or compromised) peer can return a
-crafted address — embedded ``\\r\\n``, ANSI escape sequences, bidi
-override glyphs — that injects content into the operator's log
-stream. DEBUG logs are routinely shipped to aggregators; defence in
-depth means scrubbing both surfaces.
-"""
+"""Pin: ``_query_leader``'s DEBUG log scrubs control/ANSI/bidi bytes from the
+server-supplied ``leader_addr`` (defence in depth alongside the exception message)."""
 
 from __future__ import annotations
 
@@ -30,13 +21,9 @@ def _make_cluster() -> ClusterClient:
     return ClusterClient(store, timeout=0.5)
 
 
-# The ``(node_id != 0, address == "")`` arm previously raised
-# ProtocolError with the hostile leader_addr in the message; it now
-# routes to "no leader known" with a DEBUG breadcrumb that does NOT
-# carry the leader_addr field (the field is empty in this arm).
-# Sanitization coverage for that surface moved to the ``(0, hostile)``
-# arm below, which is the only remaining path that emits a
-# hostile-controlled address into the DEBUG record.
+# The ``(0, hostile)`` arm below is the only remaining path that emits a
+# hostile-controlled address into the DEBUG record (the ``(node_id != 0, "")``
+# arm now carries no leader_addr field).
 
 
 def _assert_no_raw_control_bytes(records: list[logging.LogRecord]) -> None:
@@ -66,7 +53,6 @@ async def test_query_leader_zero_id_with_hostile_addr_sanitizes_debug_log(
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock(return_value=10_000)
     fake_proto.negotiate_protocol_only = AsyncMock()
-    # node_id == 0 with non-empty hostile address triggers the second arm.
     fake_proto.get_leader = AsyncMock(return_value=(0, _HOSTILE_ADDR))
 
     from unittest.mock import patch

@@ -1,10 +1,5 @@
-"""Pin: ``MemoryNodeStore`` syntactically validates each address
-via the same ``parse_address`` helper that ``_query_leader`` will
-use later. Without this, malformed entries (unbracketed IPv6,
-non-numeric port, IDN, credentials shape) leak ``ValueError``
-through the ``find_leader`` sweep's narrow except tuple — aborting
-the entire sweep with the wrong exception class.
-"""
+"""``MemoryNodeStore`` validates each address via ``parse_address`` at construction, so
+malformed entries fail early rather than leaking ValueError through the find_leader sweep."""
 
 from __future__ import annotations
 

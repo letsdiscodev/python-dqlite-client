@@ -1,12 +1,6 @@
-"""Pin: ``ConnectionPool``'s ``min_size`` / ``max_size`` /
-``max_attempts`` and ``ClusterClient.connect``'s ``max_attempts``
-reject ``bool`` (``True`` / ``False``) — the only checks were
-``< 0`` / ``< 1`` comparisons that silently coerced ``True`` to
-``1`` and ``False`` to ``0``.
-
-Mirrors the int/bool reject discipline applied across the wire
-validators (``encode_int64``, ``Cursor.arraysize``,
-``Header.__post_init__``).
+"""ConnectionPool's min_size/max_size/max_attempts and
+ClusterClient.connect's max_attempts reject bool (the < 0 / < 1 checks
+silently coerced True to 1 and False to 0).
 """
 
 from __future__ import annotations

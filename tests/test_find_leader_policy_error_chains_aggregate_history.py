@@ -1,13 +1,6 @@
-"""When ``_find_leader_impl`` raises ``ClusterPolicyError`` on the
-policy-rejection arm, the accumulated per-node transport history
-(timeouts / refused / no-leader replies) must be chained on the
-exception's ``__cause__`` — mirroring the no-policy aggregate arm
-which chains via ``BaseExceptionGroup``.
-
-Pre-fix the policy arm re-raised bare, dropping the forensic evidence
-that distinguishes 'policy rejected the leader on an otherwise-healthy
-cluster' from 'policy rejected the leader on a half-down cluster'.
-"""
+"""The policy-rejection ``ClusterPolicyError`` must chain accumulated
+per-node transport failures on ``__cause__`` (like the no-policy aggregate
+arm) so a healthy vs half-down cluster stays distinguishable."""
 
 from __future__ import annotations
 
@@ -25,10 +18,8 @@ from dqliteclient.node_store import MemoryNodeStore
 
 
 def test_policy_error_chains_aggregate_per_node_excs() -> None:
-    """One probe raises ClusterPolicyError; two others fail transport-
-    wise. The raised exception must be a ClusterPolicyError with the
-    accumulated per-node failures on its __cause__ as a
-    BaseExceptionGroup."""
+    """One probe triggers policy rejection, two fail transport-wise: the
+    ClusterPolicyError must chain both failures via BaseExceptionGroup."""
     cc = ClusterClient(
         MemoryNodeStore(["a:9001", "b:9001", "c:9001"]),
         timeout=2.0,
@@ -37,10 +28,7 @@ def test_policy_error_chains_aggregate_per_node_excs() -> None:
 
     async def _fake_query_leader(address: str, **_kw: object) -> str | None:
         if address == "a:9001":
-            # Returns a redirect to a non-allowed target — triggers the
-            # policy-error branch.
-            return "leader:9001"
-        # The other two nodes time out / refuse.
+            return "leader:9001"  # redirect to a non-allowed target
         raise DqliteConnectionError(f"{address}: down")
 
     with (
@@ -65,9 +53,8 @@ def test_policy_error_chains_aggregate_per_node_excs() -> None:
 
 
 def test_policy_error_with_single_per_node_exc_chains_directly() -> None:
-    """Single non-policy per-node exception: chained on ``__cause__``
-    directly (no BaseExceptionGroup wrap) — mirrors the aggregate arm's
-    single-exception branch at cluster.py:1111-1112."""
+    """A single non-policy per-node exception is chained on ``__cause__``
+    directly, with no BaseExceptionGroup wrap."""
     cc = ClusterClient(
         MemoryNodeStore(["a:9001", "b:9001"]),
         timeout=2.0,
@@ -87,14 +74,12 @@ def test_policy_error_with_single_per_node_exc_chains_directly() -> None:
 
     cause = exc_info.value.__cause__
     assert cause is not None
-    # Single transport failure: chained narrow rather than wrapped.
     assert isinstance(cause, DqliteConnectionError)
 
 
 def test_policy_error_with_no_other_failures_keeps_bare_raise() -> None:
-    """When the policy rejection is the ONLY surface — no transport
-    failures, no no-leader-known accumulation — the bare re-raise is
-    the right shape (no spurious __cause__)."""
+    """A policy rejection with no other failures re-raises bare, with no
+    spurious __cause__."""
     cc = ClusterClient(
         MemoryNodeStore(["a:9001"]),
         timeout=2.0,

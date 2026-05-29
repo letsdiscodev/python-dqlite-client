@@ -1,23 +1,8 @@
-"""Pin: the cancel-and-detach guard on
-``DqliteConnection._invalidate``.
-
-A second ``_invalidate`` call while a prior bounded-drain task is
-in-flight must cancel the prior task before overwriting
-``self._pending_drain`` with the new one. Without the cancel,
-the first task is orphaned (still running on the loop, no longer
-reachable from ``self``), and ``close()`` awaits only the second
-— recreating the exact "Task was destroyed but it is pending"
-warning the drain mechanism was added to suppress.
-
-Also pins the ``RuntimeError("Event loop is closed")``
-guard around ``loop.create_task``: when the loop is dead the
-fallback sets ``_pending_drain = None`` and preserves the
-original cancel/cause instead of replacing it with a bare
-``RuntimeError``.
-
-And pins the ``_invalidation_cause`` clear on ``_close_impl``
-so the cached exception does not pin frame globals/locals
-across close → reconnect cycles.
+"""Pin ``_invalidate``'s cancel-and-detach guard: a second call cancels
+the prior bounded-drain task before overwriting ``_pending_drain`` (else
+it orphans, recreating the "Task was destroyed" warning). Also pins the
+closed-loop ``create_task`` fallback (preserve cause, drain=None) and the
+``_invalidation_cause`` clear on ``_close_impl``.
 """
 
 from __future__ import annotations
@@ -31,8 +16,7 @@ from dqliteclient.connection import DqliteConnection
 
 
 def _make_conn_with_protocol() -> DqliteConnection:
-    """Build a DqliteConnection skeleton sufficient to drive
-    ``_invalidate`` end-to-end without a real wire connection."""
+    """DqliteConnection skeleton to drive ``_invalidate`` without a wire connection."""
     conn = DqliteConnection.__new__(DqliteConnection)
     conn._protocol = None
     conn._db_id = None
@@ -51,8 +35,7 @@ def _make_conn_with_protocol() -> DqliteConnection:
 
 
 class _FakeProtocol:
-    """Minimal stand-in for DqliteProtocol covering the slots
-    ``_invalidate`` reads (``close()``, ``wait_closed()``)."""
+    """Minimal DqliteProtocol stand-in: ``close()`` and ``wait_closed()``."""
 
     def __init__(self) -> None:
         self.close_calls = 0
@@ -61,8 +44,7 @@ class _FakeProtocol:
         self.close_calls += 1
 
     async def wait_closed(self) -> None:
-        # Yield once so the bounded drain has a chance to be
-        # observed in pending state by a sibling _invalidate.
+        # Stay pending long enough for a sibling _invalidate to observe the drain.
         await asyncio.sleep(0.5)
 
 
@@ -70,26 +52,22 @@ class _FakeProtocol:
 async def test_second_invalidate_cancels_prior_pending_drain() -> None:
     conn = _make_conn_with_protocol()
 
-    # First invalidate: scheduling a bounded-drain task.
+    # First invalidate schedules a bounded-drain task.
     conn._protocol = _FakeProtocol()  # type: ignore[assignment]
     conn._invalidate()
     first_task = conn._pending_drain
     assert first_task is not None
     assert not first_task.done()
 
-    # Re-set the protocol so the second _invalidate's
-    # ``if self._protocol is not None:`` branch runs.
+    # Re-set the protocol so the second _invalidate's branch runs.
     conn._protocol = _FakeProtocol()  # type: ignore[assignment]
     conn._invalidate()
     second_task = conn._pending_drain
 
     assert second_task is not None
     assert second_task is not first_task
-    # The contract: prior task has cancel() scheduled before the
-    # slot is overwritten. ``cancel()`` flips the task
-    # to ``cancelling`` (not yet ``cancelled``) until the task
-    # observes the CancelledError at its next await — pump the
-    # loop so the cancellation lands.
+    # cancel() flips to ``cancelling`` until the task observes it at its
+    # next await, so pump the loop below to let the cancellation land.
     assert first_task.cancelling() > 0 or first_task.cancelled() or first_task.done()
     await asyncio.sleep(0)
     await asyncio.sleep(0)
@@ -100,15 +78,12 @@ async def test_second_invalidate_cancels_prior_pending_drain() -> None:
 async def test_invalidate_with_closed_loop_preserves_cause(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """``loop.create_task`` raising
-    ``RuntimeError("Event loop is closed")`` must NOT replace the
-    original cancel/cause; the try/except guard DEBUG-logs and
-    continues with ``_pending_drain = None``."""
+    """A closed-loop ``create_task`` must preserve the original cause;
+    the guard DEBUG-logs and continues with ``_pending_drain = None``."""
     conn = _make_conn_with_protocol()
     conn._protocol = _FakeProtocol()  # type: ignore[assignment]
 
-    # Patch the running loop's create_task to simulate the
-    # closed-loop shape during dispose.
+    # Patch create_task to simulate the closed-loop shape during dispose.
     loop = asyncio.get_running_loop()
     real_create_task = loop.create_task
 
@@ -124,9 +99,6 @@ async def test_invalidate_with_closed_loop_preserves_cause(
     finally:
         loop.create_task = real_create_task
 
-    # ``_pending_drain`` falls back to None instead of leaking the
-    # un-scheduled coroutine; the original cause is preserved on
-    # ``_invalidation_cause`` for downstream chaining.
     assert conn._pending_drain is None
     assert isinstance(conn._invalidation_cause, ValueError)
     assert any("asyncio.ensure_future" in r.message for r in caplog.records)
@@ -134,13 +106,9 @@ async def test_invalidate_with_closed_loop_preserves_cause(
 
 @pytest.mark.asyncio
 async def test_close_impl_clears_invalidation_cause() -> None:
-    """``self._invalidation_cause = None`` on ``_close_impl``
-    ensures the cached exception does NOT pin frame
-    globals/locals across close → reconnect cycles. A
-    regression that drops the line re-introduces the
-    traceback-pin defect."""
+    """``_close_impl`` clears ``_invalidation_cause`` so the cached
+    exception does not pin frame globals/locals across close/reconnect."""
     conn = _make_conn_with_protocol()
-    # Simulate a prior invalidation having stored a cause.
     conn._invalidation_cause = ValueError("prior failure")
     assert conn._invalidation_cause is not None
 

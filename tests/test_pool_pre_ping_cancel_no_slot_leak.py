@@ -1,20 +1,6 @@
-"""Pin: cancellation landing during the pre-ping path's shielded
-``conn.close()`` does NOT leak a reservation slot.
-
-The pre-ping branch in ``ConnectionPool.acquire`` shields the dead-
-connection close with ``asyncio.shield`` so the close completes
-even if the outer caller is cancelled. The drain-idle and create
-calls each have their own ``except BaseException`` arms that release
-the reservation. This test pins the cumulative invariant: under
-rapid cancellation during the pre-ping path, ``pool._size`` does
-not drift above ``pool._max_size``, and a follow-up ``acquire``
-still works.
-
-The current implementation is correct (verified by tracing each
-exception path); this test guards against a refactor that re-orders
-the close/drain/create sequence and silently breaks the
-no-leak invariant.
-"""
+"""Cancellation during the pre-ping path (shielded ``conn.close()``, drain, or
+create) must not leak a reservation slot: ``pool._size`` stays at or below
+``max_size`` and a follow-up ``acquire`` still works."""
 
 from __future__ import annotations
 
@@ -28,10 +14,8 @@ from dqliteclient.pool import ConnectionPool
 
 
 def _alive_conn(*, dead: bool = False, slow_close: bool = False) -> MagicMock:
-    """Build a MagicMock that mimics the slice of ``DqliteConnection``
-    the pool's acquire flow touches. ``slow_close=True`` makes
-    ``close()`` await once so a cancel can land during the shielded
-    body."""
+    """Mock the slice of ``DqliteConnection`` acquire touches; ``slow_close=True``
+    makes ``close()`` await once so a cancel can land during the shielded body."""
     conn = MagicMock()
     conn.is_connected = True
     if slow_close:
@@ -59,10 +43,7 @@ def _alive_conn(*, dead: bool = False, slow_close: bool = False) -> MagicMock:
 async def test_pre_ping_cancel_during_close_no_slot_leak(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Cancel landing during the shielded ``conn.close()`` of the
-    dead-conn path must release the reservation. After the cancel,
-    pool size must be back to a state where new acquires succeed
-    without exceeding max_size."""
+    """Cancel during the shielded ``conn.close()`` must release the reservation."""
     pool = ConnectionPool(["a:9001"], min_size=0, max_size=1)
     monkeypatch.setattr("dqliteclient.pool.ConnectionPool.initialize", AsyncMock())
     pool._initialized = True
@@ -89,12 +70,10 @@ async def test_pre_ping_cancel_during_close_no_slot_leak(
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    # Reservation must not leak.
     assert pool._size <= pool._max_size, (
         f"reservation leaked under cancel: _size={pool._size} > max_size={pool._max_size}"
     )
 
-    # And the pool must still be acquireable.
     async with pool.acquire() as conn:
         assert conn is not None
 
@@ -103,8 +82,7 @@ async def test_pre_ping_cancel_during_close_no_slot_leak(
 async def test_pre_ping_cancel_after_close_before_drain_no_leak(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Cancel landing during ``_drain_idle`` (after the shielded close
-    completes) must also release the reservation."""
+    """Cancel during ``_drain_idle`` (after the shielded close) must also release."""
     pool = ConnectionPool(["a:9001"], min_size=0, max_size=1)
     monkeypatch.setattr("dqliteclient.pool.ConnectionPool.initialize", AsyncMock())
     pool._initialized = True
@@ -112,8 +90,6 @@ async def test_pre_ping_cancel_after_close_before_drain_no_leak(
     pool._pool.put_nowait(dead)
     pool._size = 1
 
-    # _drain_idle is the first await after close; cancel during its
-    # await releases via the except BaseException arm.
     async def slow_drain(self: object, *_args: object, **_kwargs: object) -> None:
         await asyncio.sleep(0)
 

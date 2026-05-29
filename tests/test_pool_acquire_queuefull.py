@@ -1,14 +1,6 @@
-"""QueueFull during the BaseException cleanup arm must close the
-won connection rather than leaking it.
-
-The cleanup arm of ``acquire()`` (pool.py around lines 404-431) tries
-to return a won-but-abandoned connection to the queue via
-``put_nowait``. Under the pool's invariants that should never
-``QueueFull`` — but if it does (the invariant is violated), the
-``contextlib.suppress(QueueFull)`` used to silently drop the
-reference, leaking a live reader task + socket and quietly shrinking
-pool capacity. The fix closes the connection explicitly and
-decrements ``_size`` so the pool shrinks cleanly.
+"""QueueFull during ``acquire()``'s BaseException cleanup arm must close the
+won connection and decrement ``_size``, rather than silently dropping it
+(which would leak a live reader task + socket and shrink pool capacity).
 """
 
 from __future__ import annotations
@@ -24,8 +16,6 @@ from dqliteclient.pool import ConnectionPool
 
 
 class _FakeConn:
-    """Minimal stand-in; tracks close() invocation."""
-
     def __init__(self, name: str = "fake") -> None:
         self.name = name
         self._address = "localhost:9001"
@@ -82,27 +72,20 @@ def _make_pool_with_fake_cluster(
 
 @pytest.mark.asyncio
 async def test_queuefull_on_reinsert_closes_won_conn_and_shrinks_size() -> None:
-    """Force the BaseException arm to see a successful get_task AND
-    a QueueFull on put_nowait. Assert the won connection is actually
-    closed (not leaked) and ``_size`` is decremented.
-
-    The race this exercises (get completes + outer cancelled + queue
-    invariant violated) is extremely narrow in practice; driving it
-    deterministically needs a direct monkey-patch on ``asyncio.wait``
-    so the cleanup arm always observes a "won" get_task.
-    """
+    """Force the cleanup arm to see a won get_task plus a QueueFull on
+    put_nowait, then assert the won conn is closed and ``_size`` decremented.
+    The race is too narrow to hit naturally, so ``asyncio.wait`` is patched
+    to drive it deterministically."""
     pool, created = _make_pool_with_fake_cluster(max_size=1)
 
-    # Occupy the one slot so subsequent acquire reaches the wait arm.
+    # Occupy the one slot so the next acquire reaches the wait arm.
     blocking = await pool.acquire().__aenter__()
     assert blocking is created[0]
     size_before = pool._size
     assert size_before == 1
 
-    # Patch asyncio.wait so the waiter sees a done get_task and then
-    # is cancelled — forcing the BaseException arm with a "won"
-    # reservation. Raising put_nowait = QueueFull in the same arm
-    # exercises the corrective close path.
+    # Patch asyncio.wait so the waiter sees a done get_task then is
+    # cancelled, and make put_nowait raise QueueFull in the same arm.
     import dqliteclient.pool as pool_mod
 
     real_wait = pool_mod.asyncio.wait  # type: ignore[attr-defined]
@@ -112,15 +95,11 @@ async def test_queuefull_on_reinsert_closes_won_conn_and_shrinks_size() -> None:
 
     async def fake_wait(tasks, *, timeout=None, return_when):
         wait_called.append(1)
-        # Unblock get_task by placing the held conn into the queue.
+        # Unblock and resolve get_task by queueing the held conn.
         original_put_nowait(blocking)
-        # Let asyncio schedule the resolution of get_task.
         await real_wait(tasks, timeout=0.5, return_when=return_when)
-        # Now install the QueueFull monkeypatch so the cleanup-arm's
-        # re-insertion attempt fails.
+        # Make the cleanup arm's re-insertion fail, then cancel.
         pool._pool.put_nowait = _raise_queue_full  # type: ignore[assignment]
-        # Simulate the outer task being cancelled while control is
-        # in the wait: raise CancelledError.
         raise asyncio.CancelledError
 
     def _raise_queue_full(_conn: object) -> None:
@@ -144,13 +123,9 @@ async def test_queuefull_on_reinsert_closes_won_conn_and_shrinks_size() -> None:
     pool._pool.put_nowait = original_put_nowait
     assert wait_called, "fake_wait monkeypatch did not apply"
 
-    # The connection that was won must have had close() called on
-    # it by the cleanup arm, rather than being silently dropped.
     assert created[0].close_called, (
         "QueueFull cleanup path must call close() on the won conn, not silently drop the reference"
     )
-    # Size must decrement so the pool shrinks cleanly rather than
-    # leaking a reservation.
     assert pool._size == size_before - 1, (
         f"QueueFull cleanup must decrement _size (was {size_before}, now {pool._size})"
     )

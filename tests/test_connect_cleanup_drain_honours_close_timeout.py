@@ -1,8 +1,4 @@
-"""The half-constructed-protocol cleanup drain in ``connect()`` must
-honour ``self._close_timeout`` — not hard-code 0.5 s — so operators
-who tune the knob get consistent drain budgets across all three
-cleanup sites (``connect`` cleanup, ``close``, ``_abort_protocol``).
-"""
+"""The half-constructed-protocol cleanup drain in connect() honours self._close_timeout."""
 
 from __future__ import annotations
 
@@ -57,9 +53,6 @@ async def test_connect_cleanup_uses_configured_close_timeout() -> None:
         asyncio.open_connection = real_open
         conn_mod.asyncio.timeout = real_timeout  # type: ignore[attr-defined]
 
-    # At least one asyncio.timeout call should carry the configured
-    # close_timeout. The cleanup drain migrated from asyncio.wait_for
-    # to asyncio.timeout (cancel-scope semantics).
     assert captured_timeouts, "expected asyncio.timeout to run during cleanup"
     assert 2.0 in captured_timeouts, (
         "protocol-construction cleanup must honour self._close_timeout; "

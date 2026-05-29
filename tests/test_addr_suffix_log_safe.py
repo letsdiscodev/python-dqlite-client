@@ -1,14 +1,6 @@
-"""Pin: ``DqliteProtocol._addr_suffix`` escapes LF/TAB via
-``sanitize_for_log`` — not the display-only ``sanitize_server_text``
-which preserves LF for multi-line exception readability.
-
-The suffix flows into exception text that downstream
-``logger.error("%s", exc)`` / ``logger.exception(...)`` sites
-format; a peer-controlled LF in the address (from leader-redirect,
-a malformed node store, or a dial_func override that bypassed
-``parse_address``) would otherwise produce a journald record split
-across rows (CWE-117).
-"""
+"""Pin: ``DqliteProtocol._addr_suffix`` escapes LF/TAB via ``sanitize_for_log``
+(not display-only ``sanitize_server_text``) so a peer-controlled LF in the
+address can't forge a split log record (CWE-117)."""
 
 from __future__ import annotations
 
@@ -49,8 +41,7 @@ def test_addr_suffix_empty_when_no_address() -> None:
 
 
 def test_addr_suffix_safe_address_passes_through() -> None:
-    """Negative pin: an already-safe address renders unchanged
-    apart from the ' to ' prefix."""
+    """A safe address renders unchanged apart from the ' to ' prefix."""
     proto = _make_protocol_with_address("127.0.0.1:9001")
     suffix = proto._addr_suffix()
     assert suffix == " to 127.0.0.1:9001"

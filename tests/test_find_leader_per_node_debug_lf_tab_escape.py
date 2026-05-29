@@ -1,29 +1,6 @@
-"""Pin: ``_find_leader_impl``'s ``_probe_one`` per-node failure
-DEBUG log routes the peer-supplied EXCEPTION TEXT through
-``sanitize_for_log`` so embedded LF / Tab in ``str(e)`` are
-ESCAPED (``\\n`` / ``\\t``) at the logger boundary rather than
-preserved verbatim.
-
-CWE-117 log injection. A hostile peer (or a buggy peer) whose
-exception message contains a real newline lands verbatim in the
-logger record on the old code path: under a line-oriented log
-collector (journald, classic syslog, file-tailing pipelines), the
-embedded LF is treated as a record boundary, so a peer returning
-``"connect refused\\nMAY 14 12:34:56 leader-elected fake-node\\n"``
-forges a fake "leader elected" log entry.
-
-Sibling discipline: the ``_ProbeMiss`` return immediately below
-the bad log site already wraps the same ``_truncate_error(str(e))``
-in ``sanitize_for_log``. The defect class matches the existing
-``_query_leader`` fix pinned by
-``tests/test_query_leader_log_lf_tab_escape.py``.
-
-Test strategy: capture ``LogRecord.args`` (the raw, pre-format
-arguments passed to the logger). On the old code path the
-exception-text arg still contains the raw LF / Tab bytes; on the
-fixed code path ``sanitize_for_log`` replaces LF with the two-byte
-sequence ``\\n`` and Tab with ``\\t``.
-"""
+"""CWE-117: ``_probe_one``'s per-node failure DEBUG log routes peer-supplied
+exception text through ``sanitize_for_log`` so embedded LF/Tab can't forge
+log records under a line-oriented collector."""
 
 from __future__ import annotations
 
@@ -61,11 +38,8 @@ def _find_probe_one_failure_debug_record(
 def test_probe_one_failure_debug_log_escapes_lf_tab_in_exception_text(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """``_probe_one`` per-node failure arm: when ``_query_leader``
-    raises an exception whose ``str(e)`` contains LF / Tab, the
-    DEBUG log site must thread the value through ``sanitize_for_log``
-    so the logger record's arg has the escaped form (``\\n`` / ``\\t``
-    literals)."""
+    """When ``_query_leader`` raises with LF/Tab in ``str(e)``, the DEBUG
+    log arg must carry the escaped form (``\\n`` / ``\\t``)."""
     caplog.set_level(logging.DEBUG, logger="dqliteclient.cluster")
 
     store = MemoryNodeStore(["127.0.0.1:9001"])
@@ -97,8 +71,6 @@ def test_probe_one_failure_debug_log_escapes_lf_tab_in_exception_text(
         f"sanitize_for_log must escape Tab in the exception-text arg "
         f"before the logger record; got raw Tab in arg {exc_text_arg!r}"
     )
-    # Positive: the escape sequences are present as literal two-byte
-    # forms (``\\n`` / ``\\t``).
     assert "\\n" in exc_text_arg, (
         f"expected literal '\\n' escape in sanitized exception text; got {exc_text_arg!r}"
     )

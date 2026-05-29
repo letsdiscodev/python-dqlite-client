@@ -1,13 +1,5 @@
-"""Pin: ``DqliteConnection._connect_impl``'s SQLITE_NOTFOUND
-leader-flip classifier lower-cases the haystack before comparing
-against ``LEADER_LOST_DB_LOOKUP_SUBSTRING`` — symmetric with the
-``_run_protocol`` sibling hardened in the previous round.
-
-The previous round lowercased the haystack at ``_run_protocol``
-(around line 2622-2632) so a future upstream wording variant like
-"No database opened" (capital N) keeps classifying as
-leader-flip. The handshake-time site at ``_connect_impl`` did NOT
-get the symmetric treatment; this pin closes the gap.
+"""``_connect_impl``'s SQLITE_NOTFOUND leader-flip classifier lower-cases the haystack
+so capitalised upstream wording variants still classify as a flip (matches _run_protocol).
 """
 
 from __future__ import annotations
@@ -35,12 +27,7 @@ async def test_connect_impl_classifies_capitalised_leader_lost_wording(
     monkeypatch: pytest.MonkeyPatch,
     raw_message: str,
 ) -> None:
-    """Capitalised variants of the upstream wording must still
-    rewrap as ``DqliteConnectionError`` so SA's ``is_disconnect``
-    invalidates the pool slot. Pre-fix: the raw startswith without
-    ``.lower()`` silently drops the rewrap for any capitalisation
-    change.
-    """
+    """Capitalised wording variants must still rewrap as ``DqliteConnectionError``."""
 
     async def _fake_open_connection(
         host: str, port: int, **_kwargs: object

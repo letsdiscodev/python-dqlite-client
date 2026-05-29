@@ -1,18 +1,9 @@
-"""Pin: ``import dqliteclient`` triggers ``import dqlitewire`` at
-module-load time.
+"""``import dqliteclient`` must transitively ``import dqlitewire`` at
+module-load time: the wire layer's free-threading guard is the only one,
+and downstream packages rely on inheriting it via top-level import.
 
-The wire-layer free-threading guard lives only in
-``python-dqlite-wire/src/dqlitewire/__init__.py``; the downstream
-packages (client, dbapi, sqlalchemy-dqlite) deliberately do not
-re-implement the guard and rely on transitive top-level imports.
-
-If a future refactor lazifies the wire import (e.g. to break a
-circular), the guard inheritance breaks at this entry point: a
-free-threaded interpreter could load ``dqliteclient`` without
-firing the wire-layer ImportError. CI pin against that drift.
-
-The test runs in a subprocess so manipulating ``sys.modules`` does
-not pollute the in-process module cache for other tests.
+Runs in a subprocess so the sys.modules manipulation does not pollute the
+in-process module cache for other tests.
 """
 
 from __future__ import annotations
@@ -32,7 +23,6 @@ def test_dqlitewire_loaded_after_dqliteclient_import() -> None:
     )
     snippet = """
         import sys
-        # Sanity: dqlitewire NOT pre-loaded.
         assert "dqlitewire" not in sys.modules, (
             "test setup error: dqlitewire was pre-loaded"
         )

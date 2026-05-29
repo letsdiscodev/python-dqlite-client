@@ -1,14 +1,5 @@
-"""Pin: ``ClusterClient.connect``'s all-attempts-exhausted WARNING
-runs server-supplied text through ``sanitize_for_log`` before the
-``logger.warning`` interpolation, matching the discipline already
-applied to the find-leader aggregate WARNING.
-
-Without this, a hostile peer that returns a ``FailureResponse`` with
-``\\n`` / ``\\r`` in the message can split a single WARNING into
-multiple log lines in syslog / journald / structured-log frontends.
-The sibling find-leader aggregate WARNING at ``cluster.py`` already
-applies ``sanitize_for_log``; the connect-exhausted WARNING was the
-asymmetric outlier.
+"""``ClusterClient.connect``'s exhausted-attempts WARNING runs server text through
+``sanitize_for_log`` so a hostile peer's LF/CR cannot split the log line (CWE-117).
 """
 
 from __future__ import annotations
@@ -24,16 +15,10 @@ from dqliteclient.node_store import MemoryNodeStore
 
 
 def test_cluster_imports_sanitize_for_log_via_public_name() -> None:
-    """Pin: ``dqliteclient.cluster`` imports the public
-    ``sanitize_for_log`` rather than any private underscore name.
-    The wire layer promoted ``sanitize_for_log`` (and
-    ``sanitize_server_text``) to the curated top-level surface so
-    cross-package callers consume the public name.
-    """
+    """``dqliteclient.cluster`` imports the public ``sanitize_for_log``, not a private name."""
     from dqliteclient import cluster as cluster_mod
 
     assert hasattr(cluster_mod, "sanitize_for_log")
-    # The wire-side public name resolves to the same callable.
     from dqlitewire import sanitize_for_log as wire_public
 
     assert cluster_mod.sanitize_for_log is wire_public

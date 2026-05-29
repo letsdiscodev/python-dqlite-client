@@ -1,15 +1,5 @@
-"""Pin: ``_starts_with_tx_verb`` and
-``_sql_is_outermost_release_or_commit`` return ``False`` on
-all-comment / whitespace-only input.
-
-Both predicates strip leading SQL comments and whitespace then
-return ``False`` if the result is empty. This is currently exercised
-indirectly via ``_split_top_level_statements`` (see
-``test_split_top_level_statements_all_comment_input.py``), but the
-predicates themselves have no direct pin. A future refactor that
-tightened the empty-after-strip case to an exception or to ``True``
-would ripple silently through both call sites.
-"""
+"""``_starts_with_tx_verb`` and ``_sql_is_outermost_release_or_commit``
+return ``False`` on all-comment / whitespace-only input."""
 
 from __future__ import annotations
 
@@ -34,15 +24,12 @@ def test_starts_with_tx_verb_returns_false_for_empty_string() -> None:
 
 
 def test_starts_with_tx_verb_recognises_begin_after_comments() -> None:
-    """Sanity: the strip-then-match path must still recognise a verb
-    when one survives the strip."""
+    """The strip-then-match path still recognises a surviving verb."""
     assert _starts_with_tx_verb("/* hint */ BEGIN") is True
 
 
 def _make_connection() -> DqliteConnection:
-    """Connection for direct method invocation. We never call
-    ``connect()``, so the underlying socket is never opened — only
-    the predicate's pure-string path is exercised."""
+    """Unconnected connection; only the predicate's pure-string path runs."""
     conn = DqliteConnection("127.0.0.1:9001")
     return conn
 

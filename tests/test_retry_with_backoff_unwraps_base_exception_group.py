@@ -1,18 +1,5 @@
-"""Pin: ``retry_with_backoff`` unwraps ``BaseExceptionGroup`` via
-``split(retryable_exceptions)`` so a structured-concurrency wrapped
-operation (``asyncio.TaskGroup``) whose every leaf is retryable
-participates in the retry loop.
-
-Pre-fix the bare ``except retryable_exceptions as e:`` arm matched
-by ``isinstance`` only — ``BaseExceptionGroup`` is not a subclass
-of the leaf classes, so the group propagated past the retry envelope
-on the first attempt. PEP 654 / Python 3.11+ added the group type
-and the ``except*`` syntax; this fix uses the ``split`` API to
-participate in the discipline without depending on ``except*``.
-
-Mirrors the recursive-unwrap pattern at ``_run_protocol``'s
-cancel-detection arm.
-"""
+"""``retry_with_backoff`` unwraps ``BaseExceptionGroup`` via ``split`` so a
+group whose every leaf is retryable participates in the retry loop (PEP 654)."""
 
 from __future__ import annotations
 
@@ -25,9 +12,6 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_retryable_group_participates_in_retry_loop() -> None:
-    """A ``BaseExceptionGroup`` whose every leaf is in
-    ``retryable_exceptions`` is unwrapped and the retry loop runs.
-    """
     attempts = 0
 
     async def flaky() -> str:
@@ -55,10 +39,7 @@ async def test_retryable_group_participates_in_retry_loop() -> None:
 
 
 async def test_mixed_group_with_non_retryable_leaf_fails_fast() -> None:
-    """A group containing any non-retryable leaf must propagate on
-    the first attempt — silently retrying would mask the
-    deterministic failure as transient.
-    """
+    """A group with any non-retryable leaf must fail-fast, not be masked as transient."""
     attempts = 0
 
     async def mixed_failure() -> str:
@@ -84,9 +65,7 @@ async def test_mixed_group_with_non_retryable_leaf_fails_fast() -> None:
 
 
 async def test_group_with_any_excluded_leaf_fails_fast() -> None:
-    """A group with any leaf in ``excluded_exceptions`` (subclass of
-    retryable but explicitly opt-out) must propagate on first attempt.
-    """
+    """A group with any leaf in ``excluded_exceptions`` must fail-fast."""
     attempts = 0
 
     class _NonTransient(DqliteConnectionError):
@@ -118,7 +97,6 @@ async def test_group_with_any_excluded_leaf_fails_fast() -> None:
 
 
 async def test_leaf_retryable_path_still_works() -> None:
-    """The legacy non-group leaf retryable path is unchanged."""
     attempts = 0
 
     async def flaky() -> str:

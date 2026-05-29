@@ -1,8 +1,4 @@
-"""``ClusterClient.open_admin_connection`` wraps dial-side
-``OSError`` / ``TimeoutError`` as ``DqliteConnectionError`` so admin
-RPC callers see the documented exception class. Mirrors
-``DqliteConnection.connect``'s discipline.
-"""
+"""open_admin_connection wraps dial-side OSError/TimeoutError as DqliteConnectionError."""
 
 from __future__ import annotations
 
@@ -43,14 +39,8 @@ async def test_open_admin_connection_wraps_timeout_as_dqlite_connection_error(
 
     monkeypatch.setattr("dqliteclient._dial.open_connection_with_keepalive", slow_open)
 
-    # The dial stalls under ``slow_open``; with ``dial_timeout`` and
-    # ``attempt_timeout`` both defaulted from ``timeout=0.1`` they fire
-    # at nearly the same instant. Either the inner ``dial_timeout`` arm
-    # surfaces (``Connection to ... timed out``) or the outer
-    # ``attempt_timeout`` arm surfaces (``Admin handshake to ...
-    # exceeded attempt_timeout``). The contract is "a
-    # ``DqliteConnectionError`` mentioning the stall" — both messages
-    # satisfy it.
+    # dial_timeout and attempt_timeout both derive from timeout=0.1, so either
+    # arm may surface; both messages satisfy the contract.
     with pytest.raises(DqliteConnectionError, match=r"timed out|attempt_timeout"):
         async with cluster.open_admin_connection("localhost:9001"):
             pass

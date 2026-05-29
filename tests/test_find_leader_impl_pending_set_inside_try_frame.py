@@ -1,24 +1,7 @@
-"""Pin: ``ClusterClient._find_leader_impl`` builds its ``pending``
-task set INSIDE the ``try:`` frame so a ``BaseException`` landing
-mid-construction does not leak orphaned probe tasks.
-
-Pre-fix the comprehension at ``cluster.py:909-911`` ran BEFORE the
-``try:`` at line 916. A ``KeyboardInterrupt`` / synthetic cancel
-landing in the bytecode window between the comprehension building
-``pending`` and ``try:`` entering left the already-created tasks
-orphaned — no done-callback observer (unlike ``find_leader``'s
-``_observe_drain_exception`` discipline) — and Python emitted
-"Task exception was never retrieved" / "Task was destroyed but it
-is pending" warnings at GC.
-
-The fix moves the task creation inside the try frame using a
-``for``-loop so a ``KeyboardInterrupt`` raised by the n-th
-``create_task`` keeps every preceding task in ``pending`` for the
-``finally`` to cancel + gather.
-
-This test mirrors the pool-acquire orphan-cancellation hardening
-applied at ``ConnectionPool.acquire`` and ``ConnectionPool.initialize``.
-"""
+"""``_find_leader_impl`` builds its ``pending`` task set inside the
+``try:`` frame so a ``BaseException`` landing mid-construction leaves
+every created task in ``pending`` for the ``finally`` to cancel+gather,
+rather than orphaning probe tasks."""
 
 from __future__ import annotations
 
@@ -37,27 +20,19 @@ from dqliteclient.node_store import MemoryNodeStore
 async def test_find_leader_impl_keyboardinterrupt_during_task_creation_no_orphan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Inject ``KeyboardInterrupt`` into the n-th ``create_task`` call
-    inside ``_find_leader_impl`` so the first task is created, then the
-    comprehension/loop aborts. Pin: no orphan-task warnings via
-    ``loop.set_exception_handler``."""
+    """Inject ``KeyboardInterrupt`` into the 2nd ``create_task`` so the
+    first task is created then construction aborts; assert no orphan-task
+    warnings via ``loop.set_exception_handler``."""
     store = MemoryNodeStore(["node-a:9001", "node-b:9001", "node-c:9001"])
     cluster = ClusterClient(store, timeout=0.5)
 
-    # Make every probe coroutine raise a non-suppressed programming-bug
-    # exception so an orphaned task (one created but never gathered)
-    # surfaces a "Task exception was never retrieved" context. Without
-    # this the probe would block on a dial against a fake address; an
-    # orphaned task simply parked forever wouldn't trigger the
-    # exception handler.
+    # Probes raise a non-suppressed bug exception so an orphaned (never
+    # gathered) task surfaces a "Task exception was never retrieved"
+    # context; a task merely parked on a dial would not.
     cluster._query_leader = AsyncMock(side_effect=TypeError("synthetic-probe-bug"))
 
     real_create_task = asyncio.create_task
 
-    # The cluster module does ``import asyncio`` and references
-    # ``asyncio.create_task`` — monkeypatch the attribute on the
-    # cluster module's bound ``asyncio`` reference. That's the
-    # symbol resolved at call time.
     import dqliteclient.cluster as cluster_mod
 
     call_count = {"n": 0}
@@ -69,9 +44,7 @@ async def test_find_leader_impl_keyboardinterrupt_during_task_creation_no_orphan
             t = real_create_task(coro)
             created.append(t)
             return t
-        # 2nd call: simulate a synthetic BaseException landing in the
-        # bytecode window of the comprehension. Coro must be closed
-        # to avoid an "RuntimeWarning: coroutine ... was never awaited".
+        # Close the coro to avoid "coroutine ... was never awaited".
         coro.close()
         raise KeyboardInterrupt("synthetic")
 
@@ -81,17 +54,10 @@ async def test_find_leader_impl_keyboardinterrupt_during_task_creation_no_orphan
     with pytest.raises(KeyboardInterrupt, match="synthetic"):
         await cluster._find_leader_impl(trust_server_heartbeat=False)
 
-    # The first task was created BEFORE the synthetic KeyboardInterrupt.
-    # Post-fix discipline: the task is built inside the try frame, so
-    # the ``finally:`` cancels-and-gathers it before the
-    # KeyboardInterrupt propagates. Pre-fix: comprehension ran outside
-    # the try, so no finally executed, and the task is still alive
-    # (running or in a completed-but-unobserved state).
     assert len(created) == 1, "test wired wrong: expected exactly one task created"
     leaked = created[0]
     if not leaked.done():
-        # Defensive cleanup: silence a real leak so the suite stays
-        # clean, then assert what we actually observed.
+        # Silence a real leak, then assert what we observed.
         leaked.cancel()
         with pytest.raises((asyncio.CancelledError, TypeError)):
             await leaked
@@ -99,16 +65,15 @@ async def test_find_leader_impl_keyboardinterrupt_during_task_creation_no_orphan
             "_find_leader_impl orphaned probe task: not done after caller "
             "saw KeyboardInterrupt — comprehension is outside the try frame"
         )
-    # Task is done. Pin: its exception was observed (i.e. the finally's
-    # ``asyncio.gather(*pending, return_exceptions=True)`` ran and
-    # consumed the result). The defining post-fix invariant.
+    # Task is done; its exception must have been observed by the finally's
+    # gather(..., return_exceptions=True).
     captured: list[dict[str, object]] = []
     loop = asyncio.get_running_loop()
     prior_handler = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, ctx: captured.append(ctx))
     try:
-        # Drop our strong ref + force GC so any unobserved task
-        # exception fires now, while the handler is bound.
+        # Drop the strong ref and force GC so any unobserved task
+        # exception fires while the handler is bound.
         del leaked
         created.clear()
         gc.collect()

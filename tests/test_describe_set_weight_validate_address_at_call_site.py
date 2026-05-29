@@ -1,17 +1,5 @@
-"""``ClusterClient.describe`` and ``set_weight`` validate the
-operator-supplied ``address`` kwarg client-side BEFORE dialing, so a
-malformed address surfaces as a clean ``ValueError`` at the call site
-— matching the discipline at :meth:`add_node`.
-
-Pre-fix, both methods passed the address verbatim into
-``open_admin_connection``; a typoed ``"10.0.0.1: 9000"`` (stray
-space), unbracketed IPv6, or ``user@host`` credentials-smuggle shape
-surfaced deep in the dial path as a ``DqliteConnectionError``. The
-operator sees the failure at a different site than ``add_node``
-would. The validator catches operator-error-class input fast and
-keeps the three admin methods' error wording symmetric
-(``"<method>: invalid address ..."``).
-"""
+"""describe/set_weight validate the address kwarg client-side before dialing, so a
+malformed address raises ValueError at the call site (symmetric with add_node)."""
 
 from __future__ import annotations
 
@@ -61,10 +49,7 @@ async def test_set_weight_invalid_address_raises_at_call_site(
 
 
 async def test_add_node_invalid_address_wording_preserved(client: ClusterClient) -> None:
-    """Cross-check: ``add_node``'s sibling error wording stays symmetric
-    after the describe/set_weight changes — the three methods produce
-    parallel ``"<method>: invalid address"`` diagnostics.
-    """
+    """add_node's error wording stays symmetric: "<method>: invalid address"."""
     from dqlitewire import NodeRole
 
     with pytest.raises(ValueError, match=r"add_node: invalid address"):

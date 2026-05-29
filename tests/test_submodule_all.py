@@ -1,9 +1,4 @@
-"""Each dqliteclient submodule must declare ``__all__`` so
-``from dqliteclient.<sub> import *`` does not leak private helpers.
-
-Mirrors the pattern in python-dqlite-dbapi (see
-`test_cursor_module_missing_all` and friends).
-"""
+"""Each dqliteclient submodule must declare ``__all__`` so star-import does not leak helpers."""
 
 from __future__ import annotations
 

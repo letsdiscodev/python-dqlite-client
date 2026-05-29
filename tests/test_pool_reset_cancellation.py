@@ -1,13 +1,6 @@
-"""Pin cancellation behaviour during ``_reset_connection`` ROLLBACK.
-
-The pool's reset path issues ``await conn.execute(ROLLBACK)``. If a
-cancel lands mid-flight, the client's ``_run_protocol`` invalidates
-and re-raises ``CancelledError`` — outside the pool's
-``_POOL_CLEANUP_EXCEPTIONS`` tuple, so it propagates out of
-``_reset_connection`` and into ``_release``'s outer finally. The
-finally's shielded-pending-drain await + ``_pool_released = True``
-+ shielded ``_release_reservation`` must keep the slot accounting
-consistent.
+"""Cancellation during _reset_connection ROLLBACK must propagate
+(CancelledError is outside _POOL_CLEANUP_EXCEPTIONS) and let
+_release's finally keep slot accounting consistent.
 """
 
 from __future__ import annotations
@@ -51,8 +44,5 @@ async def test_reset_rollback_cancelled_invalidates_and_releases_slot() -> None:
         with pytest.raises(asyncio.CancelledError):
             await reset_task
 
-    # _reset_connection propagated the cancel; _release's outer
-    # finally is responsible for slot accounting via the calling
-    # path. Sanity-check size stays consistent.
     assert pool._size in (0, 1)
     suspend.set()

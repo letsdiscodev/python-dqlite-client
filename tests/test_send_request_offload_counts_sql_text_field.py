@@ -1,28 +1,4 @@
-"""Pin: ``_estimate_request_body_size`` counts the ``sql`` text
-field, not just ``params``, when deciding whether to offload the
-encode to a worker thread.
-
-The prior estimator walked ``request.params`` only. Two request
-shapes therefore defeated the offload entirely:
-
-* ``PrepareRequest`` has a ``sql`` field but NO ``params`` — a
-  multi-MiB ``prepare(sql)`` always estimated to 0 and encoded
-  in-loop.
-* ``ExecSqlRequest`` / ``QuerySqlRequest`` carry both ``sql`` and
-  ``params``; an inline-literal bulk statement (multi-MiB SQL,
-  empty/small params — the shape SQLAlchemy ``insertmanyvalues``
-  and large literal ``VALUES`` / ``IN (...)`` expansions produce)
-  always estimated below the gate and encoded in-loop.
-
-``sql`` is the single largest TEXT field on the request side
-(capped at ~64 MiB), and ``encode_text`` does a UTF-8 transcode
-plus a full-size copy — the exact loop-freeze the param-offload
-was built to prevent, on a field it never measured.
-
-The fix adds ``len(sql) * 4`` (the same pessimistic UTF-8
-upper-bound already used for ``str`` params) to the estimate
-when the request carries a str ``sql`` field.
-"""
+"""``_estimate_request_body_size`` counts the ``sql`` text field, not just ``params``."""
 
 from __future__ import annotations
 
@@ -51,9 +27,6 @@ def _make_protocol_with_mock_writer() -> DqliteProtocol:
 
 
 def test_estimate_counts_prepare_request_sql() -> None:
-    """A ``PrepareRequest`` (sql, no params) with a multi-MiB SQL
-    must estimate above the offload threshold. Pre-fix it scored 0.
-    """
     threshold = protocol_mod._ENCODE_OFFLOAD_THRESHOLD
     big_sql = "x" * (threshold)  # *4 in the estimate → comfortably over
     request = wire_requests.PrepareRequest(db_id=1, sql=big_sql)
@@ -66,9 +39,6 @@ def test_estimate_counts_prepare_request_sql() -> None:
 
 
 def test_estimate_counts_exec_sql_inline_literal() -> None:
-    """An ``ExecSqlRequest`` with a multi-MiB SQL and empty params
-    (inline-literal bulk insert) must estimate above the gate.
-    """
     threshold = protocol_mod._ENCODE_OFFLOAD_THRESHOLD
     big_sql = "INSERT INTO t VALUES " + "(1)," * (threshold // 4)
     request = wire_requests.ExecSqlRequest(db_id=1, sql=big_sql, params=[])
@@ -80,9 +50,6 @@ def test_estimate_counts_exec_sql_inline_literal() -> None:
 
 
 def test_estimate_small_sql_stays_below_threshold() -> None:
-    """A normal small SQL must NOT push the estimate over the gate
-    (no false-positive thread-hop on the common case).
-    """
     threshold = protocol_mod._ENCODE_OFFLOAD_THRESHOLD
     request = wire_requests.PrepareRequest(db_id=1, sql="SELECT 1")
     estimate = protocol_mod._estimate_request_body_size(request)
@@ -95,9 +62,6 @@ def test_estimate_small_sql_stays_below_threshold() -> None:
 
 @pytest.mark.asyncio
 async def test_prepare_request_large_sql_dispatches_via_to_thread() -> None:
-    """End-to-end: a ``PrepareRequest`` with a multi-MiB SQL routed
-    through ``_send_request`` must encode on a worker thread.
-    """
     proto = _make_protocol_with_mock_writer()
     threshold = protocol_mod._ENCODE_OFFLOAD_THRESHOLD
 

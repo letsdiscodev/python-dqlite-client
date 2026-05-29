@@ -1,13 +1,5 @@
-"""Pin: ``DqliteConnection`` ``logger.*`` sites interpolate the
-server-supplied address via the ``_log_safe_address`` property
-(routes through ``sanitize_for_log``) rather than ``_safe_address``
-(routes through ``sanitize_server_text`` which preserves LF/Tab
-for exception-message readability).
-
-Mirrors the cluster.py log-site discipline: log records use
-``sanitize_for_log``, exception messages use
-``_sanitize_display_text``. CWE-117 log-injection defence in depth.
-"""
+"""Log sites use ``_log_safe_address`` (escapes LF) not ``_safe_address``;
+CWE-117 log-injection defence."""
 
 from __future__ import annotations
 
@@ -22,8 +14,7 @@ from dqlitewire import sanitize_for_log, sanitize_server_text
 
 
 def _prime_connection_with_address(address: str) -> DqliteConnection:
-    """Hand-build a DqliteConnection bypassing parse_address's
-    admission check so we can interpolate hostile address chars."""
+    """Bypass parse_address's admission check to interpolate hostile address chars."""
     conn = DqliteConnection.__new__(DqliteConnection)
     conn._address = address
     conn._creator_pid = os.getpid()
@@ -31,17 +22,13 @@ def _prime_connection_with_address(address: str) -> DqliteConnection:
 
 
 def test_log_safe_address_escapes_lf() -> None:
-    """The new ``_log_safe_address`` property escapes LF, while the
-    sibling ``_safe_address`` preserves it (intentional, for
-    exception-message readability)."""
+    """_log_safe_address escapes LF; _safe_address preserves it (for exception readability)."""
     addr = "evil.example.com:9001\nFORGED log entry"
     conn = _prime_connection_with_address(addr)
 
-    # _safe_address preserves LF (sanitize_server_text contract).
     assert "\n" in conn._safe_address
     assert conn._safe_address == sanitize_server_text(addr)
 
-    # _log_safe_address escapes LF (sanitize_for_log contract).
     assert "\n" not in conn._log_safe_address
     assert conn._log_safe_address == sanitize_for_log(addr)
 
@@ -49,11 +36,7 @@ def test_log_safe_address_escapes_lf() -> None:
 @pytest.mark.parametrize(
     "log_method",
     [
-        # All eight DqliteConnection logger.* sites that interpolate
-        # the address — verified via grep of self._log_safe_address in
-        # the source. Each is a smoke test asserting no raw LF in any
-        # captured record's getMessage(); we drive each via a synthetic
-        # invocation rather than the full RPC.
+        # The eight logger.* sites that interpolate the address.
         "handshake_ok",
         "db_opened",
         "close_drain_error",
@@ -67,11 +50,7 @@ def test_log_safe_address_escapes_lf() -> None:
 def test_log_site_interpolation_does_not_leak_lf(
     caplog: pytest.LogCaptureFixture, log_method: str
 ) -> None:
-    """Drive each log site via a direct ``logger.debug`` call mirroring
-    the source's interpolation, using a hostile address. Verifies
-    that ``_log_safe_address`` (the per-site dispatch) strips LF
-    before the record is rendered.
-    """
+    """Drive each log site with a hostile address; _log_safe_address must strip LF."""
     addr = "victim.internal:443\nFORGED row"
     conn = _prime_connection_with_address(addr)
     logger_under_test = logging.getLogger("dqliteclient.connection")
@@ -80,7 +59,6 @@ def test_log_site_interpolation_does_not_leak_lf(
     fake_inner.code = 999
     fake_inner.message = "synthetic"
 
-    # Drive each call shape verbatim (mirror connection.py).
     if log_method == "handshake_ok":
         logger_under_test.debug(
             "connect: handshake ok address=%s client_id=%d",

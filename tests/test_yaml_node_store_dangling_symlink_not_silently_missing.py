@@ -1,14 +1,8 @@
-"""Pin: a dangling symlink at the store path is NOT silently treated
-as "file missing". ``Path.exists()`` follows symlinks and returns
-False for a dangling symlink target; the pre-fix existence-check arm
-therefore short-circuited to an empty-store fallback, pre-empting the
-``O_NOFOLLOW`` guard the open-once path documents.
+"""Pin: a dangling symlink is NOT silently treated as "file missing".
 
-Replacing ``Path.exists()`` with ``Path.lstat()`` (does NOT follow
-symlinks) restores the discipline: only a true "no entry at this
-path" condition collapses to the empty-store fallback; everything
-else (including a dangling symlink) reaches the ``os.open(O_NOFOLLOW)``
-call which raises ``ELOOP`` or ``ENOENT`` as appropriate.
+``Path.exists()`` follows symlinks (False for a dangling target), short-circuiting to
+the empty-store fallback; ``Path.lstat()`` doesn't follow, so only a true missing entry
+collapses to empty and everything else reaches the ``O_NOFOLLOW`` guard.
 """
 
 from __future__ import annotations
@@ -27,11 +21,7 @@ from dqliteclient.node_store import YamlNodeStore
     reason="O_NOFOLLOW unavailable (Windows fallback path)",
 )
 def test_dangling_symlink_surfaces_as_cluster_error(tmp_path: Path) -> None:
-    """The symlink target does not exist. ``Path.exists()`` returns
-    False (silently treats as missing) — but the operator would
-    expect to see the configuration error rather than a silent empty
-    store. After the fix, ``lstat`` succeeds and ``os.open(O_NOFOLLOW)``
-    surfaces the dangling-target condition as a ClusterError."""
+    """A dangling symlink must surface as a config error, not a silent empty store."""
     nonexistent = tmp_path / "nonexistent.yaml"
     link = tmp_path / "link.yaml"
     link.symlink_to(nonexistent)
@@ -45,9 +35,8 @@ def test_dangling_symlink_surfaces_as_cluster_error(tmp_path: Path) -> None:
 
 
 def test_genuinely_missing_file_still_returns_empty(tmp_path: Path) -> None:
-    """Sibling positive: a path with no filesystem entry continues
-    to collapse to the empty-store fallback (the documented
-    go-dqlite parity behaviour for ``NewYamlNodeStore`` at startup)."""
+    """A path with no filesystem entry still collapses to the empty-store fallback
+    (go-dqlite parity)."""
     missing = tmp_path / "absent.yaml"
 
     store = YamlNodeStore.__new__(YamlNodeStore)

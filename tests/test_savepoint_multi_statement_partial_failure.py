@@ -1,25 +1,6 @@
-"""Pin: multi-statement EXEC with mid-batch failure sets the
-conservative ``_has_untracked_savepoint`` flag so pool reset's
-safety ROLLBACK fires.
-
-The success path is handled by ``_update_tx_flags_from_sql``:
-it splits on top-level ``;`` and recurses, so ``BEGIN; SAVEPOINT a;``
-correctly tracks both verbs. The partial-failure converse — where
-an early statement (BEGIN, SAVEPOINT) commits server-side state
-before a later statement (INSERT) fails — needs separate handling:
-the success-only ``_update_tx_flags_from_sql`` call in ``execute()``
-is skipped on raise, leaving the local view out of sync with the
-server's open transaction.
-
-The fix is the conservative ``_has_untracked_savepoint`` flag:
-on EXEC failure, if the SQL contains ``;`` AND any tx-control verb
-appears in the split pieces, set the flag. Pool reset's safety
-ROLLBACK then fires (via the existing predicate that ORs the flag).
-
-False-positive ROLLBACK on benign multi-INSERT batches is acceptable
-— they don't run multi-statement tx-control verbs, so the flag
-predicate doesn't fire.
-"""
+"""Multi-statement EXEC failing mid-batch sets ``_has_untracked_savepoint`` so pool
+reset's ROLLBACK fires: the success-only ``_update_tx_flags_from_sql`` is skipped on
+raise, so on failure we set the flag whenever the SQL has ``;`` and any tx-control verb."""
 
 from __future__ import annotations
 
@@ -45,7 +26,6 @@ def _fake_connected_conn() -> DqliteConnection:
 
 @pytest.mark.asyncio
 async def test_multi_statement_exec_partial_failure_sets_untracked_flag() -> None:
-    """``BEGIN; SAVEPOINT a; INSERT (failing)`` → flag set."""
     conn = _fake_connected_conn()
     with (
         patch.object(conn, "_run_protocol", new=_raise_constraint),
@@ -57,8 +37,7 @@ async def test_multi_statement_exec_partial_failure_sets_untracked_flag() -> Non
 
 @pytest.mark.asyncio
 async def test_multi_statement_no_tx_verbs_does_not_set_untracked_flag() -> None:
-    """Negative pin: a benign multi-INSERT batch failing mid-batch
-    does NOT trigger the flag (no tx-control verb anywhere)."""
+    """A benign multi-INSERT batch (no tx-control verb) does NOT set the flag."""
     conn = _fake_connected_conn()
     with (
         patch.object(conn, "_run_protocol", new=_raise_constraint),
@@ -73,9 +52,7 @@ async def test_multi_statement_no_tx_verbs_does_not_set_untracked_flag() -> None
 
 @pytest.mark.asyncio
 async def test_single_statement_failure_does_not_set_flag() -> None:
-    """Negative pin: a single-statement EXEC failure (no ``;``) skips
-    the conservative-flag path entirely — the success-only tracker
-    update is enough."""
+    """A single-statement EXEC failure (no ``;``) skips the flag path."""
     conn = _fake_connected_conn()
     with (
         patch.object(conn, "_run_protocol", new=_raise_constraint),
@@ -87,8 +64,7 @@ async def test_single_statement_failure_does_not_set_flag() -> None:
 
 @pytest.mark.asyncio
 async def test_multi_statement_with_savepoint_only_sets_flag() -> None:
-    """A multi-statement batch with SAVEPOINT but no other tx verb
-    still sets the flag — SAVEPOINT alone can autobegin a tx."""
+    """SAVEPOINT alone (no other tx verb) still sets the flag; it can autobegin a tx."""
     conn = _fake_connected_conn()
     with (
         patch.object(conn, "_run_protocol", new=_raise_constraint),

@@ -1,16 +1,8 @@
 """Pin _invalidate's atomic clearing of _in_transaction / _tx_owner.
 
-External invalidation paths (heartbeat, ``call_soon_threadsafe``,
-KeyboardInterrupt mid-yield) can land on a connection that is currently
-inside a ``transaction()`` context — the ``transaction()`` ``finally``
-clause that normally clears the flags may not run before the connection
-is observed by another caller (typically the pool). Without an atomic
-clear in ``_invalidate``, a stale ``_in_transaction=True, _tx_owner=
-<dead task>`` slips out and ``_check_in_use`` rejects the next
-operation with a misleading "owned by another task" InterfaceError.
-
-Pin the canonical invariant: after ``_invalidate``, both flags MUST be
-cleared regardless of how the prior transaction state ended.
+External invalidation can land mid-``transaction()`` before its
+``finally`` runs; without an atomic clear a stale ``_tx_owner=<dead
+task>`` makes ``_check_in_use`` reject the next op with a misleading error.
 """
 
 from __future__ import annotations
@@ -34,8 +26,7 @@ def test_invalidate_clears_in_transaction_flag(conn: DqliteConnection) -> None:
 
 
 def test_invalidate_clears_tx_owner(conn: DqliteConnection) -> None:
-    # Use a sentinel object — the production code reads `is` for the
-    # current-task comparison. Anything non-None confirms the clear.
+    # Production reads `is` for the current-task comparison; any non-None confirms the clear.
     sentinel = object()
     conn._tx_owner = sentinel  # type: ignore[assignment]
     conn._invalidate()
@@ -44,10 +35,8 @@ def test_invalidate_clears_tx_owner(conn: DqliteConnection) -> None:
 
 class TestInvalidateClearsTxStateAsync:
     async def test_clears_under_external_invalidation_mid_tx(self) -> None:
-        """Simulate: ``_invalidate`` lands on a connection that already
-        has ``_in_transaction=True`` and ``_tx_owner`` pointing at the
-        current task. After invalidation both flags must be cleared,
-        even though no ``transaction()`` ``finally`` ever ran."""
+        """``_invalidate`` mid-tx clears both flags even though no
+        ``transaction()`` ``finally`` ever ran."""
         conn = DqliteConnection("localhost:9001")
         conn._in_transaction = True
         conn._tx_owner = asyncio.current_task()

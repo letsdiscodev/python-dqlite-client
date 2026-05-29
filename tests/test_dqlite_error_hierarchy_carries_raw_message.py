@@ -1,14 +1,6 @@
-"""Pin: every client exception class carries the ``raw_message``
-attribute (defaulting to ``None``), so the invariant — the
-verbatim server text survives layer wrapping — applies symmetrically
-across the hierarchy and not only to ``OperationalError``.
-
-The dbapi-layer ``getattr(e, "raw_message", None) or str(e)`` idiom
-previously documented its fallback as "older client versions without
-the attribute"; that rationale was a fiction (the current client
-lacked the attribute too). After hoisting ``raw_message`` to the
-``DqliteError`` base, every subclass exposes the attribute as a
-property and downstream consumers can read it without ``getattr``.
+"""Pin: every client exception carries ``raw_message`` (default ``None``),
+hoisted to the ``DqliteError`` base so verbatim server text survives
+layer wrapping across the whole hierarchy, not just ``OperationalError``.
 """
 
 from __future__ import annotations
@@ -66,28 +58,23 @@ def test_data_error_carries_raw_message() -> None:
 
 
 def test_operational_error_keeps_existing_message_truncation_invariant() -> None:
-    """OperationalError still truncates ``message`` for display.
-    ``raw_message`` is also bounded (now capped at ~4 KiB) so
-    cross-process pickled exception graphs stay small under
-    hostile-peer fan-out — both caps coexist."""
+    """OperationalError caps both message and raw_message (~4 KiB) so
+    pickled exception graphs stay small under hostile-peer fan-out."""
     long = "X" * 5000
     e = OperationalError(long, 1, raw_message=long)
     assert "[truncated," in e.message
-    # raw_message capped at 4 KiB with its own truncation marker.
     assert len(e.raw_message) <= 4200
     assert "raw_message truncated" in e.raw_message
 
 
 def test_operational_error_default_raw_message_is_message() -> None:
-    """Backwards-compat: if ``raw_message=`` is omitted, OperationalError
-    derives it from ``message`` per the existing contract."""
+    """Backwards-compat: omitting raw_message= derives it from message."""
     e = OperationalError("boom", 1)
     assert e.raw_message == "boom"
 
 
 def test_default_raw_message_is_none_for_other_classes() -> None:
-    """Sibling classes default ``raw_message`` to ``None`` (no
-    server text in scope on a purely client-side raise)."""
+    """Sibling classes default raw_message to None (no server text in scope)."""
     assert DqliteConnectionError("x").raw_message is None
     assert ProtocolError("x").raw_message is None
     assert InterfaceError("x").raw_message is None

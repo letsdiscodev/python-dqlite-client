@@ -1,11 +1,5 @@
-"""Pin: ``max_continuation_frames`` is an exact upper bound.
-
-``_drain_continuations`` and ``_interrupt`` count the initial frame
-plus any continuations. The cap predicate is ``>=`` (not ``>``) so a
-documented cap of ``N`` allows AT MOST ``N`` decoded frames. The
-previous ``>`` predicate silently permitted ``N + 1``, a one-frame
-slop in a DoS-defence bound.
-"""
+"""max_continuation_frames is an exact upper bound: cap N allows at most N
+decoded frames (initial + continuations). The ``>=`` predicate avoids N+1 slop."""
 
 from __future__ import annotations
 
@@ -33,10 +27,8 @@ def _make_protocol(max_continuation_frames: int = 2) -> DqliteProtocol:
 
 @pytest.mark.asyncio
 async def test_drain_continuations_cap_is_inclusive() -> None:
-    """Cap=2 allows the initial frame + one continuation (2 total).
-    A third frame must raise."""
+    """Cap=2 allows initial + one continuation; a third frame must raise."""
     proto = _make_protocol(max_continuation_frames=2)
-    # Three frames: initial, cont1, cont2. Cap=2 forbids cont2.
     cont_frames = iter(
         [
             RowsResponse(column_names=["x"], rows=[[1]], has_more=True),
@@ -56,8 +48,7 @@ async def test_drain_continuations_cap_is_inclusive() -> None:
 
 @pytest.mark.asyncio
 async def test_drain_continuations_cap_at_exact_limit_accepted() -> None:
-    """Cap=2 with exactly 2 decoded frames (initial + one continuation)
-    must succeed."""
+    """Cap=2 with exactly 2 decoded frames must succeed."""
     proto = _make_protocol(max_continuation_frames=2)
     cont_frames = iter([RowsResponse(column_names=["x"], rows=[[1]], has_more=False)])
 
@@ -73,10 +64,9 @@ async def test_drain_continuations_cap_at_exact_limit_accepted() -> None:
 
 @pytest.mark.asyncio
 async def test_interrupt_cap_is_inclusive() -> None:
-    """``_interrupt``'s drain loop honours the same exact-cap contract."""
+    """_interrupt's drain loop honours the same exact-cap contract."""
     proto = _make_protocol(max_continuation_frames=2)
 
-    # Three rows frames before EMPTY would push the count past the cap.
     responses = iter(
         [
             RowsResponse(column_names=["x"], rows=[[0]], has_more=True),

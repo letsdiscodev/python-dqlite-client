@@ -30,11 +30,8 @@ class TestConnectionPool:
 
     @pytest.mark.parametrize("bad", [True, float("inf"), float("nan")])
     def test_non_finite_or_bool_timeout_rejected(self, bad) -> None:
-        """Cluster and pool timeouts share the same validator as
-        ``DqliteConnection.__init__``: bool / inf / nan are rejected
-        rather than silently coerced (``True`` becoming 1.0, ``inf``
-        disabling the deadline).
-        """
+        """bool / inf / nan are rejected, not coerced (True->1.0, inf disabling
+        the deadline)."""
         with pytest.raises(ValueError, match="timeout must be a positive finite number"):
             ConnectionPool(["localhost:9001"], timeout=bad)
 
@@ -66,7 +63,6 @@ class TestConnectionPool:
                 pass
 
     async def test_double_initialize_is_idempotent(self) -> None:
-        """Calling initialize() twice should not create double connections."""
         pool = ConnectionPool(["localhost:9001"], min_size=2, max_size=5)
 
         mock_conn = MagicMock()
@@ -83,9 +79,9 @@ class TestConnectionPool:
 
         with patch.object(pool._cluster, "connect", side_effect=mock_connect):
             await pool.initialize()
-            await pool.initialize()  # Second call should be no-op
+            await pool.initialize()
 
-        assert create_count == 2  # Only 2 (min_size), not 4
+        assert create_count == 2  # min_size, not 2*min_size
 
         await pool.close()
 
@@ -100,7 +96,7 @@ class TestConnectionPool:
         async def mock_connect(**kwargs):
             nonlocal create_count
             create_count += 1
-            await asyncio.sleep(0)  # Yield to allow interleaving
+            await asyncio.sleep(0)  # yield to interleave
             mock_conn = MagicMock()
             mock_conn.is_connected = True
             mock_conn.connect = AsyncMock()
@@ -119,7 +115,7 @@ class TestConnectionPool:
         await pool.close()
 
     async def test_initialize_retryable_after_failure(self) -> None:
-        """If initialize() fails, it should be retryable (not permanently stuck)."""
+        """A failed initialize() must be retryable, not permanently stuck."""
         pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=5)
 
         call_count = 0
@@ -136,25 +132,19 @@ class TestConnectionPool:
             return mock_conn
 
         with patch.object(pool._cluster, "connect", side_effect=fail_then_succeed):
-            # First init fails
             with pytest.raises(OSError):
                 await pool.initialize()
 
-            # Second init should work (not be a no-op)
             await pool.initialize()
 
-        assert call_count == 2  # First failed, second succeeded
+        assert call_count == 2
         assert pool._size == 1
 
         await pool.close()
 
     async def test_acquire_cancels_first_task_if_second_create_task_raises(self) -> None:
-        """If ``asyncio.create_task`` raises between the two task
-        creations in ``acquire()`` (e.g. an outer ``CancelledError``
-        firing on a coroutine switch), the first task must not be
-        orphaned. The BaseException handler must cancel any task it
-        managed to create.
-        """
+        """If the second ``create_task`` in ``acquire()`` raises, the first task
+        must be cancelled, not orphaned."""
         import contextlib as _contextlib
 
         pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=1)
@@ -168,7 +158,7 @@ class TestConnectionPool:
         with patch.object(pool._cluster, "connect", return_value=mock_conn):
             await pool.initialize()
 
-        # Hold the single slot so acquire enters the queue-wait branch.
+        # Hold the slot so the next acquire enters the queue-wait branch.
         async with pool.acquire():
             real_create_task = asyncio.create_task
             call_count = 0
@@ -177,8 +167,8 @@ class TestConnectionPool:
                 nonlocal call_count
                 call_count += 1
                 if call_count == 2:
-                    # Close the coroutine we won't schedule so we don't
-                    # leak a "coroutine was never awaited" warning.
+                    # Close the unscheduled coroutine to avoid a
+                    # "coroutine was never awaited" warning.
                     coro.close()
                     raise asyncio.CancelledError("synthetic interleave cancel")
                 return real_create_task(coro, **kwargs)
@@ -191,7 +181,7 @@ class TestConnectionPool:
                     async with pool.acquire():
                         pass
 
-        # Give the loop a tick for any orphaned task to surface warnings.
+        # Let any orphaned task surface warnings.
         with _contextlib.suppress(asyncio.TimeoutError):
             async with asyncio.timeout(0.05):
                 await asyncio.sleep(1)
@@ -199,16 +189,11 @@ class TestConnectionPool:
         await pool.close()
 
     async def test_acquire_logs_drain_idle_when_stale_conn_detected(self, caplog) -> None:
-        """A ``_drain_idle`` call triggered by a detected-stale
-        connection emits a DEBUG log so the pool-wide replacement is
-        visible to operators."""
+        """A stale-conn-triggered ``_drain_idle`` emits a DEBUG log."""
         import logging as _logging
 
         pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=2)
 
-        # First connection reports healthy at initialize() time so it
-        # ends up in the idle queue. Second connection (after drain +
-        # fresh create) is the healthy replacement returned to acquire.
         stale_conn = MagicMock()
         stale_conn.is_connected = True
         stale_conn.connect = AsyncMock()
@@ -223,8 +208,6 @@ class TestConnectionPool:
         with patch.object(pool._cluster, "connect", side_effect=[stale_conn, fresh_conn]):
             await pool.initialize()
 
-            # Flip stale_conn to "not connected" so the next acquire
-            # observes a dead conn and triggers drain.
             stale_conn.is_connected = False
 
             caplog.set_level(_logging.DEBUG, logger="dqliteclient.pool")
@@ -237,11 +220,7 @@ class TestConnectionPool:
         await pool.close()
 
     async def test_pool_emits_debug_logs_for_lifecycle_events(self, caplog) -> None:
-        """DEBUG traces the key pool state-change events so an operator
-        can reconstruct pool behaviour from logs without adding
-        bespoke instrumentation. Covers initialize start/end, the
-        at-capacity park entry in acquire(), and close.
-        """
+        """DEBUG traces initialize start/end, the at-capacity park, and close."""
         import logging as _logging
 
         pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=1)
@@ -257,11 +236,9 @@ class TestConnectionPool:
         with patch.object(pool._cluster, "connect", return_value=mock_conn):
             await pool.initialize()
 
-            # Drive at-capacity wait: hold the single slot, queue a second
-            # acquire that will time out, observe the capacity-wait log.
+            # Hold the slot and queue a second acquire to hit the capacity park.
             async with pool.acquire():
                 waiter = asyncio.create_task(pool.acquire().__aenter__())
-                # Give the waiter a chance to reach the at-capacity park.
                 for _ in range(10):
                     await asyncio.sleep(0)
                 waiter.cancel()
@@ -277,19 +254,8 @@ class TestConnectionPool:
         assert any("pool.close: draining" in m for m in messages)
 
     async def test_initialize_size_resets_if_put_raises(self) -> None:
-        """``_size`` must stay consistent with the actual pool
-        membership even if a non-_POOL_CLEANUP_EXCEPTIONS error
-        escapes during the Phase C publish step. The Phase C
-        exception arm releases the reservation and routes the
-        unpublished successes through the shielded close helper so
-        a subsequent ``initialize()`` retry starts from zero rather
-        than climbing toward ``_max_size`` against a stale counter.
-
-        The prior shape patched ``_pool.put`` (async) because the
-        old put-loop ran one await per success; the new Phase C
-        runs ``put_nowait`` under the lock atomically, so the
-        equivalent injection point is ``put_nowait``.
-        """
+        """If a publish-step error escapes, the reservation is released so a
+        retry starts from zero rather than climbing against a stale counter."""
         pool = ConnectionPool(["localhost:9001"], min_size=2, max_size=5)
 
         async def fake_create(**kwargs):
@@ -306,14 +272,13 @@ class TestConnectionPool:
         ):
             await pool.initialize()
 
-        # Reservation must be released so retries start from zero.
         assert pool._size == 0, f"_size should have been decremented back to 0, got {pool._size}"
         assert not pool._initialized
 
         await pool.close()
 
     async def test_cancellation_returns_healthy_connection_to_pool(self) -> None:
-        """Cancelling a task holding a healthy connection should return it to the pool."""
+        """Cancelling a task holding a healthy conn returns it to the pool."""
         import asyncio
 
         pool = ConnectionPool(["localhost:9001"], max_size=1)
@@ -333,7 +298,7 @@ class TestConnectionPool:
         async def hold_connection():
             async with pool.acquire() as _:
                 acquired.set()
-                await asyncio.sleep(10)  # Hold forever — will be cancelled
+                await asyncio.sleep(10)  # held until cancelled
 
         task = asyncio.create_task(hold_connection())
         await acquired.wait()
@@ -342,39 +307,34 @@ class TestConnectionPool:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        # Connection is still healthy (CancelledError was in user code, not in
-        # a protocol operation), so it should be returned to the pool
+        # Cancel hit user code, not a protocol op, so the conn stays healthy.
         assert pool._size == initial_size
         assert pool._pool.qsize() == 1
 
         await pool.close()
 
     async def test_acquire_timeout_when_pool_exhausted(self) -> None:
-        """acquire() should timeout, not block forever, when pool is exhausted."""
+        """acquire() must time out, not block forever, when the pool is exhausted."""
         pool = ConnectionPool(["localhost:9001"], max_size=1, timeout=0.1)
 
         mock_conn = MagicMock()
         mock_conn.is_connected = True
         mock_conn.connect = AsyncMock()
         mock_conn.close = AsyncMock()
-        # Must be explicitly falsy: the pool's _reset_connection takes
-        # the ROLLBACK branch when _in_transaction is truthy, and
-        # MagicMock's attribute-auto-vivification makes bare
-        # ``mock_conn._in_transaction`` a truthy MagicMock.
+        # Must be explicitly falsy: a bare MagicMock attr auto-vivifies truthy
+        # and would wrongly take _reset_connection's ROLLBACK branch.
         mock_conn._in_transaction = False
 
         with patch.object(pool._cluster, "connect", return_value=mock_conn):
             await pool.initialize()
 
-        # Check out the only connection
         async with pool.acquire():
-            # Try to acquire another - should timeout
             with pytest.raises(DqliteConnectionError, match="[Tt]imed out"):
                 async with pool.acquire():
                     pass
 
     async def test_close_during_acquire_does_not_corrupt_size(self) -> None:
-        """Closing the pool while connections are in-use must not make _size negative."""
+        """Closing the pool while conns are in use must not make _size negative."""
         import asyncio
 
         pool = ConnectionPool(["localhost:9001"], max_size=2)
@@ -401,19 +361,16 @@ class TestConnectionPool:
         task = asyncio.create_task(hold_connection())
         await acquired.wait()
 
-        # Close pool while task holds a connection
         await pool.close()
 
-        # Cancel the task — its cleanup path will try to decrement _size
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        # _size must never go negative
         assert pool._size >= 0, f"_size went negative: {pool._size}"
 
     async def test_acquire_recovers_after_connection_failure(self) -> None:
-        """A waiter blocked on the queue should recover when capacity frees up."""
+        """A waiter blocked on the queue must recover when capacity frees up."""
         import asyncio
 
         pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1, timeout=2.0)
@@ -431,7 +388,6 @@ class TestConnectionPool:
         conns = iter([mock_conn1, mock_conn2])
 
         with patch.object(pool._cluster, "connect", side_effect=lambda **kw: next(conns)):
-            # Fill the pool to max_size and keep the connection checked out
             holder_acquired = asyncio.Event()
             holder_release = asyncio.Event()
 
@@ -440,15 +396,13 @@ class TestConnectionPool:
                     assert conn1 is mock_conn1
                     holder_acquired.set()
                     await holder_release.wait()
-                    # Simulate a real connection failure (broken connection)
-                    conn1.is_connected = False
+                    conn1.is_connected = False  # simulate a broken connection
                     raise DqliteConnectionError("connection lost")
 
             holder_task = asyncio.create_task(holder())
             await holder_acquired.wait()
 
-            # Now start the waiter — it MUST enter the queue.get() wait
-            # because _size == max_size and the queue is empty
+            # Waiter must enter the queue.get() wait (_size == max_size, queue empty).
             waiter_done = asyncio.Event()
             waiter_result: MagicMock | None = None
 
@@ -459,16 +413,14 @@ class TestConnectionPool:
                     waiter_done.set()
 
             waiter_task = asyncio.create_task(waiter())
-            # Give the waiter time to pass get_nowait (empty) and the lock
-            # check (_size == max_size) and enter the queue.get() wait
+            # Let the waiter reach the queue.get() wait.
             await asyncio.sleep(0.1)
 
-            # Now release the holder — connection breaks, _size decrements
+            # Release the holder: connection breaks, _size decrements, and the
+            # blocked waiter should wake and create a new connection.
             holder_release.set()
             with contextlib.suppress(DqliteConnectionError):
                 await holder_task
-            # At this point _size == 0. The waiter is blocked on queue.get().
-            # With the fix, the waiter should wake up and create a new connection.
 
             try:
                 await asyncio.wait_for(waiter_done.wait(), timeout=1.5)
@@ -485,15 +437,8 @@ class TestConnectionPool:
         await pool.close()
 
     async def test_dead_conn_replacement_respects_max_size(self) -> None:
-        """Dead-connection replacement must not allow _size to exceed max_size.
-
-        An earlier change introduced the reservation pattern: the
-        lock is released before the TCP handshake. The invariant we
-        assert here is the one that actually matters — that
-        ``_size`` never exceeds ``_max_size`` at any observation
-        point — rather than the specific implementation detail of
-        "lock held during create".
-        """
+        """Dead-conn replacement must not let _size exceed max_size, even though
+        the reservation pattern releases the lock before the handshake."""
         pool = ConnectionPool(["localhost:9001"], min_size=1, max_size=2)
 
         dead_conn = MagicMock()
@@ -506,10 +451,8 @@ class TestConnectionPool:
 
         assert pool._size == 1
 
-        # Track _size at every create call. It must never exceed
-        # max_size, even transiently, because creates happen outside
-        # the lock under the new pattern and concurrent acquires
-        # would otherwise race past the cap.
+        # _size must not exceed max_size even transiently: creates run outside
+        # the lock, so concurrent acquires could otherwise race past the cap.
         peak_size_during_create = 0
         original_create = pool._create_connection
 
@@ -537,7 +480,7 @@ class TestConnectionPool:
         await pool.close()
 
     async def test_broken_connection_drains_idle_pool(self) -> None:
-        """When a connection breaks, all idle connections should be drained."""
+        """When a connection breaks, all idle connections are drained."""
         pool = ConnectionPool(["localhost:9001"], min_size=3, max_size=5)
 
         conns = []
@@ -561,15 +504,12 @@ class TestConnectionPool:
             assert pool._size == 3
             assert pool._pool.qsize() == 3
 
-            # Acquire a connection — the first one from the queue
             with pytest.raises(DqliteConnectionError):
                 async with pool.acquire() as acquired:
-                    # Mark as broken (simulates leader change / server error)
                     acquired.is_connected = False  # type: ignore[misc]
                     raise DqliteConnectionError("connection lost")
 
-        # The broken connection was discarded. The 2 idle connections should
-        # also have been drained (they likely point to the same dead server).
+        # Idle conns are drained too: they likely point at the same dead server.
         idle_closed = sum(1 for c in conns[1:] if c.close.called)
         assert idle_closed == 2, (
             f"Expected 2 idle connections to be drained, but only {idle_closed} were closed"
@@ -579,11 +519,11 @@ class TestConnectionPool:
         await pool.close()
 
     async def test_dead_connection_triggers_leader_rediscovery(self) -> None:
-        """A dead connection should be replaced via leader discovery, not reconnected."""
+        """A dead connection is replaced via leader discovery, not reconnected."""
         pool = ConnectionPool(["localhost:9001"], max_size=1)
 
         dead_conn = MagicMock()
-        dead_conn.is_connected = False  # Connection is dead
+        dead_conn.is_connected = False
         dead_conn.connect = AsyncMock()
         dead_conn.close = AsyncMock()
 
@@ -593,20 +533,18 @@ class TestConnectionPool:
         new_conn.close = AsyncMock()
         new_conn.execute = AsyncMock(return_value=(1, 1))
 
-        # Initialize with the connection that will go dead
         with patch.object(pool._cluster, "connect", return_value=dead_conn):
             await pool.initialize()
 
-        # When acquiring, the dead conn should be discarded and a new one created
         with patch.object(pool._cluster, "connect", return_value=new_conn):
             async with pool.acquire() as conn:
-                assert conn is new_conn  # Got a fresh connection, not the dead one
+                assert conn is new_conn
 
-        # Dead connection should NOT have had connect() called (no stale reconnect)
+        # No stale reconnect of the dead conn.
         dead_conn.connect.assert_not_called()
 
     async def test_close_then_return_closes_connection(self) -> None:
-        """Returning a connection to a closed pool should close it, not put it back."""
+        """Returning a connection to a closed pool closes it, not re-queues it."""
         pool = ConnectionPool(["localhost:9001"], max_size=2)
 
         mock_conn = MagicMock()
@@ -617,19 +555,14 @@ class TestConnectionPool:
         with patch.object(pool._cluster, "connect", return_value=mock_conn):
             await pool.initialize()
 
-        # Acquire, then close pool, then release — connection should be closed
         async with pool.acquire():
             await pool.close()
 
-        # The connection should have been closed on return (not put back in queue)
         mock_conn.close.assert_called()
 
     async def test_close_returns_immediately_when_in_flight_held(self) -> None:
-        """Pin: ``close()`` does NOT wait for in-flight checked-out
-        connections to be returned. Documented contract — operators
-        expecting drain-completion semantics must cancel/await
-        in-flight tasks first. Matches go-dqlite's pool, which uses
-        Go's ``database/sql.DB.Close`` close-on-return model."""
+        """``close()`` does not wait for checked-out conns (close-on-return,
+        matching Go's ``database/sql.DB.Close``)."""
         import asyncio
 
         pool = ConnectionPool(["localhost:9001"], max_size=2)
@@ -643,7 +576,6 @@ class TestConnectionPool:
 
         async def hold_connection() -> None:
             async with pool.acquire():
-                # Hold for a while; close() must not wait for this.
                 await asyncio.sleep(60)
 
         holder = asyncio.create_task(hold_connection())
@@ -655,13 +587,11 @@ class TestConnectionPool:
         # _size > 0 confirms in-flight has not been drained.
         assert pool._size > 0, "close() must not block on checked-out conns; documented contract"
 
-        # Cancel the holder so the conn can drain via _release's _closed path.
         holder.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await holder
 
     async def test_user_exception_preserves_healthy_connection(self) -> None:
-        """A user-code exception should not destroy a healthy connection."""
         pool = ConnectionPool(["localhost:9001"], max_size=2)
 
         mock_conn = MagicMock()
@@ -675,22 +605,18 @@ class TestConnectionPool:
 
         assert pool._size == 1
 
-        # User code raises a non-connection error
         with pytest.raises(ValueError, match="application error"):
             async with pool.acquire():
                 raise ValueError("application error")
 
-        # Connection should NOT have been closed — it's healthy
         mock_conn.close.assert_not_called()
-        # Pool size should be unchanged
         assert pool._size == 1
-        # Connection should be back in the pool queue
         assert pool._pool.qsize() == 1
 
         await pool.close()
 
     async def test_broken_connection_discarded_on_exception(self) -> None:
-        """A broken connection should be discarded even if user code raised."""
+        """A broken connection is discarded even if user code raised."""
         pool = ConnectionPool(["localhost:9001"], max_size=2)
 
         mock_conn = MagicMock()
@@ -701,40 +627,26 @@ class TestConnectionPool:
         with patch.object(pool._cluster, "connect", return_value=mock_conn):
             await pool.initialize()
 
-        # Simulate a connection that becomes broken during use
         with pytest.raises(ValueError, match="user error"):
             async with pool.acquire() as conn:
                 conn.is_connected = False  # type: ignore[misc]
                 raise ValueError("user error")
 
-        # Broken connection SHOULD have been closed and discarded
         mock_conn.close.assert_called()
         assert pool._size == 0
 
         await pool.close()
 
     async def test_drain_idle_cancellation_does_not_inflate_size(self) -> None:
-        """If _drain_idle() is cancelled during conn.close(), _size eventually
-        decrements once any abandoned-drain orphans complete.
-
-        ``_drain_idle``'s TimeoutError arm defers the slot release to a
-        ``_release_after_drain`` follow-up so the documented ``max_size``
-        invariant holds while the orphan close is still running. Once
-        each orphan finishes, its slot is released — the steady-state
-        invariant remains ``_size == queue size + abandoned-orphan
-        count``, converging to ``_size == queue size`` once the
-        orphans complete.
-        """
+        """If _drain_idle() is cancelled mid conn.close(), the orphan's slot is
+        released by a follow-up, so _size converges to the queue size."""
         import asyncio
 
         pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=5)
         pool._initialized = True
 
-        # Connections whose close() blocks until the test releases the
-        # event. Without the event, slow_close would sleep 10s and leak
-        # the orphan into the next test. With the event, we can drive
-        # the orphan to completion deterministically after the cancel,
-        # then assert the deferred slot release fired.
+        # close() blocks on this event so we can drive the orphan to completion
+        # deterministically after the cancel and assert the deferred release.
         unblock = asyncio.Event()
 
         for _ in range(3):
@@ -755,17 +667,13 @@ class TestConnectionPool:
         assert pool._size == 3
         assert pool._pool.qsize() == 3
 
-        # Start draining and cancel mid-way
         task = asyncio.create_task(pool._drain_idle())
-        await asyncio.sleep(0.01)  # Let drain start (first conn.close() begins)
+        await asyncio.sleep(0.01)  # let the first conn.close() begin
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        # Release the orphan close()s. The ``_release_after_drain``
-        # follow-up tasks await each orphan and then decrement _size,
-        # so _size converges to the queue size once everything
-        # finishes.
+        # Release the orphan close()s; the follow-ups then decrement _size.
         unblock.set()
         for _ in range(50):
             remaining = pool._pool.qsize()
@@ -781,7 +689,7 @@ class TestConnectionPool:
         )
 
     async def test_pool_close_cancellation_does_not_inflate_size(self) -> None:
-        """If pool.close() is cancelled during conn.close(), _size must still decrement."""
+        """If pool.close() is cancelled during conn.close(), _size still decrements."""
         import asyncio
 
         pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=5)
@@ -810,23 +718,19 @@ class TestConnectionPool:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        # _size must reflect that connections were removed from queue
         assert pool._size >= 0
-        # At least the first connection should have been decremented
         assert pool._size < 2, (
             f"_size should have decremented, got {pool._size}. "
             f"CancelledError during close() skipped _size decrement."
         )
 
     async def test_pool_has_no_in_use_set(self) -> None:
-        """Pool should not maintain a dead _in_use set (removed as dead code)."""
         pool = ConnectionPool(["localhost:9001"])
         assert not hasattr(pool, "_in_use"), (
             "Pool._in_use set should have been removed — it was dead code (written but never read)"
         )
 
     async def test_release_rolls_back_open_transaction(self) -> None:
-        """Returning a connection with _in_transaction=True must issue ROLLBACK."""
         pool = ConnectionPool(["localhost:9001"], max_size=1)
 
         mock_conn = MagicMock()
@@ -849,22 +753,18 @@ class TestConnectionPool:
         with patch.object(pool._cluster, "connect", return_value=mock_conn):
             await pool.initialize()
 
-        # Simulate: user enters transaction but the context manager exit
-        # somehow leaves _in_transaction=True (e.g., a bug or raw BEGIN)
+        # Leave _in_transaction=True on exit (e.g. a bug or raw BEGIN).
         async with pool.acquire() as conn:
             conn._in_transaction = True
 
-        # The pool should have issued ROLLBACK before returning to queue
         assert "ROLLBACK" in call_log, (
             f"Pool should issue ROLLBACK for dirty connections, calls: {call_log}"
         )
-        # And the flag should be reset
         assert not mock_conn._in_transaction
 
         await pool.close()
 
     async def test_release_destroys_connection_if_rollback_fails(self) -> None:
-        """If ROLLBACK fails on dirty release, connection must be destroyed."""
         pool = ConnectionPool(["localhost:9001"], max_size=1)
 
         mock_conn = MagicMock()
@@ -878,10 +778,8 @@ class TestConnectionPool:
 
         async def failing_execute(sql, params=None):
             if "ROLLBACK" in sql:
-                # Use a transport-level error: _reset_connection narrows
-                # to (OSError, TimeoutError, DqliteConnectionError,
-                # ProtocolError, OperationalError) so programming-error
-                # categories like bare Exception propagate as bugs.
+                # Transport-level error: _reset_connection only narrows to
+                # these; a bare Exception would propagate as a bug.
                 raise DqliteConnectionError("connection lost")
             return (0, 0)
 
@@ -895,17 +793,15 @@ class TestConnectionPool:
         async with pool.acquire() as conn:
             conn._in_transaction = True
 
-        # ROLLBACK failed, so connection should be destroyed
         mock_conn.close.assert_called()
         assert pool._size == initial_size - 1
 
         await pool.close()
 
     async def test_reset_connection_skips_rollback_on_dead_socket(self) -> None:
-        """If the transport is already closing / EOF, _reset_connection must
-        return False without waiting for a read timeout. Otherwise every
-        release through a half-closed socket costs self._timeout seconds.
-        """
+        """On a closing/EOF transport, _reset_connection returns False without a
+        read timeout; otherwise every release on a half-closed socket costs
+        self._timeout seconds."""
         import asyncio
 
         from dqliteclient.connection import DqliteConnection
@@ -918,7 +814,6 @@ class TestConnectionPool:
         conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         conn._in_transaction = True
 
-        # Reader has seen EOF / transport is closing.
         dead_reader = MagicMock()
         dead_reader.at_eof = MagicMock(return_value=True)
         dead_transport = MagicMock()
@@ -946,9 +841,7 @@ class TestConnectionPool:
         assert not exec_called, "ROLLBACK must not be sent on a dead socket"
 
     async def test_acquire_wakes_on_release_without_polling_delay(self) -> None:
-        """When a held connection is released, a waiter must wake up
-        promptly — not sit on the 500 ms polling cadence.
-        """
+        """A waiter wakes promptly on release, not on the 500 ms poll cadence."""
         import asyncio
         import time
 
@@ -996,10 +889,8 @@ class TestConnectionPool:
         assert elapsed < 0.2, f"waiter should wake immediately on release; took {elapsed:.3f}s"
 
     async def test_close_wakes_waiter_promptly(self) -> None:
-        """A task blocked in acquire() waiting for a connection must be
-        woken quickly when pool.close() is called — not sit on the queue
-        until its timeout expires.
-        """
+        """A task parked in acquire() wakes quickly on pool.close(), not at its
+        timeout."""
         import asyncio
         import time
 
@@ -1055,10 +946,8 @@ class TestConnectionPool:
         )
 
     async def test_initialize_creates_min_size_in_parallel(self) -> None:
-        """initialize() should connect min_size in parallel, not sequentially.
-        With min_size=5 and per-connect latency 0.1s, serial init takes ~0.5s;
-        parallel should finish in ~0.1s.
-        """
+        """initialize() connects min_size in parallel: 5 conns at 0.1s each
+        finish in ~0.1s, not ~0.5s serial."""
         import asyncio
         import time
 
@@ -1119,13 +1008,8 @@ class TestConnectionPool:
             ConnectionPool(cluster=cluster, node_store=store)
 
     async def test_reset_connection_propagates_cancelled_error(self) -> None:
-        """_reset_connection must let CancelledError propagate, not
-        convert it into a ``return False`` (connection-drop). Catching
-        CancelledError would silently eat structured-concurrency
-        cancellations delivered from a parent ``asyncio.timeout()`` or
-        sibling-task cancel. The ROLLBACK catch is scoped to transport
-        errors only.
-        """
+        """_reset_connection must let CancelledError propagate (the ROLLBACK
+        catch is transport-only), not convert it to ``return False``."""
         import asyncio
 
         from dqliteclient.connection import DqliteConnection
@@ -1151,7 +1035,7 @@ class TestConnectionPool:
             await pool._reset_connection(conn)
 
     async def test_escaped_reference_rejected_after_release(self) -> None:
-        """Using a connection after it's returned to the pool must raise InterfaceError."""
+        """Using a connection after it returns to the pool raises InterfaceError."""
         import asyncio
 
         from dqliteclient.connection import DqliteConnection
@@ -1171,13 +1055,11 @@ class TestConnectionPool:
         with patch.object(pool._cluster, "connect", return_value=real_conn):
             await pool.initialize()
 
-        # Stash a reference to the connection
         escaped = None
         async with pool.acquire() as conn:
             escaped = conn
             await conn.execute("SELECT 1")
 
-        # Connection is now back in the pool — escaped reference must be rejected
         assert escaped is not None
         with pytest.raises(InterfaceError, match="returned to the pool"):
             await escaped.execute("SELECT 1")
@@ -1235,20 +1117,17 @@ class TestConnectionPool:
         with patch.object(pool._cluster, "connect", return_value=real_conn):
             await pool.initialize()
 
-        # Simulate a connection with an open transaction returned to pool
         async with pool.acquire() as conn:
             conn._in_transaction = True
 
-        # The pool should have issued ROLLBACK successfully (not destroyed the conn)
+        # ROLLBACK succeeded and the conn is back in the pool (not destroyed).
         assert not real_conn._in_transaction
-        # Connection should be back in the pool (not destroyed)
         assert pool._pool.qsize() == 1
         assert pool._size == 1
 
         await pool.close()
 
     async def test_escaped_reference_works_when_reacquired(self) -> None:
-        """A connection re-acquired from the pool must work normally."""
         import asyncio
 
         from dqliteclient.connection import DqliteConnection
@@ -1266,18 +1145,17 @@ class TestConnectionPool:
         with patch.object(pool._cluster, "connect", return_value=real_conn):
             await pool.initialize()
 
-        # First acquire and release
         async with pool.acquire() as conn:
             await conn.execute("SELECT 1")
 
-        # Second acquire — same connection from pool must work
+        # Second acquire reuses the same conn from the pool.
         async with pool.acquire() as conn:
             await conn.execute("SELECT 2")
 
         await pool.close()
 
     async def test_standalone_connection_not_affected_by_pool_guard(self) -> None:
-        """A DqliteConnection used standalone (not from a pool) must not be affected."""
+        """A standalone DqliteConnection is unaffected by the pool guard."""
         import asyncio
 
         from dqliteclient.connection import DqliteConnection
@@ -1288,9 +1166,8 @@ class TestConnectionPool:
         conn._bound_loop_ref = weakref.ref(asyncio.get_running_loop())
         conn._protocol.exec_sql = AsyncMock(return_value=(0, 1))
 
-        # Standalone connection — no pool involved, should work fine
         await conn.execute("SELECT 1")
-        await conn.execute("SELECT 2")  # No error — _pool_released is always False
+        await conn.execute("SELECT 2")  # _pool_released stays False, no guard
 
 
 class TestConnectionPoolIntegration:
@@ -1363,13 +1240,8 @@ class TestConnectionPoolIntegration:
 
 
 class TestSocketLooksDead:
-    """Contract tests for the pool's ``_socket_looks_dead`` heuristic.
-
-    The helper must tolerate mocked / missing transport attributes (returning
-    ``False`` so ROLLBACK still gets attempted) but must NOT silently swallow
-    arbitrary exceptions — an unexpected error is a programmer bug that should
-    surface, not a signal of a dead socket.
-    """
+    """``_socket_looks_dead`` tolerates missing transport attrs (returns False
+    so ROLLBACK is still tried) but must not swallow unexpected exceptions."""
 
     def _make_conn(
         self,
@@ -1430,8 +1302,8 @@ class TestSocketLooksDead:
         """Mocks missing ``is_closing`` / ``at_eof`` default to "assume alive"."""
         from dqliteclient.pool import _socket_looks_dead
 
-        transport = object()  # no is_closing attribute
-        reader = object()  # no at_eof attribute
+        transport = object()
+        reader = object()
         conn = self._make_conn(transport=transport, reader=reader)
         assert _socket_looks_dead(conn) is False
 
@@ -1450,26 +1322,13 @@ class TestSocketLooksDead:
 
 
 class TestDrainIdleCancellation:
-    """``_drain_idle`` must not swallow ``CancelledError`` or any other
-    ``BaseException``. The reservation release on each iteration still runs,
-    so cancellation is clean — but the cancel signal itself must propagate.
-
-    A close() failure for a non-cancellation reason should be absorbed so
-    drain can finish the remaining connections, but logged for diagnostics.
-    """
+    """``_drain_idle`` must propagate CancelledError (while still releasing the
+    reservation) but absorb + log a non-cancellation close() failure so drain
+    finishes the rest."""
 
     async def test_cancelled_error_in_close_propagates(self) -> None:
-        """An async close() raising ``CancelledError`` must escape ``_drain_idle``.
-        Previously the helper's ``except BaseException: pass`` swallowed it,
-        breaking structured concurrency (``asyncio.timeout`` / ``TaskGroup``).
-
-        Note: per-connection close is now shielded so the original
-        cancel's message is lost through the Task boundary — asyncio
-        repackages any CancelledError the shielded task raises into a
-        fresh CancelledError with no args. The semantic we pin here is
-        that CancelledError still propagates out of the drain (i.e. is
-        not swallowed).
-        """
+        """A CancelledError from close() must escape ``_drain_idle`` (the
+        shielded per-conn close repackages it argless, but it still propagates)."""
         pool = ConnectionPool(["localhost:9001"])
 
         bad_conn = MagicMock()
@@ -1484,16 +1343,13 @@ class TestDrainIdleCancellation:
         with pytest.raises(asyncio.CancelledError):
             await pool._drain_idle()
 
-        # Reservation must still be released on the cancellation path so
-        # the pool is recoverable after the cancel.
+        # Reservation must still be released so the pool stays recoverable.
         assert pool._size == 0
 
     async def test_ordinary_exception_is_absorbed_and_logged(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """An ``OSError`` from close() should be absorbed so drain continues.
-        Behaviour is logged at DEBUG for operator diagnostics.
-        """
+        """An OSError from close() is absorbed (DEBUG-logged) so drain continues."""
         import logging
 
         pool = ConnectionPool(["localhost:9001"])
@@ -1512,21 +1368,16 @@ class TestDrainIdleCancellation:
 
         c2.close.assert_awaited_once()
         assert pool._size == 0
-        # The cleanup-path log uses exc_info=True so the exception
-        # message lives on the record's exception tuple, not in the
-        # plain message.
+        # Log uses exc_info=True, so the message lives on the exception tuple.
         assert any(
             rec.exc_info is not None and "boom" in str(rec.exc_info[1]) for rec in caplog.records
         )
 
 
 class TestAcquireCancellationPreservesCapacity:
-    """An external cancellation of a coroutine parked in ``acquire()``'s
-    ``asyncio.wait(...)`` must not leak a connection or shrink effective
-    pool capacity. The abandoned ``get_task`` could win a subsequent
-    ``put()`` race; the fix must either cancel it or reclaim the
-    connection it took.
-    """
+    """Cancelling a coroutine parked in ``acquire()``'s ``asyncio.wait`` must not
+    leak capacity: the abandoned ``get_task`` could win a later ``put()`` race,
+    so it must be cancelled or its conn reclaimed."""
 
     @pytest.fixture
     def mock_connection(self) -> MagicMock:
@@ -1559,8 +1410,6 @@ class TestAcquireCancellationPreservesCapacity:
             async def holder() -> None:
                 async with pool.acquire():
                     waiter_parked.set()
-                    # Hold until the waiter has been cancelled AND we've
-                    # been signalled to exit.
                     await holder_released.wait()
 
             async def waiter() -> None:
@@ -1571,21 +1420,18 @@ class TestAcquireCancellationPreservesCapacity:
             await waiter_parked.wait()
 
             waiter_task = asyncio.create_task(waiter())
-            # Give waiter() time to enter acquire() and park in asyncio.wait.
+            # Let waiter() park in asyncio.wait.
             await asyncio.sleep(0.05)
 
             waiter_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await waiter_task
 
-            # Release the in-use connection; the post-cancel put() must
-            # not be stolen by the abandoned get_task.
+            # The post-cancel put() must not be stolen by the abandoned get_task.
             holder_released.set()
             await holder_task
 
-            # Pool must still accept a new acquire within a short window —
-            # if the abandoned task captured the connection, this would
-            # time out.
+            # If the abandoned task had captured the conn, this acquire times out.
             async with asyncio.timeout(1.0):
                 async with pool.acquire() as conn:
                     assert conn is mock_connection
@@ -1598,9 +1444,8 @@ class TestAcquireCancellationPreservesCapacity:
         self,
         mock_connection: MagicMock,
     ) -> None:
-        """Invariant: after any cancel/release cycle the ``_size`` counter
-        equals the number of connections actually reachable. Fuzz-test 100
-        rounds (smaller than the issue file's 1000 — kept light for CI)."""
+        """After any cancel/release cycle ``_size`` equals the reachable conn
+        count. Fuzzed over 100 rounds (kept light for CI)."""
         pool = ConnectionPool(["localhost:9001"], max_size=1, timeout=5.0)
 
         with patch.object(pool._cluster, "connect", return_value=mock_connection):
@@ -1627,35 +1472,20 @@ class TestAcquireCancellationPreservesCapacity:
                 release_event.set()
                 await h
 
-                # After every round the pool must have exactly one
-                # reachable reservation — queued or returned-by-holder.
                 assert pool._size == 1
 
         await pool.close()
 
 
 class TestReleaseCancellationPreservesReservation:
-    """``ConnectionPool._release`` must release the reservation even if
-    ``CancelledError`` is delivered during ``_reset_connection`` (the
-    ROLLBACK await) or during the inline ``conn.close()`` calls.
-
-    The earlier per-branch ``asyncio.shield`` only protected the
-    reservation-release call itself; cancellation arriving DURING the
-    preceding I/O bypassed every subsequent line, including the shield,
-    leaving ``_size`` permanently incremented.
-    """
+    """``_release`` must free the reservation even if CancelledError lands during
+    ``_reset_connection`` or ``conn.close()`` — a per-branch shield on only the
+    release call leaks ``_size`` when the cancel hits the preceding I/O."""
 
     async def test_cancel_during_reset_does_not_leak_reservation(self) -> None:
-        """Path B (production-likely): the success branch of
-        ``acquire()`` calls ``_release`` → ``_reset_connection`` →
-        ``conn.execute("ROLLBACK")``. The happy-path release is now
-        shielded (``acquire``'s ``else`` arm wraps it in
-        ``asyncio.shield`` + ``suppress(CancelledError)``), so an outer
-        cancel landing at the release await runs ``_release`` to
-        completion in the background instead of bypassing it. The
-        reservation eventually decrements once the shielded
-        ``_release`` finishes its work.
-        """
+        """Path B: the shielded success-branch release runs ``_release`` to
+        completion in the background even when an outer cancel lands at the
+        release await."""
         pool = ConnectionPool(["localhost:9001"], max_size=1)
 
         mock_conn = MagicMock()
@@ -1674,9 +1504,7 @@ class TestReleaseCancellationPreservesReservation:
         async def gated_rollback(sql: str, params=None) -> tuple[int, int]:
             if "ROLLBACK" in sql:
                 rollback_started.set()
-                # Wait for the test to unblock so we can simulate the
-                # rollback completing AFTER the outer cancel observer
-                # has run.
+                # Complete the rollback only after the outer cancel has run.
                 await unblock_rollback.wait()
             return (0, 0)
 
@@ -1692,25 +1520,17 @@ class TestReleaseCancellationPreservesReservation:
                 async with pool.acquire() as conn:
                     conn._in_transaction = True
 
-        # Wait for the rollback to begin (proves _release entered the
-        # try arm — shield kept it running across the outer cancel).
+        # Rollback beginning proves the shield kept _release running across the cancel.
         await asyncio.wait_for(rollback_started.wait(), timeout=1.0)
-        # Release the rollback so _release can complete its work.
         unblock_rollback.set()
-        # Drain pending tasks so the shielded _release finishes and
-        # the conn is returned to the queue.
+        # Let the shielded _release finish and re-queue the conn.
         for _ in range(50):
             if pool._pool.qsize() == 1:
                 break
             await asyncio.sleep(0.01)
 
-        # Reset succeeded (rollback returned a result, not cancelled),
-        # so the conn is returned to the queue and the reservation
-        # transfers with it. ``_size`` stays at starting_size (the
-        # reservation has not been released — the conn is now idle in
-        # the queue, still counted against the pool's cap). The
-        # invariant: NO leak — the slot is accounted for by the
-        # queued conn, not lost to limbo.
+        # No leak: the slot stays accounted for by the re-queued idle conn
+        # (the reservation transfers with it), so _size holds at starting_size.
         assert pool._size == starting_size, (
             f"reservation accounting mismatch: expected {starting_size}, got {pool._size}"
         )
@@ -1721,10 +1541,8 @@ class TestReleaseCancellationPreservesReservation:
         await pool.close()
 
     async def test_cancel_during_pool_closed_close_does_not_leak(self) -> None:
-        """Path A: pool already closed; ``conn.close()`` is awaited.
-        If the close suspends and an outer cancel fires, the
-        reservation must still be released.
-        """
+        """Path A (pool closed): a cancel during the awaited ``conn.close()``
+        must still release the reservation."""
         pool = ConnectionPool(["localhost:9001"], max_size=1)
 
         mock_conn = MagicMock()
@@ -1741,7 +1559,7 @@ class TestReleaseCancellationPreservesReservation:
 
         mock_conn.close = slow_close
 
-        # Pre-mark pool as closed so _release takes path A.
+        # Closed so _release takes path A.
         pool._closed = True
         pool._size = 1
 
@@ -1752,10 +1570,8 @@ class TestReleaseCancellationPreservesReservation:
         assert pool._size == 0, f"reservation leaked on closed-pool path: got {pool._size}"
 
     async def test_cancel_during_queuefull_close_does_not_leak(self) -> None:
-        """Path C: queue full; the connection must close. If the
-        close suspends and an outer cancel fires, the reservation must
-        still be released.
-        """
+        """Path C (queue full): a cancel during the closing ``conn.close()``
+        must still release the reservation."""
         pool = ConnectionPool(["localhost:9001"], max_size=1)
 
         mock_conn = MagicMock()
@@ -1772,8 +1588,7 @@ class TestReleaseCancellationPreservesReservation:
 
         mock_conn.close = slow_close
 
-        # Reservation reflects two inflight connections; queue is full
-        # with one already so _release will hit QueueFull.
+        # Queue already full (_size=2) so _release hits QueueFull.
         filler = MagicMock()
         await pool._pool.put(filler)
         pool._size = 2
@@ -1782,6 +1597,4 @@ class TestReleaseCancellationPreservesReservation:
             async with asyncio.timeout(0.05):
                 await pool._release(mock_conn)
 
-        # The mock_conn's reservation must have been released; the
-        # filler stays queued.
         assert pool._size == 1, f"reservation leaked on QueueFull path: got {pool._size}"

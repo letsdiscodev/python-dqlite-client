@@ -1,11 +1,5 @@
-"""Pin: ``_find_leader_impl`` sorts nodes by role strictly ascending
-(VOTER → STANDBY → SPARE), not into a binary
-voter / non-voter bucket. Standbys are probed before spares because
-they participate in heartbeats and are more likely to know the
-current leader.
-
-Matches go-dqlite's ``connector.go::connectAttempt`` discipline.
-"""
+"""Pin: ``_find_leader_impl`` probes nodes strictly VOTER -> STANDBY -> SPARE
+(standbys participate in heartbeats, so likelier to know the leader)."""
 
 from __future__ import annotations
 
@@ -30,8 +24,7 @@ def _build_cluster_with_mixed_roles() -> ClusterClient:
         "sp3:9001",  # 3x SPARE
     ]
     store = MemoryNodeStore(addresses)
-    # Re-write the role assignments — MemoryNodeStore's default is
-    # VOTER for everyone; we want a mixed-role distribution.
+    # MemoryNodeStore defaults every node to VOTER; we want a mixed distribution.
     role_map = {
         "v1:9001": NodeRole.VOTER,
         "sb1:9001": NodeRole.STANDBY,
@@ -52,17 +45,13 @@ def _build_cluster_with_mixed_roles() -> ClusterClient:
 
 @pytest.mark.asyncio
 async def test_find_leader_probes_standby_before_spare() -> None:
-    """With ``concurrent_leader_conns=1`` the probe order is fully
-    sequential, making the sort discipline observable. All STANDBY
-    entries must precede any SPARE entry."""
+    """With ``concurrent_leader_conns=1`` probing is sequential, making the sort observable."""
     cluster = _build_cluster_with_mixed_roles()
 
     probe_order: list[str] = []
 
     async def _record(addr: str, **_kw: object) -> str | None:
         probe_order.append(addr)
-        # Every node returns its own address (self-confirms) so the
-        # first probe wins.
         return None  # no leader known — drive the full sweep
 
     with (
@@ -75,12 +64,10 @@ async def test_find_leader_probes_standby_before_spare() -> None:
     sp_positions = [i for i, a in enumerate(probe_order) if a.startswith("sp")]
     v_positions = [i for i, a in enumerate(probe_order) if a.startswith("v")]
 
-    # Voters first.
     if v_positions and sb_positions:
         assert max(v_positions) < min(sb_positions), (
             f"VOTER must precede STANDBY: probe order = {probe_order}"
         )
-    # Then standbys.
     if sb_positions and sp_positions:
         assert max(sb_positions) < min(sp_positions), (
             f"All STANDBY must precede any SPARE: probe order = {probe_order}"

@@ -1,9 +1,6 @@
-"""``ConnectionPool.initialize`` partial-failure must log every per-connection
-failure at WARNING and raise a ``BaseExceptionGroup`` when there are
-multiple distinct failures. A single-failure case still re-raises the
-narrow exception type so existing ``except DqliteConnectionError`` paths
-keep matching.
-"""
+"""``ConnectionPool.initialize`` logs every failure at WARNING; multiple
+failures raise a ``BaseExceptionGroup``, a single one re-raises its narrow
+type so existing ``except`` paths keep matching."""
 
 from __future__ import annotations
 
@@ -18,8 +15,7 @@ from dqliteclient.pool import ConnectionPool
 
 @pytest.mark.asyncio
 async def test_initialize_single_failure_raises_narrow_type(monkeypatch) -> None:
-    """One failure → re-raise the narrow exception so callers catching
-    on the specific type keep matching."""
+    """One failure re-raises the narrow exception type."""
     pool = ConnectionPool(
         ["localhost:9001"],
         min_size=1,
@@ -38,8 +34,7 @@ async def test_initialize_single_failure_raises_narrow_type(monkeypatch) -> None
 
 @pytest.mark.asyncio
 async def test_initialize_multiple_failures_raises_exception_group(monkeypatch, caplog) -> None:
-    """Three distinct failures → ``BaseExceptionGroup`` wrapping all three,
-    with each logged at WARNING individually for operator visibility."""
+    """Three failures raise a ``BaseExceptionGroup``, each logged at WARNING."""
     pool = ConnectionPool(
         ["a:9001", "b:9001", "c:9001"],
         min_size=3,
@@ -65,6 +60,5 @@ async def test_initialize_multiple_failures_raises_exception_group(monkeypatch, 
         await pool.initialize()
     eg = exc_info.value
     assert len(eg.exceptions) == 3
-    # Every failure logged at WARNING with a create_connection prefix.
     warning_msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert sum("create_connection" in m for m in warning_msgs) == 3

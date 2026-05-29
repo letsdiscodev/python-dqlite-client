@@ -1,12 +1,5 @@
-"""Pin: ``ClusterClient.add_node`` rejects malformed addresses at the
-call site via the in-tree strict ``parse_address`` parser.
-
-Previously ``add_node`` only checked ``isinstance(address, str) and
-address``, so non-numeric ports, unbracketed IPv6, whitespace, CRLF,
-credentials-smuggle ``user@host``, etc. were forwarded to the server
-and surfaced asynchronously as connection failures. This pin ensures
-the rejection lands at the call site with a specific diagnostic.
-"""
+"""Pin: ``ClusterClient.add_node`` rejects malformed addresses at the call site
+(via strict ``parse_address``) rather than forwarding them to the server."""
 
 from __future__ import annotations
 
@@ -19,15 +12,11 @@ from dqlitewire.constants import NodeRole
 
 
 def _make_cluster_client_skeleton() -> ClusterClient:
-    """Construct a ClusterClient that won't actually connect — the
-    address validation runs BEFORE any network I/O, so a no-op store
-    suffices for these synthetic-input tests."""
+    """A ClusterClient that never connects; address validation runs before I/O."""
     from dqliteclient.node_store import MemoryNodeStore
 
     store = MemoryNodeStore([])
     client = ClusterClient(store, dial_timeout=0.5, attempt_timeout=0.5)
-    # Skip find_leader by patching the leader cache; the validation
-    # check fires before find_leader is invoked.
     client._set_last_known_leader = MagicMock()
     return client
 
@@ -50,8 +39,7 @@ def _make_cluster_client_skeleton() -> ClusterClient:
 )
 @pytest.mark.asyncio
 async def test_add_node_rejects_malformed_address(bad_address: str) -> None:
-    """Each malformed address shape is rejected at the call site
-    with ValueError from parse_address."""
+    """Each malformed address is rejected with ValueError from parse_address."""
     client = _make_cluster_client_skeleton()
     with pytest.raises(ValueError, match="add_node|invalid"):
         await client.add_node(node_id=99, address=bad_address, role=NodeRole.VOTER)
@@ -59,8 +47,7 @@ async def test_add_node_rejects_malformed_address(bad_address: str) -> None:
 
 @pytest.mark.asyncio
 async def test_add_node_empty_string_rejected() -> None:
-    """Negative pin: empty string is rejected by the existing
-    ``isinstance/empty`` check, before parse_address runs."""
+    """Empty string is rejected by the isinstance/empty check before parse_address."""
     client = _make_cluster_client_skeleton()
     with pytest.raises(TypeError, match="non-empty"):
         await client.add_node(node_id=99, address="", role=NodeRole.VOTER)

@@ -1,15 +1,5 @@
-"""Pin: ``ConnectionPool`` / ``create_pool`` forwards
-``concurrent_leader_conns`` and ``redirect_policy`` into the
-auto-built ``ClusterClient``, AND raises ``ValueError`` when these
-kwargs are combined with an externally-owned ``cluster=``.
-
-Mirrors the existing ``dial_func`` mutual-exclusion + passthrough
-pattern. A regression dropping either ``cluster_kwargs[...] = ...``
-injection silently strips the operator-supplied knob; a regression
-softening the mutual-exclusion would silently desync the pool's
-claimed configuration from the externally-owned cluster's actual
-behaviour.
-"""
+"""ConnectionPool forwards concurrent_leader_conns/redirect_policy into the
+auto-built ClusterClient, and rejects them when combined with an external cluster=."""
 
 from __future__ import annotations
 
@@ -21,15 +11,13 @@ from dqliteclient.pool import ConnectionPool
 
 
 def test_pool_passes_concurrent_leader_conns_through_to_auto_built_cluster() -> None:
-    """Without ``cluster=``, the pool builds an internal
-    ``ClusterClient``; the kwarg must be forwarded into the
-    constructor so the operator's tuning is preserved."""
+    """Without cluster=, the kwarg is forwarded into the auto-built ClusterClient."""
     pool = ConnectionPool(["a:9001"], concurrent_leader_conns=4)
     assert pool._cluster._concurrent_leader_conns == 4
 
 
 def test_pool_passes_redirect_policy_through_to_auto_built_cluster() -> None:
-    """Same passthrough discipline for the redirect policy callable."""
+    """Same passthrough for the redirect policy."""
 
     def policy(addr: str) -> bool:
         return True
@@ -39,17 +27,14 @@ def test_pool_passes_redirect_policy_through_to_auto_built_cluster() -> None:
 
 
 def test_pool_rejects_concurrent_leader_conns_with_external_cluster() -> None:
-    """An externally-owned ``cluster=`` carries its own
-    configuration. Allowing the pool kwarg here would silently
-    desync the pool's claimed configuration from the cluster's
-    actual behaviour."""
+    """An external cluster= carries its own config; the pool kwarg would desync it."""
     cluster = ClusterClient(MemoryNodeStore(addresses=["a:9001"]))
     with pytest.raises(ValueError, match="concurrent_leader_conns cannot be combined"):
         ConnectionPool(["a:9001"], cluster=cluster, concurrent_leader_conns=4)
 
 
 def test_pool_rejects_redirect_policy_with_external_cluster() -> None:
-    """Same mutual-exclusion discipline for the redirect policy."""
+    """Same mutual exclusion for the redirect policy."""
     cluster = ClusterClient(MemoryNodeStore(addresses=["a:9001"]))
 
     def policy(addr: str) -> bool:

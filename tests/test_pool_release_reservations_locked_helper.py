@@ -1,19 +1,7 @@
-"""Pin: bulk reservation decrements in ``ConnectionPool`` route
-through the same under-flow-guarded helper as the per-conn
-``_release_reservation`` path.
-
-``initialize`` recovers from partial warm-up by decrementing
-``_size`` by ``unqueued`` (the count of reservations that never
-made it into the queue). The decrement historically bypassed the
-``_release_reservation`` helper and its under-flow guard, so a
-future double-decrement at this site would silently produce a
-negative ``_size`` and the pool would expand past ``max_size``.
-
-The fix extracts the under-flow-guarded decrement into
-``_release_reservations_locked(n)`` (caller holds the lock),
-shared by both the per-conn helper and the bulk-decrement path. A
-deliberate over-decrement now lands the canonical ERROR log AND
-refuses to underflow ``_size``.
+"""Pin: bulk reservation decrements route through the same underflow-guarded
+helper (``_release_reservations_locked(n)``, caller holds the lock) as the per-conn
+``_release_reservation`` path, so initialize's partial-warm-up decrement can no
+longer drive _size negative past max_size.
 """
 
 from __future__ import annotations
@@ -27,8 +15,7 @@ from dqliteclient.pool import ConnectionPool
 
 @pytest.mark.asyncio
 async def test_release_reservations_locked_normal_decrement() -> None:
-    """Happy path: decrement under capacity returns True and reduces
-    ``_size``."""
+    """Happy path: decrement under capacity returns True and reduces _size."""
     pool = ConnectionPool(["localhost:9001"])
     async with pool._lock:
         pool._size = 5
@@ -41,9 +28,8 @@ async def test_release_reservations_locked_normal_decrement() -> None:
 async def test_release_reservations_locked_underflow_refused(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Over-decrement is refused with the canonical ERROR log,
-    keeping ``_size`` non-negative. The bulk-decrement site (and any
-    future site) inherits this guard."""
+    """Over-decrement is refused with the canonical ERROR log, keeping _size
+    non-negative."""
     pool = ConnectionPool(["localhost:9001"])
     async with pool._lock:
         pool._size = 2
@@ -60,18 +46,9 @@ async def test_release_reservations_locked_underflow_refused(
 
 @pytest.mark.asyncio
 async def test_release_reservations_locked_underflow_signals_state_change() -> None:
-    """Pin: the underflow-refusal arm also calls
-    ``_signal_state_change()`` so any parked acquirer re-evaluates
-    against the current ``_size`` rather than waiting for the next
-    legitimate release. Underflow is symptomatic of an earlier double-
-    release that may have lost a wake signal; the defensive wake
-    bounds the worst-case acquirer wait when a double-release
-    surfaces in production.
-
-    Without the wake, an acquirer parked behind the lost signal
-    waits indefinitely (or until another release lands), even though
-    the current ``_size`` may be below capacity.
-    """
+    """Pin: the underflow-refusal arm also calls _signal_state_change() so a parked
+    acquirer re-evaluates against the current _size instead of waiting on a wake
+    signal that the earlier double-release may have lost."""
     from unittest.mock import MagicMock
 
     pool = ConnectionPool(["localhost:9001"])
@@ -87,30 +64,21 @@ async def test_release_reservations_locked_underflow_signals_state_change() -> N
 
 @pytest.mark.asyncio
 async def test_release_reservations_locked_rejects_zero_and_negative_n() -> None:
-    """The helper requires ``n >= 1``. ``n=0`` is a no-op decrement
-    that would spuriously wake every parked acquirer; ``n<0`` would
-    silently INCREMENT ``_size`` (since ``_size < n`` is False for
-    non-negative ``_size`` against a negative ``n``, the under-flow
-    guard fails open and ``_size -= -k`` increments).
-
-    Reject explicitly with ``ValueError`` so future caller mistakes
-    surface at the call site instead of corrupting capacity
-    accounting silently.
-    """
+    """The helper requires n >= 1: n=0 spuriously wakes every acquirer, and n<0
+    would slip past the guard and INCREMENT _size. Reject with ValueError."""
     pool = ConnectionPool(["localhost:9001"])
     async with pool._lock:
         pool._size = 5
         for bad_n in (0, -1, -100):
             with pytest.raises(ValueError, match="n >= 1"):
                 pool._release_reservations_locked(bad_n)
-        # _size is unchanged across every rejection.
         assert pool._size == 5
 
 
 @pytest.mark.asyncio
 async def test_release_reservations_locked_rejects_bool_and_non_int() -> None:
-    """``isinstance(True, int)`` is True; ``True`` would decrement by
-    1 silently. Reject ``bool`` and other non-int types explicitly."""
+    """isinstance(True, int) is True so True would decrement by 1; reject bool
+    and other non-int types explicitly."""
     pool = ConnectionPool(["localhost:9001"])
     async with pool._lock:
         pool._size = 5
@@ -122,9 +90,7 @@ async def test_release_reservations_locked_rejects_bool_and_non_int() -> None:
 
 @pytest.mark.asyncio
 async def test_release_reservations_locked_requires_lock_held() -> None:
-    """The docstring promises the caller already holds ``self._lock``.
-    A future caller forgetting the lock corrupts ``_size`` under
-    contention. Pin the runtime assertion."""
+    """Pin the runtime assertion that the caller holds self._lock."""
     pool = ConnectionPool(["localhost:9001"])
     pool._size = 5
     # NOT inside `async with pool._lock`.
@@ -136,9 +102,8 @@ async def test_release_reservations_locked_requires_lock_held() -> None:
 async def test_release_reservation_at_zero_still_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Existing ``_release_reservation()`` (n=1) under-flow log
-    still fires through the shared helper. Pin against a regression
-    that loses the diagnostic when consolidating decrement paths."""
+    """_release_reservation() (n=1) underflow log still fires through the
+    shared helper."""
     pool = ConnectionPool(["localhost:9001"])
     assert pool._size == 0
 

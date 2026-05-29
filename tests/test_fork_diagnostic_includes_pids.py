@@ -1,13 +1,5 @@
-"""Pin: fork-after-init diagnostics on ``DqliteConnection``,
-``ConnectionPool``, and ``ClusterClient`` include both the creator
-pid and the current observed pid so an operator can correlate the
-failure to the master / forkserver pid.
-
-Symmetric with the cross-thread sibling diagnostic at the dbapi
-layer which already includes both ids; without these pids the
-fork-rejection messages were a constant string with no operator-
-correlation surface.
-"""
+"""Pin: fork-after-init diagnostics include both the creator pid and the
+current pid so an operator can correlate to the master/forkserver pid."""
 
 from __future__ import annotations
 

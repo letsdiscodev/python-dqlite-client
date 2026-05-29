@@ -1,20 +1,6 @@
-"""Pin: ``ConnectionPool.close()`` derives an aggregate close-budget
-deadline and threads it through both ``_drain_idle`` and
-``_drain_remaining_after_cancel`` so the SIGTERM contract bounds
-end-to-end wall-clock regardless of stuck-close stampedes.
-
-The prior shape called ``await self._drain_idle()`` (no
-``deadline=`` kwarg). With the wire-default ``close_timeout=0.5``
-and ``max_size=10``, a queue of pathologically-slow ``close()``
-peers consumed ~20 s before the close path returned; with
-``max_size=100``, ~200 s. Sibling acquire-path call sites
-already passed ``deadline=...``; the close path was the
-structural outlier.
-
-``_drain_remaining_after_cancel`` (the cancel-recovery sweep)
-gains the same ``deadline`` kwarg so an outer cancel mid-drain
-cannot re-amplify the gap via the recovery arm.
-"""
+"""close() threads an aggregate close-budget deadline through both _drain_idle
+and _drain_remaining_after_cancel so end-to-end wall-clock is bounded under a
+stuck-close stampede (a bare _drain_idle() waits N x per_iter_cap)."""
 
 from __future__ import annotations
 
@@ -34,11 +20,7 @@ def _drain_remaining_after_cancel_signature() -> inspect.Signature:
 
 
 def test_pool_close_passes_deadline_to_drain_idle() -> None:
-    """Structural pin: ``pool.close()`` must call
-    ``self._drain_idle(deadline=...)`` (not the bare
-    ``self._drain_idle()`` shape that omits the aggregate
-    close-budget gate).
-    """
+    """pool.close() must call self._drain_idle(deadline=...), not the bare form."""
     src = _close_source()
     tree = ast.parse(src)
     found_with_deadline = False
@@ -72,10 +54,8 @@ def test_pool_close_passes_deadline_to_drain_idle() -> None:
 
 
 def test_drain_remaining_after_cancel_accepts_deadline_kwarg() -> None:
-    """The sibling cancel-recovery sweep must accept the same
-    ``deadline`` plumbing so the close-budget gate is honoured
-    end-to-end (outer cancel can't re-amplify via the recovery arm).
-    """
+    """The cancel-recovery sweep must accept the same deadline so an outer cancel
+    cannot re-amplify the gap via the recovery arm."""
     sig = _drain_remaining_after_cancel_signature()
     assert "deadline" in sig.parameters, (
         "_drain_remaining_after_cancel must accept a ``deadline`` "
@@ -87,10 +67,8 @@ def test_drain_remaining_after_cancel_accepts_deadline_kwarg() -> None:
 
 
 def test_pool_close_forwards_deadline_into_drain_remaining_after_cancel() -> None:
-    """Pin: the second-caller arm in ``pool.close()`` calls
-    ``self._drain_remaining_after_cancel(deadline=...)`` (not the
-    bare form).
-    """
+    """The second-caller arm must call
+    self._drain_remaining_after_cancel(deadline=...), not the bare form."""
     src = _close_source()
     tree = ast.parse(src)
     found_with_deadline = False

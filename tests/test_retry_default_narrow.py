@@ -1,12 +1,6 @@
-"""The default retry set must exclude deterministic server / client
-errors (``OperationalError``, ``DataError``, ``InterfaceError``).
-
-Retrying a constraint violation or a type mismatch burns the full
-exponential-backoff budget before the caller sees the underlying
-cause. Only transport- and cluster-level errors belong in the
-default tuple; callers that really want broader catches opt in
-explicitly.
-"""
+"""The default retry set excludes deterministic server/client errors
+(``OperationalError``, ``DataError``, ``InterfaceError``) so they fail
+fast instead of burning the backoff budget."""
 
 from __future__ import annotations
 

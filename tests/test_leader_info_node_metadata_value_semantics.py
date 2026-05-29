@@ -1,14 +1,5 @@
-"""Pin: ``LeaderInfo`` and ``NodeMetadata`` are hashable, repr-able,
-pickle-stable, and deepcopy-stable value types.
-
-Both classes are declared ``@dataclass(frozen=True, slots=True)`` and
-documented as cluster-snapshot value types. ``NodeInfo``'s docstring
-expressly notes "hashable and usable as set/dict keys"; the same shape
-applies here. A future refactor that drops ``frozen=True`` (e.g., to
-permit lazy field initialization) or adds a non-hashable field
-silently destroys hashability while ``__eq__`` keeps working — hiding
-the regression. Pin the value-type contract.
-"""
+"""Pin: ``LeaderInfo`` / ``NodeMetadata`` are hashable, repr/pickle/deepcopy-stable value
+types. Dropping ``frozen=True`` breaks hashing while ``__eq__`` keeps working — hidden."""
 
 from __future__ import annotations
 
@@ -16,8 +7,6 @@ import copy
 import pickle
 
 from dqliteclient import LeaderInfo, NodeMetadata
-
-# ---- LeaderInfo ----
 
 
 def test_leader_info_hashable_and_set_keyable() -> None:
@@ -45,9 +34,6 @@ def test_leader_info_repr_includes_fields() -> None:
     rendered = repr(li)
     assert "42" in rendered
     assert "host:9999" in rendered
-
-
-# ---- NodeMetadata ----
 
 
 def test_node_metadata_hashable_and_set_keyable() -> None:

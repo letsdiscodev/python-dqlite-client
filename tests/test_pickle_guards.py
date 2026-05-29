@@ -1,24 +1,6 @@
-"""Pin: client-layer classes raise a clear ``TypeError`` on pickle /
-copy / deepcopy. Symmetric with the dbapi's existing pickle guards
-on Connection / Cursor.
-
-Without explicit ``__reduce__`` raises:
-- ``ConnectionPool`` / ``ClusterClient`` SILENTLY pickle (asyncio
-  primitives became pickleable in 3.10+) — producing a
-  "live"-looking duplicate detached from any loop. Any use yields
-  opaque corruption.
-- ``DqliteConnection`` (post- or pre-``connect()``) silently
-  produces a corrupt duplicate via the default
-  ``Exception.__reduce__`` walk; without an explicit reject the
-  duplicate looks "live" but holds severed loop bindings and
-  half-state.
-- ``DqliteProtocol`` raises an opaque error from wrapped
-  StreamReader / StreamWriter.
-
-Each class raises a driver-level ``TypeError`` naming the specific
-class, so the operator gets a precise diagnostic instead of a
-generic pickling failure.
-"""
+"""Client-layer classes raise a class-named ``TypeError`` on pickle / copy /
+deepcopy. Needed because asyncio primitives pickle silently on 3.10+, yielding
+a "live"-looking duplicate with severed loop bindings."""
 
 from __future__ import annotations
 
@@ -50,11 +32,8 @@ class TestDqliteConnectionPickleGuard:
             copy.deepcopy(conn)
 
     def test_message_does_not_reference_nonexistent_op_lock(self) -> None:
-        """The class is intentionally lock-free (mutual exclusion is via
-        the ``_in_use: bool`` flag, no ``asyncio.Lock`` instance). The
-        pickle-guard message must not name an ``_op_lock`` field that
-        does not exist on the class — operators following that hint
-        would chase a phantom attribute."""
+        """The class is lock-free (mutual exclusion via ``_in_use``), so the
+        guard message must not name a phantom ``_op_lock``."""
         conn = DqliteConnection("localhost:9001")
         assert not hasattr(conn, "_op_lock")
         with pytest.raises(TypeError) as ei:
@@ -98,13 +77,8 @@ class TestClusterClientPickleGuard:
 
 
 class TestMemoryNodeStorePickleGuard:
-    """``MemoryNodeStore`` holds an eager ``asyncio.Lock`` for the
-    ``set_nodes`` mutual-exclusion contract. Pickle / copy / deepcopy
-    would construct a FRESH ``Lock`` on the copy, so the original
-    and the duplicate would each pass through their own lock without
-    serialisation — the documented single-owner-per-store discipline
-    silently breaks. Symmetric with the seven sibling guards.
-    """
+    """Copying would build a fresh ``Lock``, breaking ``set_nodes``
+    mutual-exclusion; guard against it."""
 
     def test_pickle_raises(self) -> None:
         ns = MemoryNodeStore(addresses=["a.example:9001"])

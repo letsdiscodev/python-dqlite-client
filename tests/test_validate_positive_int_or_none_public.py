@@ -1,15 +1,5 @@
-"""Pin: ``dqliteclient.validate_positive_int_or_none`` is a public
-re-export so downstream packages (dqlitedbapi, sqlalchemy-dqlite) do
-not need to reach into private symbols.
-
-The validator was previously available only as
-``dqliteclient.protocol._validate_positive_int_or_none`` (leading
-underscore, not in any ``__all__``). dqlitedbapi imported it directly,
-creating a cross-package coupling that a future client refactor could
-silently break. Promote to public, mirror the ``parse_address`` /
-``allowlist_policy`` pattern, and pin the public surface so it cannot
-disappear without a breaking-change signal.
-"""
+"""``dqliteclient.validate_positive_int_or_none`` is a public re-export so
+downstream packages do not reach into the private ``protocol`` symbol."""
 
 from __future__ import annotations
 
@@ -53,10 +43,7 @@ def test_public_validator_rejects_non_int() -> None:
 
 
 def test_legacy_underscore_alias_removed() -> None:
-    """The leading-underscore alias was a transitional bridge during
-    the public-name promotion. It is now removed; importing it must
-    fail so future callers cannot re-introduce the cross-package
-    coupling."""
+    """The transitional underscore alias is removed; importing it must fail."""
     import dqliteclient.protocol as protocol_module
 
     assert not hasattr(protocol_module, "_validate_positive_int_or_none")

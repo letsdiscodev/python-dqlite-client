@@ -1,31 +1,8 @@
-"""Integration test for the SAVEPOINT untracked-then-tracked sequence
-against the real dqlite cluster.
+"""Integration test for the SAVEPOINT untracked-then-tracked sequence.
 
-The client-side parser deliberately rejects quoted / backtick /
-square-bracket / unicode SAVEPOINT names — the case-sensitivity
-trade-off in ``_parse_savepoint_name`` is documented to ensure
-identifier handling stays consistent across the codebase. The
-upstream server, by contrast, has no such restriction: it forwards
-the SQL to the embedded SQLite engine, which auto-begins a
-transaction on ANY well-formed ``SAVEPOINT`` statement.
-
-The mismatch is the load-bearing case for the post-fix invariants:
-
-1. ``_has_untracked_savepoint`` flips True (parser couldn't
-   represent the name).
-2. ``_savepoint_implicit_begin`` STAYS False (the auto-begin was
-   driven by the outer untracked SAVEPOINT, not by the inner
-   tracked one — there is no implicit begin to record).
-3. ``in_transaction`` returns True via the property's OR over
-   ``_in_transaction or _has_untracked_savepoint``.
-4. After the cleanup ROLLBACK clears the autobegun tx, both
-   flags drop and a follow-up ``transaction()`` ctxmgr can enter
-   without raising.
-
-The unit-level tests against mocks pin (1)-(3) but cannot verify
-that the upstream server actually auto-begins on a quoted
-SAVEPOINT — only the live cluster confirms that. This integration
-test closes the loop end-to-end.
+The client parser rejects quoted SAVEPOINT names but the upstream SQLite
+engine still auto-begins a transaction on them; only a live cluster confirms
+that the post-fix client-side flag invariants hold against that behaviour.
 """
 
 from __future__ import annotations
@@ -40,24 +17,18 @@ from dqliteclient import DqliteConnection
 async def test_quoted_savepoint_then_tracked_savepoint_then_release(
     cluster_address: str,
 ) -> None:
-    """Drive the full ``SAVEPOINT "Foo"`` → ``SAVEPOINT inner`` →
-    ``RELEASE inner`` sequence and pin the post-fix client-side
-    invariants at every step."""
+    """Pin client-side flag invariants across SAVEPOINT "Foo" → inner → RELEASE."""
     conn = DqliteConnection(cluster_address)
     try:
         await conn.connect()
 
-        # Baseline: clean connection, no transaction.
         assert conn._in_transaction is False
         assert conn._has_untracked_savepoint is False
         assert conn._savepoint_implicit_begin is False
         assert conn.in_transaction is False
 
-        # Quoted SAVEPOINT — the client parser refuses to extract
-        # the name (case-sensitive identifier rule), so the tracker
-        # marks the connection as having an untracked savepoint and
-        # leaves the explicit-tx flag alone. The server, however,
-        # auto-begins a transaction on the wire.
+        # Parser rejects the quoted name → untracked flag set, explicit-tx flag
+        # untouched; the server still auto-begins a tx on the wire.
         await conn.execute('SAVEPOINT "Foo"')
         assert conn._has_untracked_savepoint is True, (
             "quoted SAVEPOINT name must trip the untracked flag — the parser cannot represent it"
@@ -72,12 +43,8 @@ async def test_quoted_savepoint_then_tracked_savepoint_then_release(
             "is the load-bearing read"
         )
 
-        # Tracked inner SAVEPOINT. POST-FIX INVARIANT:
-        # ``_savepoint_implicit_begin`` stays False. Pre-fix it
-        # would be set on the inner SAVEPOINT because the tracker
-        # didn't know the outer untracked one had already
-        # auto-begun the transaction. Setting it would lead to an
-        # incorrect ROLLBACK target on cleanup.
+        # Inner tracked SAVEPOINT must NOT set _savepoint_implicit_begin: the
+        # outer untracked one already auto-began (else: wrong ROLLBACK target).
         await conn.execute("SAVEPOINT inner")
         assert conn._savepoint_implicit_begin is False, (
             "inner tracked SAVEPOINT must NOT record an implicit "
@@ -87,16 +54,14 @@ async def test_quoted_savepoint_then_tracked_savepoint_then_release(
             "untracked flag survives an inner tracked SAVEPOINT"
         )
 
-        # Release the inner. Server-side: outer "Foo" still alive,
-        # so the autobegun tx is still alive too.
+        # Releasing inner leaves outer "Foo" and its autobegun tx alive.
         await conn.execute("RELEASE inner")
         assert conn.in_transaction is True, (
             "outer SAVEPOINT still holds the autobegun tx after releasing the inner one"
         )
         assert conn._has_untracked_savepoint is True
 
-        # Cleanup ROLLBACK clears the autobegun tx and the
-        # untracked flag.
+        # Cleanup ROLLBACK clears the autobegun tx and the untracked flag.
         await conn.execute("ROLLBACK")
         assert conn._in_transaction is False
         assert conn._has_untracked_savepoint is False
@@ -111,12 +76,8 @@ async def test_quoted_savepoint_then_tracked_savepoint_then_release(
 async def test_transaction_ctxmgr_enters_cleanly_after_untracked_cleanup(
     cluster_address: str,
 ) -> None:
-    """Pin the follow-up: after the cleanup ROLLBACK clears
-    ``_has_untracked_savepoint``, a fresh ``transaction()`` ctxmgr
-    can enter without raising the "SAVEPOINT outside an explicit
-    BEGIN" InterfaceError. Catches a regression that forgets to
-    clear the flag on ROLLBACK and leaves the slot poisoned for
-    every subsequent caller."""
+    """After ROLLBACK clears the untracked flag, a fresh transaction() enters
+    cleanly; catches a regression that leaves the flag set and poisons the slot."""
     conn = DqliteConnection(cluster_address)
     try:
         await conn.connect()
@@ -130,8 +91,6 @@ async def test_transaction_ctxmgr_enters_cleanly_after_untracked_cleanup(
             "would see the stale flag and refuse to enter"
         )
 
-        # Fresh transaction() ctxmgr enters cleanly — no
-        # InterfaceError because the flag was cleared above.
         async with conn.transaction():
             assert conn._in_transaction is True
         assert conn._in_transaction is False

@@ -1,12 +1,6 @@
-"""Pin: ``ConnectionPool(node_store=...)`` forwards ``redirect_policy``
-and ``concurrent_leader_conns`` to the auto-built ``ClusterClient``.
-
-This is a separate branch from the ``addresses=`` path (the latter is
-covered by ``test_create_pool_cluster_kwarg_passthrough.py``). A
-regression that dropped the injection in the ``node_store`` branch
-would silently strip the operator's redirect (SSRF-protection) policy
-and connection-budget tuning while the addresses-path tests still pass.
-"""
+"""``ConnectionPool(node_store=...)`` forwards ``redirect_policy`` (SSRF protection)
+and ``concurrent_leader_conns`` to the auto-built ``ClusterClient`` — a separate
+branch from the ``addresses=`` path."""
 
 from __future__ import annotations
 

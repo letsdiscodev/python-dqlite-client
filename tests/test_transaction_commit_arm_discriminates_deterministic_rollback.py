@@ -1,15 +1,6 @@
-"""Pin: ``DqliteConnection.transaction()`` does NOT invalidate the
-connection on a COMMIT-arm failure whose SQLite primary code is a
-deterministic-rollback shape (``_TX_AUTO_ROLLBACK_PRIMARY_CODES`` or
-``SQLITE_CONSTRAINT`` = 19).
-
-Both code classes leave the server in a known no-tx state — the
-local tx flags were already cleared by ``execute`` /
-``_run_protocol`` before the exception propagated. Invalidating
-discards a healthy connection, forcing a fresh-connect round-trip
-under retry storms. Mirrors the rollback-arm discrimination already
-in place at the sibling no-tx-rollback path (done/tx-013).
-"""
+"""``transaction()`` does not invalidate on a COMMIT-arm failure with a deterministic-rollback
+SQLite code (``_TX_AUTO_ROLLBACK_PRIMARY_CODES`` or ``SQLITE_CONSTRAINT`` 19): the server is
+in a known no-tx state, so the connection stays healthy."""
 
 from __future__ import annotations
 
@@ -38,11 +29,9 @@ def _make_connection_in_transaction() -> DqliteConnection:
     conn._creator_pid = _conn_mod.get_current_pid()
     conn._pool_released = False
     conn._database = "main"
-    # Mark as connected so _check_connected does not raise.
-    conn._protocol = MagicMock()
+    conn._protocol = MagicMock()  # appear connected so _check_connected does not raise
     conn._db_id = 1
-    # Suppress thread/loop binding by short-circuiting _check_in_use.
-    conn._check_in_use = lambda: None
+    conn._check_in_use = lambda: None  # skip thread/loop binding
     return conn
 
 
@@ -62,14 +51,10 @@ def _make_connection_in_transaction() -> DqliteConnection:
 async def test_transaction_commit_arm_does_not_invalidate_on_deterministic_rollback(
     code: int,
 ) -> None:
-    """Drive the transaction ctxmgr to the commit-arm failure path
-    with a deterministic-rollback OperationalError code. The
-    invalidate path must NOT fire."""
     conn = _make_connection_in_transaction()
     invalidate_called = MagicMock()
     conn._invalidate = invalidate_called
 
-    # Mock execute so BEGIN succeeds, COMMIT raises with the code.
     async def _execute(sql: str) -> None:
         if "COMMIT" in sql.upper() or sql.strip().upper() == "END":
             raise OperationalError("auto-rollback shape", code)
@@ -85,17 +70,14 @@ async def test_transaction_commit_arm_does_not_invalidate_on_deterministic_rollb
 
 @pytest.mark.asyncio
 async def test_transaction_commit_arm_invalidates_on_ambiguous_failure() -> None:
-    """Defence pin: a commit-arm failure with an ambiguous shape
-    (e.g. CancelledError, transport error, non-rollback OperationalError)
-    MUST still invalidate. The discrimination is narrow."""
+    """An ambiguous-shape commit-arm failure must still invalidate; discrimination is narrow."""
     conn = _make_connection_in_transaction()
     invalidate_called = MagicMock()
     conn._invalidate = invalidate_called
 
     async def _execute(sql: str) -> None:
         if "COMMIT" in sql.upper() or sql.strip().upper() == "END":
-            # Code 1 (SQLITE_ERROR) is NOT in the deterministic-
-            # rollback set; server-side state is ambiguous.
+            # Code 1 (SQLITE_ERROR) is not in the deterministic-rollback set; state is ambiguous.
             raise OperationalError("ambiguous error", 1)
 
     conn.execute = _execute  # type: ignore[assignment]
@@ -109,8 +91,7 @@ async def test_transaction_commit_arm_invalidates_on_ambiguous_failure() -> None
 
 @pytest.mark.asyncio
 async def test_transaction_commit_arm_invalidates_on_cancelled_error() -> None:
-    """CancelledError mid-COMMIT keeps server-side state ambiguous —
-    invalidation is still mandatory."""
+    """CancelledError mid-COMMIT keeps server-side state ambiguous; invalidation is mandatory."""
     import asyncio
 
     conn = _make_connection_in_transaction()
@@ -132,9 +113,7 @@ async def test_transaction_commit_arm_invalidates_on_cancelled_error() -> None:
 
 @pytest.mark.asyncio
 async def test_transaction_commit_arm_invalidates_on_extended_ioerr() -> None:
-    """An extended IOERR code (10250 = SQLITE_IOERR_NOT_LEADER) maps
-    to primary IOERR (10) which IS in the rollback set; pin that the
-    extended-code arithmetic doesn't trip the discrimination."""
+    """Extended IOERR 10250 maps to primary IOERR 10, in the rollback set; no invalidation."""
     conn = _make_connection_in_transaction()
     invalidate_called = MagicMock()
     conn._invalidate = invalidate_called
@@ -149,6 +128,4 @@ async def test_transaction_commit_arm_invalidates_on_extended_ioerr() -> None:
         async with conn.transaction():
             pass
 
-    # IOERR's primary is in the deterministic-rollback set; the
-    # connection should NOT be invalidated.
     invalidate_called.assert_not_called()

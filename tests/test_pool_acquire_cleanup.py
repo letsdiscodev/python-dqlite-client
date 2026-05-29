@@ -1,26 +1,8 @@
-"""Narrow the except-BaseException cleanup in ``ConnectionPool.acquire``.
-
-The broken-connection branch of the ``acquire()`` except clause
-must not wrap ``_drain_idle``, ``conn.close()``, and the shielded
-reservation-release each in ``contextlib.suppress(BaseException)``.
-Under a nested-cancel scenario (caller cancels us once, then a
-parent TaskGroup or ``asyncio.timeout()`` fires a second cancel
-mid-cleanup), broad suppression silently drops the second cancel —
-and silently abandons half-done cleanup work along with it.
-Programming errors raised in cleanup (e.g., ``AttributeError`` from
-a missing attr) would likewise vanish into the void.
-
-These tests pin the narrowed semantics:
-
-1. A nested ``CancelledError`` raised by ``_drain_idle`` during cleanup
-   must still propagate out of ``acquire()``.
-2. A programming error (``AttributeError``) raised by ``conn.close()``
-   during cleanup must propagate, not be silently swallowed.
-3. Transport-layer ``OSError`` raised by ``conn.close()`` during cleanup
-   must be caught and emit a DEBUG log — the original exception from
-   the body must then re-raise unchanged.
-4. ``_size`` must still be decremented across every cleanup path.
-"""
+"""The broken-conn cleanup in ``acquire()`` must narrow its suppression:
+nested CancelledError and programming errors (AttributeError) propagate,
+transport errors (OSError) are caught + DEBUG-logged, and ``_size`` always
+decrements. Broad ``suppress(BaseException)`` would silently drop a second
+cancel and abandon half-done cleanup."""
 
 from __future__ import annotations
 
@@ -36,16 +18,8 @@ from dqliteclient.pool import ConnectionPool
 
 
 class _BrokenConn:
-    """A ``DqliteConnection`` stand-in for the broken-cleanup branch.
-
-    The pool's ``acquire`` has two cleanup paths: the healthy one
-    (return to queue) and the broken one (drain idle, close, release).
-    The broken branch (pool.py:434-…) fires when ``conn.is_connected``
-    is False *after the user's body raised*. The fake initially reports
-    ``is_connected = True`` so the early reconnect path at pool.py:385
-    doesn't engage; the user's body then flips it to False to simulate
-    an operation that invalidated the connection.
-    """
+    """``DqliteConnection`` stand-in: reports ``is_connected = True`` at acquire
+    so the user's body can flip it False to drive the broken-cleanup branch."""
 
     def __init__(self, close_side_effect: Any = None) -> None:
         self.is_connected = True
@@ -53,12 +27,9 @@ class _BrokenConn:
         self._address = "stub:9001"
         self._close_side_effect = close_side_effect
         self.close_calls = 0
-        # Pretend healthy at acquire entry so the pre-ping does not
-        # short-circuit before the test's user-body has a chance to
-        # flip ``is_connected = False`` and exercise the broken-
-        # cleanup branch. Mirrors the slice of ``DqliteConnection``
-        # that ``_socket_looks_dead`` walks (protocol → writer/reader →
-        # transport.is_closing / reader.at_eof).
+        # Mirror the slice of DqliteConnection that _socket_looks_dead walks
+        # (protocol -> writer/reader -> transport.is_closing / reader.at_eof)
+        # so the pre-ping reports healthy at acquire entry.
         protocol = MagicMock()
         protocol.is_wire_coherent = True
         transport = MagicMock()
@@ -79,13 +50,8 @@ class _BrokenConn:
 
 
 def _make_pool_with_broken_conn(broken: _BrokenConn) -> ConnectionPool:
-    """Build a pool rigged to yield ``broken`` from ``acquire``.
-
-    The pool's ``acquire`` first reserves a slot, then pulls from the
-    in-queue or calls ``_create_connection``. We bypass that by
-    pre-populating the queue with the broken conn and bumping ``_size``
-    to match.
-    """
+    """Pool pre-populated with ``broken`` (and ``_size`` bumped) so ``acquire``
+    yields it from the queue."""
     cluster = MagicMock(spec=ClusterClient)
     pool = ConnectionPool(addresses=["stub:9001"], cluster=cluster, max_size=1)
     pool._pool.put_nowait(broken)  # type: ignore[arg-type]
@@ -140,11 +106,8 @@ async def test_cleanup_logs_oserror_from_close(caplog: pytest.LogCaptureFixture)
 async def test_cleanup_logs_timeout_error_from_close(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """TimeoutError is an OSError subclass; the cleanup suppression
-    must catch it via the single OSError entry in the except tuple.
-    Regression guard for the narrowing done in the sibling cleanup
-    that removed a redundant explicit ``TimeoutError`` entry.
-    """
+    """TimeoutError (an OSError subclass) is caught via the single OSError
+    entry, not a redundant explicit TimeoutError entry."""
     broken = _BrokenConn(close_side_effect=TimeoutError("read timed out"))
     pool = _make_pool_with_broken_conn(broken)
     _stub_drain_idle(pool)
@@ -187,9 +150,7 @@ async def test_cleanup_logs_drain_idle_failure(caplog: pytest.LogCaptureFixture)
     pool = _make_pool_with_broken_conn(broken)
 
     async def explode(*_args: object, **_kwargs: object) -> None:
-        # OSError is in _POOL_CLEANUP_EXCEPTIONS — the narrow catch
-        # absorbs transport-class failures and DEBUG-logs them, but
-        # programmer bugs (TypeError / AttributeError) still propagate.
+        # OSError is in _POOL_CLEANUP_EXCEPTIONS: absorbed + DEBUG-logged.
         raise OSError("drain-idle transport failure")
 
     pool._drain_idle = explode

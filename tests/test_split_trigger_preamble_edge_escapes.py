@@ -1,13 +1,6 @@
-"""Pin: top-level statement splitter handles two trigger-preamble edge
-cases that prior tests did not cover.
-
-1. A doubled single-quote (``''``) escape INSIDE a single-quoted
-   preamble literal — the ``BEGIN`` / ``;`` inside such a literal must
-   not be mistaken for the trigger body start or a statement separator.
-2. A non-``TRIGGER`` ``CREATE`` (``CREATE TABLE`` / ``INDEX`` / ``VIEW``)
-   must bail out of trigger-body scanning and split as ordinary
-   ``;``-separated statements.
-"""
+"""Trigger-preamble edge cases: ``BEGIN``/``;`` inside a doubled-quote (``''``)
+escaped literal is not a body start/separator, and a non-TRIGGER CREATE bails
+out to ordinary ``;``-splitting."""
 
 from __future__ import annotations
 

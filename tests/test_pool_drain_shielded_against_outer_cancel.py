@@ -1,11 +1,6 @@
-"""``pool._drain_idle`` survives an outer cancel landing mid-``conn.close()``.
-
-Without per-connection shielding, an ``asyncio.timeout(pool.close())``
-that fires while one ``conn.close()`` is blocked on ``wait_closed``
-propagates ``CancelledError`` up through the drain loop and leaves
-every subsequent queued connection orphaned — their reader tasks and
-transports leak until GC at interpreter exit.
-"""
+"""``pool._drain_idle`` survives an outer cancel mid-``conn.close()``: without
+per-connection shielding the cancel propagates through ``wait_closed`` and
+leaves the started close unfinished and later queued conns orphaned."""
 
 from __future__ import annotations
 
@@ -33,7 +28,6 @@ async def test_per_connection_close_survives_outer_cancel() -> None:
 
     fakes = [FakeConn(i) for i in range(3)]
 
-    # Build the pool skeleton directly, bypassing `initialize()`.
     pool = ConnectionPool.__new__(ConnectionPool)
     pool._pool = asyncio.Queue()
     for f in fakes:
@@ -43,23 +37,16 @@ async def test_per_connection_close_survives_outer_cancel() -> None:
     pool._lock = asyncio.Lock()
     pool._closed = False
     pool._closed_event = None
-    # Read by ``_drain_idle``'s per-iteration ``wait_for`` cap. 1.0s
-    # is generous against the 0.1s per-conn sleep in the fake's
-    # close.
     pool._close_timeout = 1.0
 
-    # Race an outer cancel against the drain.
     drain_task = asyncio.create_task(pool._drain_idle())
     await asyncio.sleep(0.05)  # let the drain start the first close
     drain_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await drain_task
 
-    # The drain loop bails on cancel, but the shielded per-conn close
-    # keeps running. Yield long enough for it to settle, then assert
-    # every STARTED close eventually COMPLETED — without the shield,
-    # cancel propagates into ``wait_closed`` and the close never
-    # finishes.
+    # The loop bails on cancel but the shielded close keeps running; let it
+    # settle, then assert every started close completed.
     await asyncio.sleep(0.2)
     assert set(started).issubset({0, 1, 2})
     assert started  # at least one close was started before the cancel

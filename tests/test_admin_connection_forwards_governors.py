@@ -1,17 +1,6 @@
-"""``ClusterClient.open_admin_connection`` forwards
-``trust_server_heartbeat``, ``max_total_rows``, and
-``max_continuation_frames`` to the underlying ``DqliteProtocol``
-construction. Previously every admin RPC (cluster_info, dump,
-transfer_leadership, ...) ran with the dqlitewire defaults regardless
-of how the operator configured the parent ``ClusterClient``.
-
-``trust_server_heartbeat`` is security-relevant (opt-in widening of
-the per-read deadline). ``max_total_rows`` and
-``max_continuation_frames`` matter for ``dump`` paths whose
-multi-GB results would blow through the default frame cap.
-
-Symmetric forwarding into ``_query_leader`` is also pinned here.
-"""
+"""``open_admin_connection`` and ``_query_leader`` forward the configured
+``trust_server_heartbeat`` / ``max_total_rows`` / ``max_continuation_frames``
+governors to ``DqliteProtocol`` instead of falling back to wire defaults."""
 
 from __future__ import annotations
 
@@ -98,9 +87,7 @@ async def test_query_leader_forwards_governors() -> None:
 
 
 def test_cluster_client_governor_defaults_match_wire_defaults() -> None:
-    """Default-constructed ClusterClient picks up the dqlitewire
-    DEFAULT_MAX_TOTAL_ROWS / DEFAULT_MAX_CONTINUATION_FRAMES — the
-    forwarding does not silently downgrade from those defaults."""
+    """Default-constructed ClusterClient picks up the dqlitewire defaults."""
     from dqlitewire import (
         DEFAULT_MAX_CONTINUATION_FRAMES,
         DEFAULT_MAX_TOTAL_ROWS,

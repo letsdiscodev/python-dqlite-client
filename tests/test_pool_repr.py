@@ -1,11 +1,4 @@
-"""ConnectionPool must have an informative __repr__.
-
-The pool class shares the repr discipline applied to Connection /
-Cursor / DqliteConnection. The repr surfaces
-``size`` / ``min_size`` / ``max_size`` / ``open|closed`` and a
-capped address list for debug logs and interactive exploration;
-no secrets (dqlite has no wire auth) are revealed.
-"""
+"""ConnectionPool must have an informative __repr__."""
 
 from __future__ import annotations
 
@@ -34,4 +27,4 @@ def test_repr_caps_long_address_list() -> None:
     pool = ConnectionPool(addrs, min_size=0, max_size=2)
     r = repr(pool)
     assert "+7" in r  # 10 total, first 3 shown, +7 hint
-    assert "h3" not in r  # 4th not shown directly
+    assert "h3" not in r

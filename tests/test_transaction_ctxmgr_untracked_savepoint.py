@@ -1,13 +1,5 @@
-"""``transaction()`` ctxmgr surfaces a dedicated diagnostic when an
-untracked SAVEPOINT is in flight.
-
-Without the guard, entering ``transaction()`` after issuing
-``SAVEPOINT "Foo"`` (parser-rejected name → autobegun server-side tx
-with ``_in_transaction=False``, ``_has_untracked_savepoint=True``)
-would proceed to send ``BEGIN`` over the wire. The server replies with
-``cannot start a transaction within a transaction`` — confusing, since
-the user's diagnostic should name the SAVEPOINT root cause.
-"""
+"""``transaction()`` surfaces a SAVEPOINT-specific diagnostic when an untracked SAVEPOINT is in
+flight, instead of letting BEGIN reach the wire and return a confusing nested-transaction error."""
 
 from __future__ import annotations
 
@@ -31,12 +23,11 @@ def conn() -> DqliteConnection:
 async def test_transaction_ctxmgr_rejects_after_untracked_savepoint(
     conn: DqliteConnection,
 ) -> None:
-    # Drive the tracker to: _in_transaction=False, _has_untracked_savepoint=True.
     conn._update_tx_flags_from_sql('SAVEPOINT "Foo"')
     assert conn._has_untracked_savepoint is True
     assert conn._in_transaction is False
 
-    # No execute should reach the wire — the guard fires first.
+    # The guard must fire before any execute reaches the wire.
     conn.execute = AsyncMock(side_effect=AssertionError("BEGIN must not be issued"))
 
     with pytest.raises(InterfaceError, match="SAVEPOINT.*auto-begun"):

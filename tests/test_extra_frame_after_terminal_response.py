@@ -1,11 +1,8 @@
-"""``Protocol._read_response`` rejects extra frames after every
-terminal response type — not just FailureResponse. RowsResponse is
-the sole exception (continuation frames legitimately span multiple
-decode steps).
+"""Protocol._read_response rejects extra frames after every terminal response (RowsResponse
+excepted — its continuation frames span decode steps).
 
-Hostile-server hardening: extra bytes from a buggy / malicious
-server would otherwise be consumed as the response to the NEXT user
-RPC, producing a misleading error against an unrelated operation.
+Without this, extra bytes from a buggy/malicious server get consumed as the next RPC's response,
+surfacing a misleading error against an unrelated operation.
 """
 
 import asyncio
@@ -29,7 +26,7 @@ def protocol() -> DqliteProtocol:
     reader = AsyncMock(spec=asyncio.StreamReader)
     writer = MagicMock(spec=asyncio.StreamWriter)
     proto = DqliteProtocol(reader, writer, timeout=2.0)
-    # Pretend handshake done so _read_response works directly.
+    # Skip the handshake so _read_response works directly.
     proto._decoder._handshake_done = True
     proto._decoder._version = 1
     return proto
@@ -64,9 +61,7 @@ async def test_extra_frame_after_terminal_raises(
     first: object,
     second: object,
 ) -> None:
-    """Two coalesced responses where the first is a non-Rows
-    terminal — the read of the first must raise ProtocolError so
-    the connection is invalidated and the pool drops the slot."""
+    """Two coalesced responses whose first is a non-Rows terminal must raise ProtocolError."""
     payload = first.encode() + second.encode()  # type: ignore[attr-defined]
     protocol._reader.read.return_value = payload  # type: ignore[attr-defined]
 

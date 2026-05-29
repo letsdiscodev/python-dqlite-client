@@ -1,11 +1,6 @@
-"""Pool reset must tolerate InterfaceError from _check_in_use.
-
-If a connection's `_in_transaction=True` and `_tx_owner` points at a
-still-live task, `conn.execute("ROLLBACK")` from `_reset_connection`
-goes through `_run_protocol → _check_in_use` which raises
-`InterfaceError("owned by another task")`. That InterfaceError must be
-classified as a clean drop-the-connection event, NOT crash the pool's
-release path and leak the `_size` slot.
+"""Pool reset must tolerate InterfaceError from _check_in_use (a conn
+whose _tx_owner is a still-live other task): treat as a clean drop, not
+a crash that leaks the _size slot.
 """
 
 from __future__ import annotations
@@ -27,36 +22,22 @@ def test_pool_cleanup_exceptions_include_interface_error() -> None:
 
 @pytest.mark.asyncio
 async def test_reset_connection_tolerates_interface_error_from_check_in_use() -> None:
-    """A connection released to the pool with a stale tx-owner from
-    another live task must not crash the pool — it should be treated
-    as a non-reusable connection and dropped. Without this fix the
-    InterfaceError from _check_in_use propagates out of
-    _reset_connection and the pool's release path crashes, leaking
-    the connection's `_size` slot."""
+    """A conn with a stale tx-owner from another live task is dropped
+    (return False), not crashed with a leaked _size slot."""
     pool = ConnectionPool(["localhost:9001"], min_size=0, max_size=1)
 
-    # Build a connection that "looks" like it belongs to a different
-    # task that is still alive.
     conn = DqliteConnection("localhost:9001")
-    # Force is_connected to True so _reset_connection takes the ROLLBACK
-    # branch instead of the early "not connected" return.
+    # is_connected=True forces the ROLLBACK branch, not the early return.
     with patch.object(DqliteConnection, "is_connected", new=True):
         conn._in_transaction = True
-        # Use the current task as the (different) owner from the pool's
-        # release task. Real-world callers manage this via the
-        # transaction() ctxmgr; here we set the flag directly to
-        # exercise the defensive path.
         conn._tx_owner = asyncio.current_task()
 
         async def _release_from_a_different_task() -> bool:
-            # Run the reset from a brand-new task so _check_in_use sees
-            # the original (current) task as the tx owner and raises
-            # InterfaceError.
+            # Reset from a new task so _check_in_use sees the original
+            # task as tx owner and raises InterfaceError.
             return await pool._reset_connection(conn)
 
         sibling = asyncio.create_task(_release_from_a_different_task())
         result = await sibling
 
-    # _reset_connection should return False (drop the connection) without
-    # propagating InterfaceError.
     assert result is False

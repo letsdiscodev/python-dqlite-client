@@ -1,24 +1,6 @@
-"""Pin: ``DqliteProtocol._read_response`` offloads the
-multi-MiB wire decode to a worker thread when the pending
-message exceeds ``_DECODE_OFFLOAD_THRESHOLD``.
-
-The prior shape ran ``self._decoder.decode()`` synchronously on
-the loop thread. For a single large ``RowsResponse`` frame
-(100k rows × 32 cols ≈ 25 MiB body), the per-row + per-cell
-decode pinned the loop for hundreds of ms — long enough to miss
-a 100 ms heartbeat deadline.
-
-Mirrors the dump-decode offload + send-encode offload pattern
-already in this file: read raw frame bytes on-loop, peek the
-header to size-gate, decode via ``asyncio.to_thread`` when the
-projected payload exceeds the threshold. The hostile-server
-trailing-frame check still fires on the loop thread before the
-off-loop decode.
-
-The threshold (256 KiB, shared with the encode-offload constant)
-sits comfortably above the per-frame heartbeat / admin RPC size
-so the common case stays in-loop.
-"""
+"""Pin: ``DqliteProtocol._read_response`` offloads a multi-MiB wire decode to a worker
+thread when the pending message exceeds ``_DECODE_OFFLOAD_THRESHOLD`` (256 KiB), so the
+per-row/per-cell decode doesn't pin the loop and miss a heartbeat deadline."""
 
 from __future__ import annotations
 
@@ -43,9 +25,7 @@ def _build_rows_response_bytes(n_rows: int, n_cols: int) -> bytes:
     column_types = [ValueType.INTEGER] * n_cols
     rows = [[i + j for j in range(n_cols)] for i in range(n_rows)]
     row_types = [list(column_types) for _ in range(n_rows)]
-    # The ints in ``rows`` are statically typed as ``list[list[int]]``
-    # but ``RowsResponse.rows`` is ``list[list[WireValue]]``; the
-    # cast is widening-safe (int is a member of WireValue).
+    # int is a member of WireValue, so the rows arg is widening-safe.
     response = RowsResponse(
         column_names=column_names,
         column_types=column_types,
@@ -78,10 +58,7 @@ def _make_protocol_with_buffered_response(frame_bytes: bytes) -> DqliteProtocol:
 
 
 async def test_read_response_small_message_stays_in_loop() -> None:
-    """A small response (empty / admin / heartbeat-class) must
-    NOT offload — the ~50 µs thread-hop cost is wasteful for
-    sub-threshold payloads.
-    """
+    """A small (sub-threshold) response must decode in-loop, not pay the thread hop."""
     frame_bytes = _build_empty_response_bytes()
     proto = _make_protocol_with_buffered_response(frame_bytes)
 
@@ -105,12 +82,8 @@ async def test_read_response_small_message_stays_in_loop() -> None:
 
 
 async def test_read_response_large_message_offloads_decode() -> None:
-    """A large RowsResponse frame (well above 256 KiB) MUST
-    decode on a worker thread so the per-row + per-cell decode
-    chain does not freeze the loop.
-    """
-    # ~40k rows × 4 cols ≈ ~1.3 MiB encoded — comfortably above
-    # the 256 KiB threshold.
+    """A large RowsResponse frame (above 256 KiB) must decode on a worker thread."""
+    # ~40k rows x 4 cols ~= 1.3 MiB encoded, above the 256 KiB threshold.
     frame_bytes = _build_rows_response_bytes(n_rows=40_000, n_cols=4)
     assert len(frame_bytes) > 256 * 1024, (
         f"test fixture too small ({len(frame_bytes)} bytes); should be >256 KiB"
@@ -140,26 +113,17 @@ async def test_read_response_large_message_offloads_decode() -> None:
 
 
 async def test_read_response_threshold_is_documented_constant() -> None:
-    """The decode threshold lives as a module-level ``Final``
-    constant so operators can grep for it and a future tuning
-    lands at a single site.
-    """
+    """The decode threshold is a module-level constant tunable at a single site."""
     from dqliteclient import protocol as protocol_mod
 
     assert hasattr(protocol_mod, "_DECODE_OFFLOAD_THRESHOLD")
     threshold = protocol_mod._DECODE_OFFLOAD_THRESHOLD
-    # Sanity bound: between 64 KiB and 1 MiB.
     assert 64 * 1024 <= threshold <= 1024 * 1024
 
 
 async def test_read_response_rejects_trailing_frame_after_terminal() -> None:
-    """Hostile-server hardening: a trailing buffered frame after
-    a terminal-type (non-Rows) response is a protocol violation.
-    The check still fires under the offload-based decode path
-    (the check looks at ``self._decoder.has_message()`` after the
-    decode returns; both the in-loop and off-loop decode paths
-    leave the trailing frame visible to that probe).
-    """
+    """Hostile-server hardening: a trailing frame after a terminal response is rejected,
+    and the check still fires under the offload decode path."""
     files_bytes = MessageEncoder().encode(FilesResponse(files={"main.db": b"\x00" * 64}))
     trailing = _build_empty_response_bytes()
     poisoned = files_bytes + trailing

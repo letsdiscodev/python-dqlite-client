@@ -1,15 +1,5 @@
-"""Pin: cluster-wide unreachable / connect-exhaustion log a single
-WARNING summary at the aggregate-failure decision point — distinct
-from the per-attempt DEBUG noise that fires on every individual
-probe / retry.
-
-Per-attempt log lines stay at DEBUG (a routine leader flip's
-per-attempt churn must not spam logs at default verbosity), but the
-all-attempts-exhausted outcome is the one event paged operators need
-to see at default verbosity. Without this, operators tailing logs at
-INFO see nothing during the failure cascade and only the
-application-level traceback after the caller catches the exception.
-"""
+"""Connect exhaustion logs a single aggregate WARNING; per-attempt lines stay
+at DEBUG so routine leader-flip churn does not spam logs at default verbosity."""
 
 from __future__ import annotations
 
@@ -27,8 +17,7 @@ from dqliteclient.node_store import MemoryNodeStore
 async def test_find_leader_logs_aggregate_warning_on_all_nodes_failed(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """When every node in the cluster fails leader discovery, an
-    aggregate WARNING fires before the ClusterError raise."""
+    """An aggregate WARNING fires before the ClusterError when all nodes fail."""
     caplog.set_level(logging.DEBUG, logger="dqliteclient.cluster")
 
     store = MemoryNodeStore(["node-a:9001", "node-b:9001"])
@@ -51,9 +40,7 @@ async def test_find_leader_logs_aggregate_warning_on_all_nodes_failed(
 
 @pytest.mark.asyncio
 async def test_per_node_failures_remain_at_debug(caplog: pytest.LogCaptureFixture) -> None:
-    """Per-attempt failures must NOT escalate to WARNING — those would
-    spam logs during routine leader-flip churn. The aggregate WARNING
-    is the only WARNING that fires."""
+    """Per-attempt failures stay at DEBUG; the aggregate is the only WARNING."""
     caplog.set_level(logging.DEBUG, logger="dqliteclient.cluster")
 
     store = MemoryNodeStore(["node-a:9001", "node-b:9001"])
@@ -63,8 +50,6 @@ async def test_per_node_failures_remain_at_debug(caplog: pytest.LogCaptureFixtur
     with pytest.raises(ClusterError):
         await cluster.find_leader()
 
-    # Per-node DEBUG lines should be present; per-node WARNING lines
-    # should not.
     debug_lines = [
         r for r in caplog.records if r.levelno == logging.DEBUG and r.name == "dqliteclient.cluster"
     ]

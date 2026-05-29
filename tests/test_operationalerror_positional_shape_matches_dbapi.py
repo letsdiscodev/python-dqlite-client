@@ -1,12 +1,5 @@
-"""Pin: ``client.OperationalError`` and ``dbapi.OperationalError``
-share the same ``(message, code)`` positional shape.
-
-The two packages export classes with the same name; both code-bearing.
-Cross-package bridges (SA dialect ``is_disconnect``, retry middleware,
-custom decorators) commonly pass args positionally between them.
-Without alignment, a passthrough silently swaps fields:
-``code`` becomes a string, defeating every code-based check downstream.
-"""
+"""``client.OperationalError`` and ``dbapi.OperationalError`` share the same
+``(message, code)`` positional shape so cross-package passthroughs don't swap fields."""
 
 from __future__ import annotations
 
@@ -14,8 +7,7 @@ import dqliteclient.exceptions as ce
 
 
 def test_client_operationalerror_positional_args_match_message_code() -> None:
-    """``OperationalError("message text", 42)`` — message first, code second.
-    Mirrors stdlib ``sqlite3.Error`` and ``dqlitedbapi.OperationalError``."""
+    """Message first, code second, mirroring stdlib sqlite3 and dqlitedbapi."""
     e = ce.OperationalError("boom", 42)
     assert e.message == "boom"
     assert e.code == 42
@@ -29,9 +21,7 @@ def test_client_operationalerror_with_raw_message_kwarg() -> None:
 
 
 def test_pickle_round_trip_preserves_positional_shape() -> None:
-    """``__reduce__`` returns ``(cls, self.args, ...)``. After the
-    positional flip, ``self.args == (message, code)``; pickle must
-    reconstruct via ``OperationalError(message, code)``."""
+    """``__reduce__`` relies on ``self.args == (message, code)`` for round-trip."""
     import pickle
 
     e = ce.OperationalError("constraint failed", 19, raw_message="full text")

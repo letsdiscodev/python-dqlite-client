@@ -1,11 +1,4 @@
-"""``LeaderInfo`` and ``NodeMetadata`` are returned by public
-``ClusterClient.leader_info()`` / ``ClusterClient.describe()`` methods,
-so they MUST be reachable via the package top-level import.
-
-Before this fix, callers had to write
-``from dqliteclient.cluster import LeaderInfo`` — branching the public
-surface across two import paths.
-"""
+"""``LeaderInfo`` / ``NodeMetadata`` (returned by public methods) must be top-level imports."""
 
 import dqliteclient
 from dqliteclient.cluster import LeaderInfo as ClusterLeaderInfo

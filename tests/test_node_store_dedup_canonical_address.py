@@ -1,18 +1,5 @@
-"""Pin: ``_validate_and_normalise_nodes`` deduplicates by the
-``parse_address`` canonical tuple, not by the stripped lexical
-address.
-
-Pre-fix the dedup key was the stripped raw address string; entries
-like ``NodeInfo(address="Node1:9001")`` and
-``NodeInfo(address="node1:9001")`` both survived because their
-lexical strings differ, even though ``parse_address`` returns the
-same ``(host, port)`` tuple (RFC 1035 §2.3.3 case-insensitive
-hostname). ``find_leader`` then probes the same peer twice, halving
-the per-attempt probe budget.
-
-Mirrors the canonical-tuple discipline already established in
-``_addr_equiv`` at ``cluster.py:174-190``.
-"""
+"""``_validate_and_normalise_nodes`` dedups by the ``parse_address`` canonical (host, port)
+tuple, not the lexical string, so case/format variants don't make find_leader double-probe."""
 
 from __future__ import annotations
 
@@ -24,8 +11,7 @@ from dqlitewire import NodeRole
 
 @pytest.mark.asyncio
 async def test_set_nodes_dedups_case_insensitive_hostname() -> None:
-    """Mixed-case hostname variants are the same canonical address
-    per RFC 1035; the store must retain only one entry."""
+    """Mixed-case hostname variants are one canonical address (RFC 1035); keep one entry."""
     store = MemoryNodeStore()
     await store.set_nodes(
         [
@@ -35,8 +21,7 @@ async def test_set_nodes_dedups_case_insensitive_hostname() -> None:
         ]
     )
     nodes = await store.get_nodes()
-    # First-wins dedup: Node1 kept, the second mixed-case variant of
-    # the same canonical host dropped, node2 retained as distinct.
+    # First-wins dedup: Node1 kept, the second mixed-case variant dropped.
     assert len(nodes) == 2, (
         f"expected 2 nodes after canonical dedup of Node1:9001 vs node1:9001, "
         f"got {len(nodes)}: {[n.address for n in nodes]}"
@@ -48,8 +33,7 @@ async def test_set_nodes_dedups_case_insensitive_hostname() -> None:
 
 @pytest.mark.asyncio
 async def test_set_nodes_dedups_ipv6_short_vs_long_form() -> None:
-    """``[::1]:9001`` and ``[0:0:0:0:0:0:0:1]:9001`` parse to the same
-    canonical ``(host, port)`` tuple — only one should survive dedup."""
+    """IPv6 short and long forms parse to the same canonical tuple; only one survives."""
     store = MemoryNodeStore()
     await store.set_nodes(
         [

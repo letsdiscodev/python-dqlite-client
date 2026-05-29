@@ -1,15 +1,6 @@
-"""Pin the ``_failure_message`` helper that renders FailureResponse
-text for raised OperationalError / ProtocolError.
-
-Two surface contracts:
-
-1. Empty / whitespace-only server messages are substituted with
-   ``"(no diagnostic from server)"`` so log scraping has a stable
-   keyword to grep and operators are not staring at ``"[1] "``.
-2. The address suffix is appended unchanged. Non-empty messages pass
-   through verbatim (preserving the ``_sanitize_server_text`` cleanup
-   already applied by the wire layer).
-"""
+"""``_failure_message`` renders FailureResponse text: empty/whitespace
+messages become "(no diagnostic from server)"; the address suffix is
+appended unchanged and non-empty bodies pass through verbatim."""
 
 from __future__ import annotations
 

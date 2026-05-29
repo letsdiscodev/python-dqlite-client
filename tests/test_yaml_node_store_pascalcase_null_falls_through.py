@@ -1,13 +1,8 @@
-"""Pin: ``YamlNodeStore._load_from_disk`` PascalCase + lowercase
-fallback honours an explicit-``null`` canonical key.
+"""Pin: the PascalCase->lowercase fallback honours an explicit-``null`` canonical key.
 
-``dict.get(key, default)`` only honours the default when ``key`` is
-missing — not when ``key`` is present with an explicit-``None``
-value. Previously an entry like ``{"ID": null, "id": 5, ...}``
-resolved to ``None`` and tripped "missing 'ID'" despite the
-lowercase alias providing the value. The loader now uses an
-explicit ``is None`` fallback so the documented "lowercase aliases
-on read" tolerance applies to the explicit-null case too.
+``dict.get(key, default)`` keeps an explicit ``None`` over the default, so
+``{"ID": null, "id": 5}`` used to trip "missing 'ID'"; the loader uses an ``is None``
+fallback so lowercase aliases also apply to the explicit-null case.
 """
 
 from pathlib import Path
@@ -48,8 +43,7 @@ def test_role_pascalcase_null_falls_through(tmp_path: Path) -> None:
 
 
 def test_id_canonical_explicit_wins_over_alias(tmp_path: Path) -> None:
-    """Canonical PascalCase precedence is preserved — explicit
-    canonical value wins over the lowercase alias."""
+    """Explicit canonical value wins over the lowercase alias."""
     yaml_file = tmp_path / "nodes.yml"
     yaml_file.write_text("- {ID: 5, id: 99, Address: 'h:9001', Role: 0}\n")
 
@@ -58,8 +52,7 @@ def test_id_canonical_explicit_wins_over_alias(tmp_path: Path) -> None:
 
 
 def test_id_lowercase_only_still_works(tmp_path: Path) -> None:
-    """Pure lowercase-alias path (canonical key not present) keeps
-    working — unchanged."""
+    """Pure lowercase-alias path (canonical key absent) keeps working."""
     yaml_file = tmp_path / "nodes.yml"
     yaml_file.write_text("- {id: 5, address: 'h:9001', role: voter}\n")
 
@@ -68,7 +61,6 @@ def test_id_lowercase_only_still_works(tmp_path: Path) -> None:
 
 
 def test_id_both_missing_still_raises(tmp_path: Path) -> None:
-    """Both keys missing still surfaces 'missing 'ID''."""
     yaml_file = tmp_path / "nodes.yml"
     yaml_file.write_text("- {Address: 'h:9001', Role: voter}\n")
 

@@ -1,16 +1,6 @@
-"""Smoke test for the python-dqlite-dev testlib cluster_control fixture.
-
-Validates the sys.path / pytest_plugins bootstrap in
-``tests/integration/conftest.py`` by exercising the most basic
-``TestClusterControl`` operations against the live cluster. A
-failure here means either the testlib is not on sys.path (sibling
-repo missing), or ``ClusterClient.cluster_info`` /
-``transfer_leadership`` no longer wire through correctly.
-
-The harder fault-injection tests in
-``test_pool_concurrent_tx_leader_flip.py`` build on the same
-fixture; this file is the canary.
-"""
+"""Smoke/canary test for the testlib ``cluster_control`` fixture: validates the sys.path /
+pytest_plugins bootstrap by exercising basic ``TestClusterControl`` ops on the live cluster.
+A failure means the testlib is not on sys.path or cluster_info/transfer_leadership broke."""
 
 from __future__ import annotations
 
@@ -49,10 +39,7 @@ async def test_cluster_control_force_leader_flip_converges(cluster_control: obje
     assert result.leader_after == result.target.address
     assert result.target.node_id != starting_leader.node_id
 
-    # Restore the original leader so subsequent tests in this session
-    # observe a deterministic starting state. Best-effort — if the
-    # restore itself fails the previous-leader-was-X data still got
-    # captured by this test's load-bearing assertions.
+    # Best-effort restore of the original leader for subsequent tests.
     import contextlib
 
     with contextlib.suppress(Exception):

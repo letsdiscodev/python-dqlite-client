@@ -1,18 +1,5 @@
-"""Pin: ``leader_info`` raises ``ProtocolError`` for the malformed
-``(node_id=0, address!="")`` shape and tolerates the
-``(node_id>0, address="")`` RAFT_NOMEM transient by surfacing
-``None`` (matching the sibling ``_query_leader`` arm and the Go / C
-clients). The re-probe via ``_verify_redirect`` runs when leadership
-flipped between ``find_leader`` and the follow-up ``get_leader``.
-
-The ``(node_id>0, address="")`` shape is reachable on a real
-follower after a ``RAFT_NOMEM`` from ``recvUpdateLeader``
-(raft/recv.c): step 1 sets ``current_leader.id``; step 4 fails to
-malloc the address buffer. ``handle_leader`` null-coerces the NULL
-address to ``""`` on the wire. Treating this as
-"no leader known" rather than ``ProtocolError`` keeps a recoverable
-cluster window from killing the admin RPC.
-"""
+"""Pin: ``leader_info`` raises ``ProtocolError`` for malformed ``(0, addr!="")`` but
+tolerates the ``(id>0, "")`` RAFT_NOMEM transient (recvUpdateLeader) by surfacing None."""
 
 from __future__ import annotations
 
@@ -64,10 +51,7 @@ async def test_malformed_zero_id_nonempty_address_raises_protocol_error() -> Non
 
 @pytest.mark.asyncio
 async def test_nonzero_id_empty_address_returns_none() -> None:
-    """``(7, "")`` is the RAFT_NOMEM transient from
-    ``recvUpdateLeader`` — return ``None`` ("no leader known") rather
-    than raise. Matches the sibling ``_query_leader`` arm and Go/C
-    client behaviour."""
+    """``(7, "")`` is the RAFT_NOMEM transient — return None, not raise."""
     cluster = _make_cluster((7, ""))
     info = await cluster.leader_info()
     assert info is None
@@ -82,9 +66,7 @@ async def test_zero_id_empty_address_returns_none() -> None:
 
 @pytest.mark.asyncio
 async def test_flipped_address_reverified_via_verify_redirect() -> None:
-    """On leader flip mid-call, ``leader_info`` calls ``_verify_redirect``
-    and uses the verified target's get_leader output (not the stale
-    hint's)."""
+    """On leader flip, uses the verified target's get_leader, not the stale hint's."""
     cluster = _make_cluster(
         (7, "flipped:9001"),
         verified_return="flipped:9001",
@@ -104,8 +86,7 @@ async def test_flipped_address_reverified_via_verify_redirect() -> None:
 
 @pytest.mark.asyncio
 async def test_flipped_address_verification_fails_returns_none() -> None:
-    """Stale-hint case: the re-probe returns None, so leader_info
-    surfaces None rather than the suspect address."""
+    """When the re-probe returns None, surface None, not the suspect address."""
     cluster = _make_cluster(
         (7, "stale:9001"),
         verified_return=None,
@@ -119,11 +100,7 @@ async def test_flipped_address_verification_fails_returns_none() -> None:
 
 @pytest.mark.asyncio
 async def test_leader_info_success_preserves_cache() -> None:
-    """``leader_info`` SUCCESS must NOT invalidate ``_last_known_leader``
-    — the responding leader has provably just answered the RPC, so
-    the cache stays warm. A regression that adds an unconditional
-    ``finally: self._set_last_known_leader(None)`` would re-introduce
-    the wasted-sweep defect."""
+    """SUCCESS must not invalidate ``_last_known_leader`` — the responder just answered."""
     cluster = ClusterClient(MemoryNodeStore(["127.0.0.1:9001"]), timeout=2.0)
     cluster._set_last_known_leader("warm:9001")
     cluster.find_leader = AsyncMock(return_value="127.0.0.1:9001")
@@ -143,10 +120,7 @@ async def test_leader_info_success_preserves_cache() -> None:
 
 @pytest.mark.asyncio
 async def test_verified_target_returns_zero_empty_returns_none() -> None:
-    """Inner re-validation: a verified target reporting ``(0, "")``
-    surfaces as ``leader_info() is None`` — the verified peer
-    acknowledges "no leader known" and that survives through the
-    inner check unchanged."""
+    """Inner re-validation: a verified target reporting ``(0, "")`` surfaces None."""
     cluster = _make_cluster(
         (7, "flipped:9001"),
         verified_return="flipped:9001",
@@ -158,12 +132,8 @@ async def test_verified_target_returns_zero_empty_returns_none() -> None:
 
 @pytest.mark.asyncio
 async def test_verified_target_returns_zero_nonempty_raises_protocol_error() -> None:
-    """Inner re-validation pin: a verified target reporting
-    ``(0, "attacker:9001")`` is malformed (raft atomicity) and must
-    raise ``ProtocolError("malformed ... on verified hint")``. A
-    regression that drops the inner re-validation would let an
-    attacker-influenced stale hint feed back a malformed shape and
-    surface as ``None`` (silently treated as "no leader known")."""
+    """Inner re-validation: a verified target reporting ``(0, addr!="")`` must still raise,
+    so an attacker-influenced stale hint can't smuggle a malformed shape past as None."""
     cluster = _make_cluster(
         (7, "flipped:9001"),
         verified_return="flipped:9001",
@@ -175,9 +145,7 @@ async def test_verified_target_returns_zero_nonempty_raises_protocol_error() -> 
 
 @pytest.mark.asyncio
 async def test_verified_target_returns_nonzero_empty_returns_none() -> None:
-    """Inner re-validation pin: a verified target reporting
-    ``(7, "")`` is the RAFT_NOMEM transient. Mirror the outer arm and
-    surface ``None`` rather than raising."""
+    """Inner re-validation: a verified target reporting ``(7, "")`` mirrors the outer arm."""
     cluster = _make_cluster(
         (7, "flipped:9001"),
         verified_return="flipped:9001",

@@ -1,19 +1,7 @@
-"""Pin: ``cluster._truncate_error`` composes the display sanitiser so
-the value flowing into ``OperationalError.raw_message`` cannot carry
-log-splitting characters (CWE-117 defence-in-depth).
+"""``cluster._truncate_error`` runs the display sanitiser over ``raw_message`` (CWE-117).
 
-Server-supplied text reaches this helper via every
-``protocol._failure_text`` raise site (``raise OperationalError(...,
-raw_message=response.message)``). ``raw_message`` is consumed by SA's
-``is_disconnect`` substring matcher (safe -- byte-level scan) AND by
-operator-side ``logger.error("%s", exc.raw_message)`` calls (NOT
-safe without sanitisation).
-
-The display variant (``sanitize_server_text``) is the right tool --
-it preserves LF / Tab for multi-line server diagnostics and strips
-control / bidi / invisible codepoints. Strict-escape would defeat
-the substring-matcher's expectation that ``raw_message`` preserves
-LF in multi-line server diagnostics.
+Uses ``sanitize_server_text`` (not strict-escape) to preserve LF/Tab that SA's
+``is_disconnect`` substring matcher expects in multi-line server diagnostics.
 """
 
 from __future__ import annotations
@@ -46,17 +34,13 @@ def test_preserves_tab() -> None:
 
 
 def test_short_message_passes_through_unchanged_after_sanitise() -> None:
-    """A short, clean message must round-trip identically."""
     raw = "database is locked"
     out = _truncate_error(raw)
     assert out == raw
 
 
 def test_substring_match_for_is_disconnect_preserved() -> None:
-    """SA's ``is_disconnect`` substring matcher pre-scans
-    ``raw_message`` for the wire-layer SQLite phrase 'database is
-    locked'. Composing the display sanitiser must not break the
-    substring-match expectation."""
+    """The sanitiser must not break SA's ``is_disconnect`` substring match on raw_message."""
     raw = "database is locked"
     out = _truncate_error(raw)
     assert "database is locked" in out

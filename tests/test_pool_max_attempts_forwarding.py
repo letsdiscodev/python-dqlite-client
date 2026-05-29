@@ -1,12 +1,6 @@
-"""``ConnectionPool`` and ``create_pool`` must forward ``max_attempts``
-to the underlying ``ClusterClient.connect()`` call so operators can
-tune connect-retry behavior without having to construct a custom
-``ClusterClient`` and pass it via ``cluster=``.
-
-Today the parameter exists at the cluster layer
-(``ClusterClient.connect(max_attempts=...)``) but is invisible from
-the pool surface, leaving pool users with the hard-coded default of 3.
-"""
+"""``ConnectionPool`` and ``create_pool`` forward ``max_attempts`` to
+``ClusterClient.connect()`` so pool users can tune connect-retry without a custom
+``ClusterClient``."""
 
 from __future__ import annotations
 
@@ -51,16 +45,10 @@ async def test_connection_pool_default_max_attempts_is_none() -> None:
 
 @pytest.mark.asyncio
 async def test_create_pool_forwards_max_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``create_pool(..., max_attempts=N)`` reaches the underlying
-    cluster.connect call too. Bypass real network connect with a
-    mock cluster on the pool itself; we just need to verify the
-    parameter flows through."""
+    """``create_pool(..., max_attempts=N)`` reaches the underlying cluster.connect."""
     captured: dict[str, object] = {}
 
     async def fake_initialize(self: object) -> None:
-        # Skip the bootstrap connect; we are only verifying parameter
-        # forwarding from create_pool → ConnectionPool, not real
-        # cluster reachability.
         return
 
     monkeypatch.setattr("dqliteclient.pool.ConnectionPool.initialize", fake_initialize)
@@ -75,7 +63,6 @@ async def test_create_pool_forwards_max_attempts(monkeypatch: pytest.MonkeyPatch
         await pool._create_connection()
         assert captured.get("max_attempts") == 5
     finally:
-        # ``close()`` is safe to call on a pool that did not initialize.
         await pool.close()
 
 

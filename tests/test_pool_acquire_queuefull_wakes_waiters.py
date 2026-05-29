@@ -1,10 +1,7 @@
 """The QueueFull cleanup arm of ``acquire()`` must route its ``_size``
-decrement through ``_release_reservation`` so waiters parked on
-``closed_event.wait()`` get woken.
-
-Inline ``self._size -= 1`` skips ``_signal_state_change`` — meaning a
-sibling acquirer waiting for capacity only wakes via the 10s poll
-timeout. Assert the closed event gets set when the cleanup arm fires.
+decrement through ``_release_reservation``; an inline ``self._size -= 1``
+skips ``_signal_state_change``, leaving a sibling acquirer to wake only on
+the 10s poll instead of via the closed event.
 """
 
 from __future__ import annotations
@@ -70,17 +67,15 @@ def _make_pool() -> tuple[ConnectionPool, list[_FakeConn]]:
 
 @pytest.mark.asyncio
 async def test_queuefull_cleanup_wakes_waiters_via_state_signal() -> None:
-    """Exercise the cancel-win QueueFull arm and assert the closed
-    event fires after cleanup (proof that ``_release_reservation``
-    ran, since only it calls ``_signal_state_change``)."""
+    """The closed event must fire after the QueueFull cleanup arm, proving
+    ``_release_reservation`` ran (only it calls ``_signal_state_change``)."""
     pool, created = _make_pool()
 
     # Occupy the only slot.
     blocking = await pool.acquire().__aenter__()
     assert blocking is created[0]
 
-    # Force-materialise the closed event and clear it so we can
-    # observe whether the QueueFull cleanup fires it.
+    # Materialise and clear the closed event so we can observe the fire.
     pool._get_closed_event()
     assert pool._closed_event is not None
     pool._closed_event.clear()
@@ -112,10 +107,8 @@ async def test_queuefull_cleanup_wakes_waiters_via_state_signal() -> None:
         pool_mod.asyncio.wait = real_wait  # type: ignore[attr-defined]
         pool._pool.put_nowait = original_put_nowait
 
-    # After the cleanup arm runs, the closed event must be set — that
-    # is the signal ``_release_reservation`` emits via
-    # ``_signal_state_change``. An inline ``self._size -= 1`` would
-    # leave the event cleared.
+    # The set closed event is the signal _release_reservation emits via
+    # _signal_state_change; an inline _size -= 1 would leave it cleared.
     assert pool._closed_event.is_set(), (
         "QueueFull cleanup must route through _release_reservation "
         "so sibling acquirers parked on closed_event.wait() wake promptly"

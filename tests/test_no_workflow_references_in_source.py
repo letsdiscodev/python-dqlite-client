@@ -1,11 +1,4 @@
-"""Shipped source must not reference the internal issue-tracking workflow.
-
-Published library code should not point at the project's ``issues/`` /
-``done/`` / ``wont-fix/`` folders, issue IDs, or development-episode
-labels — those are meaningless (and can dangle) for an external reader
-of the package. This test scans the shipped ``src`` tree and fails if
-any such reference is reintroduced.
-"""
+"""Shipped source must not reference the internal issue-tracking workflow."""
 
 from __future__ import annotations
 
@@ -14,18 +7,13 @@ import re
 
 import dqliteclient
 
-# Patterns that denote the internal development workflow. ``Phase`` is
-# matched only with a capital ``P`` so legitimate lowercase
-# interpreter-shutdown "phase N" references are NOT flagged.
+# ``Phase`` matches only capital P so lowercase "phase N" (interpreter shutdown) is allowed.
 _WORKFLOW_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?:done|wont-fix|issues)/[A-Za-z0-9_.-]+"),
     re.compile(r"ISSUE-\d+"),
     re.compile(r"\b[Cc]ycle \d+"),
     re.compile(r"\bround \d+"),
-    # "round" used in the development-episode sense (a "widening round",
-    # the "prior round"). Anchored to dev-process qualifiers so the
-    # legitimate algorithmic/technical uses ("import cycle", "settle
-    # round", "round-trip", "a round of retries") are NOT flagged.
+    # Anchored to dev-process qualifiers so algorithmic uses ("a round of retries") pass.
     re.compile(r"\b(?:prior|previous|earlier|widening|hardening|audit) round\b"),
     re.compile(r"\b[Bb]undle [A-Z]\b"),
     re.compile(r"\bPhase \d+\b"),

@@ -1,11 +1,6 @@
-"""Pin: ``YamlNodeStore._load_from_disk`` rejects non-str ``Address``
-values at the loader site instead of silently coercing to ``str()``.
-
-The ID and Role arms apply strict type discipline; the Address arm
-used to bare-call ``str(address_raw)``, silently accepting ``42``,
-``true``, lists, or dicts and then letting ``parse_address`` fail
-downstream with a confusing diagnostic that blames the bogus
-``"42"`` / ``"True"`` literal rather than the YAML schema mismatch.
+"""Pin: ``YamlNodeStore._load_from_disk`` rejects non-str ``Address`` at the loader
+instead of coercing via ``str()``, which would blame a bogus literal downstream rather
+than the YAML schema mismatch.
 """
 
 from pathlib import Path
@@ -49,8 +44,7 @@ def test_address_dict_raises_cluster_error_at_loader(tmp_path: Path) -> None:
 
 
 def test_address_bracketed_ipv6_string_accepted(tmp_path: Path) -> None:
-    """Boundary: a properly-quoted IPv6 ``[::1]:9000`` address still
-    loads cleanly (the YAML parses it as a plain string)."""
+    """A quoted IPv6 ``[::1]:9000`` address loads cleanly (YAML parses it as a string)."""
     yaml_file = tmp_path / "nodes.yml"
     yaml_file.write_text('- {ID: 1, Address: "[::1]:9000", Role: voter}\n')
 

@@ -1,17 +1,5 @@
-"""Pin: ``ConnectionPool._release`` drains ``conn._pending_drain``
-at every exit shape (the three early-return arms + the finally),
-via the centralised ``_drain_pending_under_shield`` helper.
-
-The finally-branch's load-bearing comment documented the necessity
-of an explicit ``_pending_drain`` snapshot + shield-await BEFORE
-``_pool_released=True`` flips and short-circuits the in-``close()``
-re-snapshot loop. The three early-return arms were silent
-free-riders on ``_close_impl``'s internals — a future refactor of
-the re-snapshot loop would silently regress drain hygiene at all
-three sites without anything failing loudly. Factor the drain into
-a shared helper and call it at every exit so the discipline is
-symmetric and self-documenting.
-"""
+"""Pin: ``ConnectionPool._release`` drains via the shared
+``_drain_pending_under_shield`` helper at all four exit shapes."""
 
 from __future__ import annotations
 
@@ -21,26 +9,16 @@ from dqliteclient import pool as pool_mod
 
 
 def test_release_calls_drain_helper_at_every_early_return_arm() -> None:
-    """Every early-return ``_close_best_effort`` call inside ``_release``
-    is followed by ``_drain_pending_under_shield(conn)`` so the
-    centralised drain discipline fires at every early-return exit
-    shape (the queuefull path falls through to the finally arm,
-    which also calls the helper — covered by the separate finally
-    pin below).
-    """
+    """Each early-return arm is followed by a drain-helper call."""
     src = inspect.getsource(pool_mod.ConnectionPool._release)
     lines = [line.rstrip() for line in src.splitlines()]
-    # The early-return arms use the labels "release-closed",
-    # "release-reset-rolled-back", "release-post-reset-closed". The
-    # "release-queuefull" call does NOT return — it falls through to
-    # the finally where the drain helper also fires.
+    # "release-queuefull" is excluded: it falls through to the finally, not a return.
     early_return_labels = (
         "release-closed",
         "release-reset-rolled-back",
         "release-post-reset-closed",
     )
     for label in early_return_labels:
-        # Find the close_best_effort call line for this label.
         site_idx = next(
             (i for i, line in enumerate(lines) if f'"{label}"' in line),
             None,
@@ -69,19 +47,13 @@ def test_drain_pending_under_shield_helper_exists() -> None:
 
 
 def test_release_finally_uses_drain_helper() -> None:
-    """The finally arm also calls the helper (rather than inlining
-    the pending-drain snapshot). Verifies the refactor is complete —
-    not just additive at the early-return sites.
-    """
+    """The finally arm uses the helper, not an inline pending snapshot."""
     src = inspect.getsource(pool_mod.ConnectionPool._release)
-    # The finally arm should no longer contain the inline snapshot.
     assert "pending = getattr(conn, " not in src, (
         "_release's finally arm must use _drain_pending_under_shield "
         "instead of inlining the pending snapshot — centralisation "
         "is the load-bearing change"
     )
-    # The helper IS called in the finally — appears at least once
-    # alongside the early-return arms.
     assert src.count("await self._drain_pending_under_shield(conn)") >= 4, (
         "expected the helper call in all four exit shapes (three early-returns + the finally)"
     )

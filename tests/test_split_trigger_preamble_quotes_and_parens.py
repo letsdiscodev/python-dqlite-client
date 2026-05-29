@@ -1,23 +1,6 @@
-r"""Pin: ``_scan_for_trigger_begin`` correctly handles paren-depth and
-quote-styled identifiers inside the trigger preamble (between
-``TRIGGER`` and ``BEGIN``).
-
-The scanner has dedicated branches for ``(`` / ``)`` paren tracking,
-``"quoted"`` / ``[bracketed]`` / ``\`backtick\``` identifiers, and
-``--`` / ``/* */`` comments inside the preamble. Existing tests
-exercise:
-
-- TEMP / TEMPORARY trigger
-- INSTEAD OF trigger
-- string-literal-with-CREATE-TRIGGER negative case
-- nested CREATE TRIGGER
-
-But never feed a preamble containing those legitimately. Without
-paren tracking a ``WHEN (BEGIN_FLAG = 1)`` clause would FALSE-match
-the standalone ``BEGIN``; without quote-styled-identifier handling
-a column name like ``"BEGIN"`` (quoted reserved word) would do the
-same.
-"""
+r"""``_scan_for_trigger_begin`` tracks paren depth and quote-styled identifiers in
+the trigger preamble: a ``WHEN (...BEGIN...)`` clause or a quoted ``"BEGIN"``
+must not false-match the standalone body-opening ``BEGIN``."""
 
 from __future__ import annotations
 
@@ -26,9 +9,6 @@ from dqliteclient.connection import _split_top_level_statements
 
 class TestPreambleParenTracking:
     def test_when_clause_with_begin_token_in_paren_does_not_split(self) -> None:
-        # If paren_depth tracking were missing, the BEGIN token inside
-        # WHEN (...) would be matched as the trigger body opener and
-        # the body delimiters would be misaligned.
         sql = (
             "CREATE TRIGGER aud AFTER UPDATE ON x "
             "FOR EACH ROW WHEN (NEW.a = 'BEGIN' OR OLD.b > 0) BEGIN\n"

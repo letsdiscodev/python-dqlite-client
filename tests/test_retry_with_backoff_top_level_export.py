@@ -1,12 +1,5 @@
-"""``retry_with_backoff`` is part of the public surface — same
-posture as ``parse_address`` / ``validate_positive_int_or_none``.
-
-The retry submodule was the source of truth (its ``__all__``
-declared the helper public) but ``__init__.py`` did not re-export.
-Downstream callers wanting the same retry policy as the client
-itself had to import from the submodule path; this aligns with the
-sibling utility helpers reachable as ``dqliteclient.<name>``.
-"""
+"""``retry_with_backoff`` is re-exported at the top level, reachable as
+``dqliteclient.<name>`` like the sibling utility helpers."""
 
 import dqliteclient
 from dqliteclient.retry import retry_with_backoff as submodule_helper

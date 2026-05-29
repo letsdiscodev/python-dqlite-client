@@ -1,19 +1,6 @@
-"""Pin: ``DqliteConnection.__repr__`` routes ``self._address``
-through ``sanitize_for_log`` before the ``%r``-style interpolation.
-
-Python's ``repr()`` of a ``str`` escapes the canonical control set
-(LF / CR / Tab / NUL / ASCII C0) but NOT U+2028 / U+2029 / bidi /
-zero-width / BOM. journald treats U+2028 as a record separator, so
-a peer-supplied address smuggled past ``parse_address`` (a future
-custom ``dial_func`` or leader-tracker refactor are the two
-documented scenarios) would split a downstream
-``logger.X("%r", conn)`` record without this wrap.
-
-Defence-in-depth: ``parse_address``'s strict gate is the in-tree
-invariant blocking exploit today; centralising sanitisation inside
-``__repr__`` covers third-party ``%r`` consumers (asyncio Task
-repr, SA pool repr with ``echo_pool=True``) without per-call-site
-wrapping.
+"""Pin: ``DqliteConnection.__repr__`` routes ``self._address`` through
+``sanitize_for_log``. Python's ``repr()`` escapes ASCII C0 but not
+U+2028/U+2029/bidi/zero-width/BOM, which journald would split on.
 """
 
 from __future__ import annotations
@@ -22,7 +9,6 @@ from dqliteclient.connection import DqliteConnection
 
 
 def _synth_conn(address: str) -> DqliteConnection:
-    """Build a stub-shaped DqliteConnection just for repr."""
     conn = DqliteConnection.__new__(DqliteConnection)
     conn._address = address
     conn._database = "main"
@@ -46,23 +32,21 @@ def test_repr_replaces_u2029_paragraph_separator() -> None:
 
 
 def test_repr_replaces_bidi_rlo() -> None:
-    # U+202E (RIGHT-TO-LEFT OVERRIDE) is not escaped by repr() and
-    # can rewrite operator-facing logs.
+    # U+202E (RLO) is not escaped by repr() and can rewrite logs.
     conn = _synth_conn("host‮9001")
     rendered = repr(conn)
     assert "‮" not in rendered
 
 
 def test_repr_replaces_zwsp() -> None:
-    # U+200B (ZERO WIDTH SPACE) is invisible and not escaped by repr().
+    # U+200B (ZWSP) is invisible and not escaped by repr().
     conn = _synth_conn("host​:9001")
     rendered = repr(conn)
     assert "​" not in rendered
 
 
 def test_repr_escapes_ascii_lf() -> None:
-    # LF was already escaped by repr() pre-fix; pin as a regression
-    # guard (the sanitiser must not undo this).
+    # LF was already escaped by repr(); pin that the sanitiser doesn't undo it.
     conn = _synth_conn("evil\nhost:9001")
     rendered = repr(conn)
     assert "\n" not in rendered
@@ -70,8 +54,7 @@ def test_repr_escapes_ascii_lf() -> None:
 
 
 def test_repr_ascii_host_port_unchanged() -> None:
-    """ASCII host:port must survive byte-for-byte — the sanitiser
-    is a no-op on the safe subset."""
+    """ASCII host:port survives byte-for-byte (sanitiser is a no-op here)."""
     conn = _synth_conn("leader.example.com:9001")
     rendered = repr(conn)
     assert "leader.example.com:9001" in rendered

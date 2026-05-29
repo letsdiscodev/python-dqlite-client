@@ -1,14 +1,6 @@
-"""Pin: ``ClusterClient.find_leader`` raises a clear ``InterfaceError``
-when called after ``os.fork``.
-
-The single-flight slot map holds ``asyncio.Task`` instances bound to
-the parent's loop. A child that forks mid-sweep and calls
-``find_leader`` would observe an inherited task and fall through to
-``await asyncio.shield(<parent-loop task>)`` — undefined behaviour.
-
-``DqliteConnection`` and ``ConnectionPool`` have the same pid-guard
-pattern; this test extends it to ``ClusterClient``.
-"""
+"""find_leader raises InterfaceError when called after os.fork: the single-flight
+slot map holds tasks bound to the parent's loop, so a child would await an
+inherited parent-loop task (undefined behaviour)."""
 
 from __future__ import annotations
 
@@ -37,8 +29,7 @@ async def test_find_leader_after_fork_raises_interface_error() -> None:
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
 def test_find_leader_actual_fork_raises() -> None:
-    """End-to-end fork: parent stages a ClusterClient; child calls
-    find_leader and reports back."""
+    """End-to-end fork: child calls find_leader and reports back via pipe."""
     cluster = ClusterClient(node_store=MemoryNodeStore(["127.0.0.1:9999"]))
 
     r, w = os.pipe()

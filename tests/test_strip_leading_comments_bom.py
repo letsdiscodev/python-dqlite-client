@@ -1,6 +1,4 @@
-"""Pin: client-layer ``_strip_leading_comments`` strips leading
-UTF-8 BOM. See dbapi-side test for full rationale.
-"""
+"""``_strip_leading_comments`` strips a leading UTF-8 BOM."""
 
 from __future__ import annotations
 

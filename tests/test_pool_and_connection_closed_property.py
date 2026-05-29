@@ -1,16 +1,7 @@
-"""Pin: ``ConnectionPool.closed`` and ``DqliteConnection.closed``
-public properties.
+"""ConnectionPool.closed and DqliteConnection.closed public properties.
 
-Mirrors dbapi-layer ``Connection.closed`` / psycopg / asyncpg /
-aiosqlite parity — direct dqliteclient consumers (sqlalchemy-dqlite
-touches the inner client connection; advanced users embed the
-client layer) get the same lifecycle predicate at every layer.
-
-``DqliteConnection.closed`` is distinct from ``is_connected``:
-- never-connected: closed=False, is_connected=False
-- connected:       closed=False, is_connected=True
-- closed:          closed=True,  is_connected=False
-"""
+closed is distinct from is_connected: never-connected is closed=False/
+is_connected=False; connected is False/True; closed is True/False."""
 
 import pytest
 
@@ -35,7 +26,7 @@ async def test_pool_closed_after_close() -> None:
 async def test_pool_closed_idempotent() -> None:
     pool = ConnectionPool(addresses=["h:9001"], min_size=0, max_size=2)
     await pool.close()
-    await pool.close()  # second call: silent no-op
+    await pool.close()
     assert pool.closed is True
 
 
@@ -47,11 +38,9 @@ def test_connection_closed_initially_false() -> None:
 
 @pytest.mark.asyncio
 async def test_connection_closed_after_close_without_connect() -> None:
-    """A never-connected DqliteConnection still flips ``closed`` to
-    True after ``close()``. The fork-branch / never-connected path
-    in close() short-circuits but still flips the marker."""
+    """A never-connected DqliteConnection still flips closed to True after
+    close() despite the never-connected short-circuit."""
     conn = DqliteConnection("h:9001")
     await conn.close()
     assert conn.closed is True
-    # ``is_connected`` is False either way (never had a transport).
     assert conn.is_connected is False

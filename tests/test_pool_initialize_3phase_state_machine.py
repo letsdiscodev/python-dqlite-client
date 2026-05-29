@@ -1,28 +1,7 @@
-"""Pins for the post-fix 3-phase ``ConnectionPool.initialize()``
-state machine:
-
-* Phase A reserves under ``_lock`` (no awaits) and either flips
-  ``_initialized`` immediately when ``min_size <= 0`` or sets
-  ``_initializing`` + creates ``_initialize_done_event`` for the
-  first caller.
-* Phase B runs ``await asyncio.gather(*create_tasks)`` LOCK-FREE
-  so sibling tasks can make progress against the partially-warmed
-  pool. The Phase B failure-finally clears ``_initializing`` and
-  signals the event so secondary callers can wake and retry.
-* Phase C re-acquires ``_lock`` (no awaits) for the atomic
-  publish via ``put_nowait``; re-checks ``_closed`` and routes
-  survivors through the shielded close helper if a sibling
-  ``close()`` flipped the flag during Phase B.
-
-Tests in this file cover the discriminating behaviours the
-3-phase shape introduces: secondary-caller event coordination,
-fork-safety nulling, failure-retry contract, and Phase B cancel
-unwind. The sibling Test A pin
-(``test_pool_initialize_does_not_block_concurrent_acquire.py``)
-covers the lock-free Phase B invariant; the
-``test_pool_initialize_close_race.py`` suite covers the
-close-race invariants.
-"""
+"""Pins for the 3-phase ``ConnectionPool.initialize()`` state machine:
+Phase A reserves under ``_lock``, Phase B gathers connects lock-free, Phase C
+re-acquires ``_lock`` to publish. Covers secondary-caller event coordination,
+fork-safety nulling, the failure-retry contract, and zero-min-size."""
 
 from __future__ import annotations
 
@@ -76,13 +55,8 @@ def _pool_with_factory(factory: Any, *, min_size: int, max_size: int) -> Connect
 
 @pytest.mark.asyncio
 async def test_concurrent_initialize_creates_exactly_min_size_connections() -> None:
-    """Two concurrent ``initialize()`` calls must produce exactly
-    ``min_size`` connections (not 2× ``min_size``). The second
-    caller observes ``_initializing=True`` under the lock, parks on
-    ``_initialize_done_event`` outside the lock, and on wake the
-    recursive ``return await self.initialize()`` finds
-    ``_initialized=True`` and short-circuits.
-    """
+    """Two concurrent ``initialize()`` calls produce exactly ``min_size``
+    connections: the second parks on the event and short-circuits on wake."""
     create_count = 0
 
     async def _factory(**kwargs: Any) -> _FakeConn:
@@ -107,10 +81,8 @@ async def test_concurrent_initialize_creates_exactly_min_size_connections() -> N
 
 @pytest.mark.asyncio
 async def test_secondary_caller_wakes_promptly_when_first_completes() -> None:
-    """A secondary caller scheduled WHILE the first is in Phase B
-    must wake within ~the first's wall-clock + a small delta, NOT
-    block until its own timeout.
-    """
+    """A secondary caller must wake when the first completes, not block until
+    its own timeout."""
     first_done = asyncio.Event()
 
     async def _factory(**kwargs: Any) -> _FakeConn:
@@ -124,9 +96,7 @@ async def test_secondary_caller_wakes_promptly_when_first_completes() -> None:
         start = loop.time()
         await asyncio.gather(pool.initialize(), pool.initialize())
         elapsed = loop.time() - start
-        # First caller's gather takes ~0.2s; second caller wakes on
-        # event-set in the same Phase C. Total wall-clock should be
-        # ~0.2s + scheduling slack, definitely under 0.5s.
+        # Gather takes ~0.2s; second caller wakes on event-set, well under 0.5s.
         assert elapsed < 0.5, (
             f"concurrent initialize took {elapsed:.3f}s; secondary "
             f"caller may have re-run its own warm-up gather instead of "
@@ -138,11 +108,8 @@ async def test_secondary_caller_wakes_promptly_when_first_completes() -> None:
 
 @pytest.mark.asyncio
 async def test_failed_initialize_leaves_pool_retryable() -> None:
-    """A Phase B failure must clear ``_initializing``, signal the
-    event, and leave ``_initialized=False``. A subsequent
-    ``initialize()`` call re-enters Phase A cleanly and runs a
-    fresh warm-up gather.
-    """
+    """A Phase B failure clears ``_initializing``/leaves ``_initialized=False``,
+    so a subsequent ``initialize()`` re-enters cleanly and retries."""
     attempt = 0
 
     async def _factory(**kwargs: Any) -> _FakeConn:
@@ -161,8 +128,7 @@ async def test_failed_initialize_leaves_pool_retryable() -> None:
         assert pool._initialize_done_event is None
         assert pool._size == 0
 
-        # Retry: third+fourth factory calls succeed.
-        await pool.initialize()
+        await pool.initialize()  # retry: third+fourth factory calls succeed
         assert pool._initialized is True
         assert pool._pool.qsize() == 2
     finally:
@@ -171,10 +137,8 @@ async def test_failed_initialize_leaves_pool_retryable() -> None:
 
 @pytest.mark.asyncio
 async def test_zero_min_size_short_circuits_under_lock_without_event() -> None:
-    """``min_size=0`` is a no-warm-up pool. Phase A flips
-    ``_initialized`` under the lock and returns without creating
-    the event — there is no Phase B to run.
-    """
+    """``min_size=0``: Phase A flips ``_initialized`` under the lock and returns
+    without creating the event (no Phase B)."""
 
     async def _factory(**kwargs: Any) -> _FakeConn:
         raise AssertionError("factory should not be called for min_size=0")
@@ -184,8 +148,6 @@ async def test_zero_min_size_short_circuits_under_lock_without_event() -> None:
         await pool.initialize()
         assert pool._initialized is True
         assert pool._initializing is False
-        # Event is never created on the no-warm-up path because no
-        # secondary caller can observe ``_initializing``.
         assert pool._initialize_done_event is None
         assert pool._size == 0
     finally:
@@ -193,30 +155,23 @@ async def test_zero_min_size_short_circuits_under_lock_without_event() -> None:
 
 
 def test_fork_shortcut_nulls_initialize_done_event_and_flag() -> None:
-    """A child-side ``close()`` (post-fork, pid mismatch) must null
-    both ``_initialize_done_event`` (loop-bound to the parent) and
-    ``_initializing`` so a subsequent child-side ``initialize()``
-    does not park on a parent-loop event forever.
-
-    Mirrors the existing fork-shortcut discipline for ``_close_done``
-    / ``_closed_event``.
-    """
+    """A post-fork ``close()`` must null ``_initialize_done_event`` (parent-loop
+    bound) and ``_initializing`` so a child ``initialize()`` does not park
+    forever on a parent-loop event."""
 
     async def _factory(**kwargs: Any) -> _FakeConn:
         return _FakeConn()
 
     pool = _pool_with_factory(_factory, min_size=2, max_size=4)
-    # Forge mid-initialize state without actually running the loop.
+    # Forge mid-initialize state without running the loop.
     fake_loop = asyncio.new_event_loop()
     try:
         pool._initialize_done_event = asyncio.Event()
         pool._initializing = True
-        # Force the fork-pid mismatch.
-        pool._creator_pid = os.getpid() + 999_999
+        pool._creator_pid = os.getpid() + 999_999  # force the fork-pid mismatch
 
-        # Drive the fork-shortcut branch by calling close() in a
-        # fresh loop (so the get_current_pid mismatch fires before
-        # any loop-bound primitive is touched).
+        # close() in a fresh loop so the pid mismatch fires before any
+        # loop-bound primitive is touched.
         async def _drive() -> None:
             await pool.close()
 

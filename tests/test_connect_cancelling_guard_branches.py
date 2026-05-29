@@ -1,22 +1,7 @@
-"""Branch coverage for ``DqliteConnection.connect()``'s
-``Task.cancelling()`` guard inside the pending-drain ``except
-asyncio.CancelledError`` arm.
+"""Branch coverage for the ``Task.cancelling()`` guard in connect()'s pending-drain arm.
 
-The arm distinguishes two concrete cases:
-
-1. ``Task.cancelling() == 0`` — the CancelledError came from our own
-   ``pending.cancel()``; consume it and proceed with the connect.
-2. ``Task.cancelling() > 0`` — an outer ``task.cancel()`` is pending
-   on the current task; re-raise so the next checkpoint observes it.
-
-The existing ``test_connection_reconnect_drain_slot.py`` covers
-case 2 (outer cancel only). This file pins case 1 (inner cancel
-only — connect must proceed) so a future refactor that drops the
-``cancelling()`` check entirely (e.g., bare ``pass`` to "always
-swallow", or bare ``raise`` to "always propagate", or
-``cancelling() == 1`` instead of ``> 0``) is caught by at least one
-test in the suite. Also adds a "no pending drain" baseline so the
-common case (no prior invalidate) stays covered.
+cancelling()==0 means our own ``pending.cancel()`` (swallow and proceed);
+cancelling()>0 means an outer cancel is pending (re-raise).
 """
 
 from __future__ import annotations
@@ -33,20 +18,9 @@ from dqliteclient.connection import DqliteConnection
 
 @pytest.mark.asyncio
 async def test_connect_swallows_inner_pending_cancel_alone() -> None:
-    """When ``connect()`` cancels the prior pending-drain via
-    ``pending.cancel()`` and there is NO outer cancel against the
-    current task, ``Task.cancelling()`` must report 0 — the resulting
-    CancelledError is consumed (not re-raised) so the open_connection
-    path actually executes.
-
-    Inverts the existing outer-cancel pin: same fixtures, but no
-    outer ``task.cancel()`` is delivered. ``open_connection`` MUST
-    fire (proving connect() proceeded past the pending-drain block).
-    """
+    """With no outer cancel, connect()'s own ``pending.cancel()`` is swallowed and proceeds."""
     conn = DqliteConnection("localhost:9001", timeout=5.0, close_timeout=5.0)
 
-    # Long-running drain task — ``connect()`` will issue
-    # ``pending.cancel()`` then ``await pending`` to drain it.
     started = asyncio.Event()
 
     async def slow_drain() -> None:
@@ -58,8 +32,7 @@ async def test_connect_swallows_inner_pending_cancel_alone() -> None:
     await started.wait()
     conn._pending_drain = prior
 
-    # Stub ``open_connection`` to fail promptly so we don't need a
-    # real server — we only need to prove it was reached.
+    # Stub open_connection to fail promptly; we only need to prove it was reached.
     open_connection_called: list[object] = []
     real_open = asyncio.open_connection
 
@@ -96,10 +69,6 @@ async def test_connect_swallows_inner_pending_cancel_alone() -> None:
     DqliteConnection._abort_protocol = fake_abort
 
     try:
-        # No outer cancel — the only CancelledError that can arise
-        # comes from connect()'s own ``pending.cancel()``. The
-        # ``cancelling() > 0`` guard must report 0 and let connect()
-        # proceed to the open_connection call below.
         with pytest.raises(RuntimeError, match="synthetic stop"):
             await conn.connect()
     finally:
@@ -120,11 +89,7 @@ async def test_connect_swallows_inner_pending_cancel_alone() -> None:
 
 @pytest.mark.asyncio
 async def test_connect_with_no_pending_drain_skips_drain_block_entirely() -> None:
-    """Baseline pin: when ``_pending_drain`` is None (the common
-    case — no prior invalidate landed) the cancel-guard arm is
-    skipped entirely. open_connection must still execute. Catches a
-    refactor that accidentally guards the drain block on the WRONG
-    condition (e.g., ``if pending is None`` inverted)."""
+    """When ``_pending_drain`` is None the drain block is skipped and connect() proceeds."""
     conn = DqliteConnection("localhost:9001", timeout=5.0, close_timeout=5.0)
     assert conn._pending_drain is None
 
@@ -178,18 +143,13 @@ async def test_connect_with_no_pending_drain_skips_drain_block_entirely() -> Non
 
 @pytest.mark.asyncio
 async def test_connect_swallows_already_done_pending_drain() -> None:
-    """If the prior pending-drain task is already ``done()``,
-    ``connect()`` skips the cancel-and-await dance entirely (the
-    ``if not pending.done()`` guard short-circuits) and proceeds.
-    Pins the third branch — neither cancellation arm fires when the
-    prior drain already finished on its own."""
+    """An already-done prior drain skips the cancel-and-await dance; connect() proceeds."""
     conn = DqliteConnection("localhost:9001", timeout=5.0, close_timeout=5.0)
 
     async def already_done() -> None:
         return None
 
     prior = asyncio.get_running_loop().create_task(already_done())
-    # Drain it so it's done before we install it.
     await prior
     assert prior.done()
     conn._pending_drain = prior

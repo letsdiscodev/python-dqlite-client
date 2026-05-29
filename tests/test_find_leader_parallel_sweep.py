@@ -1,10 +1,6 @@
-"""``ClusterClient._find_leader_impl`` probes nodes in parallel,
-bounded by ``concurrent_leader_conns``. Mirrors go-dqlite's
-``connector.go::connectAttemptAll`` first-success-wins semantic. The
-serial pre-image probed nodes one at a time, so a leader sitting at
-the back of a multi-node store paid O(N × timeout) wall clock under a
-flip; the parallel sweep bounds it at one probe time.
-"""
+"""``_find_leader_impl`` probes nodes in parallel (bounded by
+``concurrent_leader_conns``), first-success-wins like go-dqlite's
+``connectAttemptAll`` — bounding wall clock at one probe time."""
 
 from __future__ import annotations
 
@@ -25,8 +21,7 @@ from dqliteclient.node_store import MemoryNodeStore
 
 @pytest.mark.asyncio
 async def test_parallel_sweep_returns_first_success_under_slow_peers() -> None:
-    """5 nodes, four sleep 5 s, one returns immediately. Wall clock
-    must be bounded by the fastest probe, not the slowest."""
+    """Wall clock must be bounded by the fastest probe, not the slowest."""
     addresses = [f"slow-{i}:9001" for i in range(4)] + ["fast:9001"]
     store = MemoryNodeStore(addresses)
     cluster = ClusterClient(store, timeout=10.0)
@@ -49,8 +44,7 @@ async def test_parallel_sweep_returns_first_success_under_slow_peers() -> None:
 
 @pytest.mark.asyncio
 async def test_parallel_sweep_caps_concurrency_at_default_10() -> None:
-    """50 nodes, count concurrent in-flight probes via a barrier; the
-    cap must hold at the default of 10."""
+    """Concurrent in-flight probes must cap at the default of 10."""
     addresses = [f"node-{i}:9001" for i in range(50)]
     store = MemoryNodeStore(addresses)
     cluster = ClusterClient(store, timeout=10.0)
@@ -65,15 +59,14 @@ async def test_parallel_sweep_caps_concurrency_at_default_10() -> None:
         max_in_flight = max(max_in_flight, in_flight)
         try:
             await release.wait()
-            return None  # no-leader-known so the sweep continues
+            return None  # no leader known, sweep continues
         finally:
             in_flight -= 1
 
     cluster._query_leader = AsyncMock(side_effect=_query_leader)
 
     sweep = asyncio.create_task(cluster.find_leader())
-    # Yield enough times for all 10 first-batch probes to enter and
-    # the rest to queue on the semaphore.
+    # Yield so the first-batch probes enter and the rest queue.
     for _ in range(20):
         await asyncio.sleep(0)
 
@@ -87,8 +80,7 @@ async def test_parallel_sweep_caps_concurrency_at_default_10() -> None:
 
 @pytest.mark.asyncio
 async def test_parallel_sweep_caps_concurrency_respects_kwarg() -> None:
-    """When ``concurrent_leader_conns=3`` is passed, the cap must
-    follow."""
+    """``concurrent_leader_conns=3`` must cap concurrency at 3."""
     addresses = [f"node-{i}:9001" for i in range(20)]
     store = MemoryNodeStore(addresses)
     cluster = ClusterClient(store, timeout=10.0, concurrent_leader_conns=3)
@@ -131,8 +123,7 @@ async def test_parallel_sweep_caps_concurrency_respects_kwarg() -> None:
     ],
 )
 def test_concurrent_leader_conns_validation(value: object) -> None:
-    """Reject ``bool`` and ``< 1`` so the cap can never silently
-    coerce to ``0`` or be misinterpreted."""
+    """Reject ``bool`` and ``< 1`` so the cap can't coerce to 0."""
     store = MemoryNodeStore(["localhost:9001"])
     with pytest.raises((TypeError, ValueError)):
         ClusterClient(store, concurrent_leader_conns=value)  # type: ignore[arg-type]
@@ -145,9 +136,7 @@ def test_concurrent_leader_conns_bool_rejected_with_typeerror() -> None:
 
 
 def test_concurrent_leader_conns_passthrough_via_from_addresses() -> None:
-    """``from_addresses`` must forward ``concurrent_leader_conns`` to
-    the underlying ``ClusterClient`` so callers using the convenience
-    constructor get the same knob."""
+    """``from_addresses`` must forward ``concurrent_leader_conns``."""
     cluster = ClusterClient.from_addresses(["localhost:9001"], concurrent_leader_conns=4)
     assert cluster._concurrent_leader_conns == 4
 
@@ -165,9 +154,8 @@ def test_concurrent_leader_conns_zero_rejected_with_valueerror() -> None:
 
 @pytest.mark.asyncio
 async def test_parallel_sweep_cancels_siblings_on_first_success() -> None:
-    """When one probe wins, every other in-flight probe must receive
-    ``CancelledError`` so its socket-drain runs and we don't leak FDs.
-    """
+    """A winning probe must cancel every sibling so sockets drain and we
+    don't leak FDs."""
     addresses = ["fast:9001", "slow-a:9001", "slow-b:9001"]
     store = MemoryNodeStore(addresses)
     cluster = ClusterClient(store, timeout=10.0)
@@ -176,8 +164,7 @@ async def test_parallel_sweep_cancels_siblings_on_first_success() -> None:
 
     async def _query_leader(address: str, **_kw: object) -> str:
         if address == "fast:9001":
-            # Yield once so siblings start running.
-            await asyncio.sleep(0)
+            await asyncio.sleep(0)  # yield so siblings start running
             return "fast:9001"
         try:
             await asyncio.sleep(60.0)
@@ -189,9 +176,7 @@ async def test_parallel_sweep_cancels_siblings_on_first_success() -> None:
     cluster._query_leader = AsyncMock(side_effect=_query_leader)
 
     leader = await cluster.find_leader()
-    # Give cancelled siblings a chance to record their cancellation
-    # via the gather inside the finally block.
-    await asyncio.sleep(0)
+    await asyncio.sleep(0)  # let cancelled siblings record their cancellation
 
     assert leader == "fast:9001"
     assert cancellations.get("slow-a:9001") is True
@@ -200,11 +185,8 @@ async def test_parallel_sweep_cancels_siblings_on_first_success() -> None:
 
 @pytest.mark.asyncio
 async def test_parallel_sweep_aggregate_error_carries_every_per_node_error() -> None:
-    """All probes raise distinct transport errors. The final
-    ``ClusterError`` message must name every node, and the
-    ``__cause__`` must be a ``BaseExceptionGroup`` with one
-    sub-exception per failed node — order non-deterministic but
-    presence guaranteed."""
+    """The aggregate ``ClusterError`` must name every node and chain a
+    ``BaseExceptionGroup`` with one sub-exception per failed node."""
     addresses = ["node-a:9001", "node-b:9001", "node-c:9001"]
     store = MemoryNodeStore(addresses)
     cluster = ClusterClient(store, timeout=10.0)
@@ -229,9 +211,8 @@ async def test_parallel_sweep_aggregate_error_carries_every_per_node_error() -> 
 
 @pytest.mark.asyncio
 async def test_parallel_sweep_no_exceptions_returns_aggregate_no_leader_known() -> None:
-    """All probes return ``None`` (no leader known). Final error
-    raises with no ``__cause__`` — the message itself is the
-    diagnostic. Pre-parallel behaviour preserved."""
+    """All probes return None: the error raises with no ``__cause__`` —
+    the message is the only diagnostic."""
     addresses = ["node-a:9001", "node-b:9001", "node-c:9001"]
     store = MemoryNodeStore(addresses)
     cluster = ClusterClient(store, timeout=10.0)
@@ -260,9 +241,7 @@ async def test_parallel_sweep_redirect_policy_propagates() -> None:
     cluster = ClusterClient(store, timeout=10.0, redirect_policy=policy)
 
     async def _query_leader(address: str, **_kw: object) -> str:
-        # Both nodes redirect to a forbidden target; whichever lands
-        # first triggers the policy rejection.
-        return "redirect-target:9001"
+        return "redirect-target:9001"  # forbidden target
 
     cluster._query_leader = AsyncMock(side_effect=_query_leader)
 

@@ -14,5 +14,4 @@ def test_pyproject_matches_package_version() -> None:
 
 
 def test_version_is_in_all() -> None:
-    """PEP 396 convention: ``__version__`` is a public module attribute."""
     assert "__version__" in dqliteclient.__all__

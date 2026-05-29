@@ -1,5 +1,3 @@
-"""Tests for node store."""
-
 import pytest
 
 import dqliteclient
@@ -21,14 +19,13 @@ class TestMemoryNodeStore:
         assert nodes[1].address == "localhost:9002"
 
     async def test_initial_nodes_have_voter_role(self) -> None:
-        """Initial nodes should be VOTER (role=NodeRole.VOTER), not STANDBY."""
         store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
         nodes = await store.get_nodes()
         for node in nodes:
             assert node.role == 0, f"Expected role=0 (VOTER), got role={node.role}"
 
     async def test_initial_node_ids_start_at_one(self) -> None:
-        """Node IDs should start at 1, since 0 means 'no node' in dqlite."""
+        """Node IDs start at 1; 0 means "no node" in dqlite."""
         store = MemoryNodeStore(["localhost:9001", "localhost:9002"])
         nodes = await store.get_nodes()
         assert nodes[0].node_id == 1
@@ -48,16 +45,11 @@ class TestMemoryNodeStore:
         assert result[1].address == "node2:9002"
 
     def test_nodeinfo_exported_from_package(self) -> None:
-        """NodeInfo should be importable from the top-level package."""
         assert hasattr(dqliteclient, "NodeInfo")
         assert dqliteclient.NodeInfo is NodeInfo
 
     async def test_get_nodes_returns_immutable_sequence(self) -> None:
-        """The store hands out an immutable tuple of frozen NodeInfo.
-
-        A caller therefore cannot corrupt store state by mutating the
-        returned sequence or its elements.
-        """
+        """The store hands out an immutable tuple of frozen NodeInfo."""
         import dataclasses
 
         store = MemoryNodeStore(["localhost:9001"])
@@ -80,10 +72,6 @@ class TestMemoryNodeStore:
         assert {info1, info2} == {info1}
 
     async def test_memory_store_seeds_with_noderole_voter(self) -> None:
-        # ``initial_addresses=`` is deprecated; this test exercises the
-        # role-coercion behaviour, not the deprecation pathway, so
-        # silence the warning. ``test_memory_node_store_initial_addresses_
-        # deprecation.py`` separately pins the warning emission.
         import warnings
 
         from dqlitewire import NodeRole
@@ -94,7 +82,6 @@ class TestMemoryNodeStore:
         nodes = await store.get_nodes()
         assert all(isinstance(n.role, NodeRole) for n in nodes)
         assert all(n.role == NodeRole.VOTER for n in nodes)
-        # IntEnum comparison with raw int still works.
         assert nodes[0].role == 0
 
     async def test_node_info_role_accepts_noderole(self) -> None:
@@ -106,7 +93,7 @@ class TestMemoryNodeStore:
 
 
 def test_memory_store_addresses_kwarg_name() -> None:
-    """``addresses=`` is the preferred kwarg — matches sibling APIs."""
+    """``addresses=`` is the preferred kwarg."""
     from dqliteclient import MemoryNodeStore
 
     store = MemoryNodeStore(addresses=["host:9001"])
@@ -118,13 +105,7 @@ def test_memory_store_addresses_kwarg_name() -> None:
 
 
 def test_memory_store_initial_addresses_still_works() -> None:
-    """Legacy ``initial_addresses=`` kwarg still seeds the store.
-
-    The kwarg is deprecated but kept functional for back-compat;
-    the deprecation warning itself is pinned in
-    ``test_memory_node_store_initial_addresses_deprecation.py``.
-    Suppress here so this test focuses on the seeding behaviour.
-    """
+    """Legacy ``initial_addresses=`` kwarg still seeds the store."""
     import warnings
 
     from dqliteclient import MemoryNodeStore

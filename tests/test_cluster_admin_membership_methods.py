@@ -1,21 +1,7 @@
-"""Cluster-layer tests for the new admin methods on ``ClusterClient``.
-
-Covers ``leader_info``, ``add_node``, ``assign_role``, ``remove_node``,
-``describe``, ``set_weight``, ``dump`` — the methods added to mirror
-go-dqlite's full ``Client`` admin surface.
-
-Sister of ``test_cluster_admin_methods.py`` (which covers the
-earlier-added ``cluster_info`` and ``transfer_leadership``). Mocks
-the transport layer so each method's:
-- input validation,
-- leader-routing (admin call goes to ``find_leader()``'s result),
-- protocol-method dispatch,
-- error propagation,
-- cleanup discipline,
-
-is covered without a live cluster. Live-cluster behaviour is in the
-integration suite.
-"""
+"""Cluster-layer tests for ``ClusterClient`` admin methods mirroring go-dqlite's full
+``Client`` surface (``leader_info``, ``add_node``, ``assign_role``, ``remove_node``,
+``describe``, ``set_weight``, ``dump``). Transport is mocked; live behaviour is in the
+integration suite."""
 
 from __future__ import annotations
 
@@ -53,9 +39,6 @@ def _patch_admin_connection(
     return fake_open_connection, writer
 
 
-# --- leader_info ---
-
-
 @pytest.mark.asyncio
 async def test_leader_info_returns_leader_info_dataclass() -> None:
     cluster = _make_cluster()
@@ -78,8 +61,8 @@ async def test_leader_info_returns_leader_info_dataclass() -> None:
 
 @pytest.mark.asyncio
 async def test_leader_info_returns_none_for_no_leader_known() -> None:
-    """Server's legitimate ``(0, "")`` reply during a re-election
-    surfaces as ``None`` — never confabulated as a real leader."""
+    """A ``(0, "")`` reply during re-election surfaces as None, never a confabulated
+    leader."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()
@@ -108,13 +91,10 @@ async def test_leader_info_propagates_cluster_error() -> None:
         await cluster.leader_info()
 
 
-# --- add_node ---
-
-
 @pytest.mark.asyncio
 async def test_add_node_default_role_spare_no_assign_followup() -> None:
-    """The default ``role=NodeRole.SPARE`` matches the underlying ADD
-    op's implicit landing role; no follow-up ``assign`` should run."""
+    """Default ``role=NodeRole.SPARE`` matches ADD's implicit landing role, so no follow-up
+    ``assign`` runs."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()
@@ -137,8 +117,8 @@ async def test_add_node_default_role_spare_no_assign_followup() -> None:
 
 @pytest.mark.asyncio
 async def test_add_node_voter_role_runs_assign_followup() -> None:
-    """``role=NodeRole.VOTER`` triggers the second-phase ASSIGN —
-    matches go-dqlite's ``Client.Add`` two-phase semantic."""
+    """``role=NodeRole.VOTER`` triggers the second-phase ASSIGN (go-dqlite's two-phase
+    ``Client.Add``)."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()
@@ -205,9 +185,6 @@ async def test_add_node_propagates_server_rejection() -> None:
         await cluster.add_node(node_id=1, address="x:1")
 
 
-# --- assign_role ---
-
-
 @pytest.mark.asyncio
 async def test_assign_role_dispatches_with_args() -> None:
     cluster = _make_cluster()
@@ -239,9 +216,6 @@ async def test_assign_role_rejects_invalid_inputs() -> None:
         await cluster.assign_role(node_id=1, role=0)  # type: ignore[arg-type]
 
 
-# --- remove_node ---
-
-
 @pytest.mark.asyncio
 async def test_remove_node_dispatches_with_node_id() -> None:
     cluster = _make_cluster()
@@ -271,9 +245,6 @@ async def test_remove_node_rejects_invalid_inputs() -> None:
         await cluster.remove_node(node_id=0)
 
 
-# --- describe ---
-
-
 @pytest.mark.asyncio
 async def test_describe_returns_node_metadata_dataclass() -> None:
     cluster = _make_cluster()
@@ -299,9 +270,8 @@ async def test_describe_returns_node_metadata_dataclass() -> None:
 
 @pytest.mark.asyncio
 async def test_describe_explicit_address_skips_leader_lookup() -> None:
-    """``describe(address=...)`` targets a specific node without
-    going through ``find_leader`` — matches the per-node nature of
-    go-dqlite's ``Describe``."""
+    """``describe(address=...)`` targets a specific node, bypassing ``find_leader`` (per-node
+    like go-dqlite's ``Describe``)."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()
@@ -323,9 +293,6 @@ async def test_describe_explicit_address_skips_leader_lookup() -> None:
         await cluster.describe(address="node3:9003")
 
     find_leader_mock.assert_not_called()
-
-
-# --- set_weight ---
 
 
 @pytest.mark.asyncio
@@ -380,9 +347,6 @@ async def test_set_weight_rejects_invalid_inputs() -> None:
         await cluster.set_weight(weight=-1)
 
 
-# --- dump ---
-
-
 @pytest.mark.asyncio
 async def test_dump_returns_files_dict() -> None:
     cluster = _make_cluster()
@@ -407,12 +371,9 @@ async def test_dump_returns_files_dict() -> None:
 
 @pytest.mark.asyncio
 async def test_dump_requires_explicit_database_name() -> None:
-    """Mirrors go-dqlite's ``Client.Dump(ctx, dbname)`` — the database
-    name is a required positional argument. Defaulting was a footgun
-    (an operator forgetting to pass the name silently dumped
-    ``"default"`` instead of the intended database). Pin that the
-    no-arg form raises ``TypeError`` from Python's argument-binding
-    layer."""
+    """The database name is required (like go-dqlite's ``Client.Dump``); defaulting was a
+    footgun that silently dumped the wrong database, so the no-arg form must raise
+    TypeError."""
     cluster = _make_cluster()
     with pytest.raises(TypeError):
         await cluster.dump()  # type: ignore[call-arg]
@@ -427,14 +388,10 @@ async def test_dump_rejects_invalid_database_name() -> None:
         await cluster.dump(database=None)  # type: ignore[arg-type]
 
 
-# --- open_admin_connection cleanup discipline (sanity for new methods) ---
-
-
 @pytest.mark.asyncio
 async def test_describe_closes_writer_on_exit() -> None:
-    """The asynccontextmanager closes the writer on the happy path
-    for new methods too — sanity that ``open_admin_connection``
-    discipline applies to the new admin surface."""
+    """``open_admin_connection`` closes the writer on the happy path for the new methods
+    too."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()

@@ -1,29 +1,6 @@
-"""Pin: ``_query_leader``'s DEBUG log routes peer-supplied text
-through ``sanitize_for_log`` — NOT ``_sanitize_display_text`` — so
-LF and Tab are ESCAPED (``\\n`` / ``\\t``) at the logger boundary
-rather than preserved verbatim.
-
-The sibling site ``_verify_redirect`` already uses
-``sanitize_for_log`` with an explicit code comment
-calling out that ``_sanitize_display_text`` preserves LF / Tab for
-exception-message readability — wrong helper for logger records
-(CWE-117 log injection).
-
-The threat: a hostile peer in a multi-node cluster returns a
-``leader_address`` field with embedded LF / Tab. ``%r`` repr of
-the value would coincidentally escape LF / Tab for that one
-interpolation slot, but the discipline must hold at the sanitizer
-boundary so the value is safe regardless of the conversion
-specifier used downstream — `%s` slots in the same record carry
-the same risk.
-
-Test strategy: capture ``LogRecord.args`` (the raw, pre-format
-arguments passed to the logger). On the old code path
-``_sanitize_display_text`` preserves LF / Tab so the arg still
-contains the raw byte; on the fixed code path
-``sanitize_for_log`` replaces LF with the two-byte sequence
-``\\n`` and Tab with ``\\t``.
-"""
+"""Pin: ``_query_leader``'s DEBUG log routes peer-supplied text through
+``sanitize_for_log`` (not ``_sanitize_display_text``) so LF/Tab are escaped at the
+logger boundary regardless of the downstream conversion specifier (CWE-117)."""
 
 from __future__ import annotations
 
@@ -68,10 +45,8 @@ def _find_query_leader_debug_record(
 async def test_query_leader_zero_id_nonempty_addr_log_args_escape_lf_tab(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Arm 2 (``node_id == 0 and leader_addr``): the peer-supplied
-    ``leader_addr`` carries LF / Tab. The logger must receive the
-    escaped form (``\\n`` / ``\\t`` literals), proving the helper
-    is ``sanitize_for_log`` and not ``_sanitize_display_text``."""
+    """Arm 2 (``node_id == 0 and leader_addr``): the logger receives the escaped
+    form, proving the helper is ``sanitize_for_log`` not ``_sanitize_display_text``."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()
@@ -101,8 +76,6 @@ async def test_query_leader_zero_id_nonempty_addr_log_args_escape_lf_tab(
         f"sanitize_for_log must escape Tab before the logger record; "
         f"got raw Tab in arg {leader_addr_arg!r}"
     )
-    # Positive: the escape sequences are present as literal two-byte
-    # forms (``\\n`` / ``\\t``).
     assert "\\n" in leader_addr_arg, (
         f"expected literal '\\n' escape in sanitized leader_addr; got {leader_addr_arg!r}"
     )
@@ -115,19 +88,14 @@ async def test_query_leader_zero_id_nonempty_addr_log_args_escape_lf_tab(
 async def test_query_leader_nonzero_id_empty_addr_uses_sanitize_for_log(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Arm 1 (``node_id != 0 and not leader_addr``): the RAFT_NOMEM
-    transient now returns ``None`` rather than raising — but it still
-    emits a DEBUG breadcrumb naming the queried ``address``, and that
-    must be routed through ``sanitize_for_log`` (not
-    ``_sanitize_display_text``) to match the sibling discipline in
-    ``_verify_redirect``."""
+    """Arm 1 (``node_id != 0 and not leader_addr``): the RAFT_NOMEM transient returns
+    None but emits a DEBUG breadcrumb whose ``address`` routes through ``sanitize_for_log``."""
     cluster = _make_cluster()
 
     fake_proto = MagicMock()
     fake_proto.handshake = AsyncMock(return_value=10_000)
     fake_proto.negotiate_protocol_only = AsyncMock()
-    # node_id != 0 with empty leader_addr triggers arm 1.
-    fake_proto.get_leader = AsyncMock(return_value=(7, ""))
+    fake_proto.get_leader = AsyncMock(return_value=(7, ""))  # arm 1: node_id != 0, empty addr
 
     from dqliteclient import cluster as cluster_mod
 
@@ -154,10 +122,6 @@ async def test_query_leader_nonzero_id_empty_addr_uses_sanitize_for_log(
         result = await cluster._query_leader("localhost:9001", trust_server_heartbeat=False)
     assert result is None
 
-    # The DEBUG breadcrumb routes the queried ``address`` through
-    # ``sanitize_for_log``. Pin the helper identity so a future
-    # refactor cannot regress into ``_sanitize_display_text`` (which
-    # preserves LF / Tab — wrong for a logger record).
     assert log_calls, (
         "expected sanitize_for_log to be called inside the RAFT_NOMEM-transient DEBUG breadcrumb"
     )

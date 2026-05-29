@@ -1,17 +1,6 @@
-"""Pin: ``ConnectionPool.close`` sets ``_closed_event`` from the
-``finally`` arm, symmetric with the sibling ``_close_done.set()``.
-
-If an exception (including ``BaseException``) lands in the window
-between ``self._closed = True`` and the eventual event-set — e.g.
-a synthetic raise from ``logger.debug`` simulating a
-``KeyboardInterrupt`` landing on a bytecode check between two
-assignments — parked acquirers on ``_closed_event.wait()`` would
-otherwise stay parked until their own acquire timeout fires.
-
-The sibling ``_close_done.set()`` is already placed in ``finally``
-for the same reason; this test pins the analogous discipline for
-``_closed_event``.
-"""
+"""close() sets _closed_event from finally (like _close_done.set()): an exception
+between _closed=True and the event-set would otherwise leave parked acquirers on
+_closed_event.wait() until their own acquire timeout fires."""
 
 from __future__ import annotations
 
@@ -59,10 +48,8 @@ async def test_closed_event_is_set_when_drain_path_raises_before_explicit_set(
     def _raise_during_drain_window(*_args: object, **_kwargs: object) -> None:
         raise _SyntheticRaise("synthetic raise between _closed=True and event-set")
 
-    # ``logger.debug`` sits inside the drain-and-publish try arm
-    # between ``self._closed = True`` and (in the prior shape) the
-    # explicit ``_closed_event.set()`` line. Raising here reproduces
-    # the gap the fix closes.
+    # logger.debug sits in the drain try arm between _closed=True and the
+    # event-set; raising here reproduces the gap the fix closes.
     monkeypatch.setattr(pool_mod.logger, "debug", _raise_during_drain_window)
 
     with pytest.raises(_SyntheticRaise):

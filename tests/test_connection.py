@@ -88,37 +88,27 @@ class TestParseAddress:
         assert _parse_address("host:1") == ("host", 1)
 
     def test_hostname_lowercased(self) -> None:
-        """DNS hostnames are case-insensitive per RFC 1035. Canonicalise
-        to lowercase so allowlist callables receive a stable key.
-        """
+        """Hostnames are lowercased so allowlist callables get a stable key."""
         from dqliteclient.connection import _parse_address
 
         assert _parse_address("Example.COM:9001") == ("example.com", 9001)
 
     def test_ipv6_canonicalised(self) -> None:
-        """IPv6 literals have multiple textual forms (``0:0:0:0:0:0:0:1``
-        vs ``::1``). Canonicalise via ipaddress.ip_address so the
-        allowlist path sees one form.
-        """
+        """IPv6 literals are canonicalised so the allowlist path sees one form."""
         from dqliteclient.connection import _parse_address
 
         assert _parse_address("[0:0:0:0:0:0:0:1]:9001") == ("::1", 9001)
 
     def test_credentials_in_host_rejected(self) -> None:
-        """A server-controlled redirect target must not smuggle an
-        '@' past the parser (e.g., a misread that reinterprets
-        ``user:pass@evil.com:9001`` as host-with-credentials).
-        """
+        """A server-controlled redirect must not smuggle credentials past the
+        parser as host-with-credentials."""
         from dqliteclient.connection import _parse_address
 
         with pytest.raises(ValueError, match="invalid|not a valid"):
             _parse_address("user:pass@evil.example.com:9001")
 
     def test_crlf_in_host_rejected(self) -> None:
-        """Whitespace or CRLF in the host portion is a log-injection
-        or header-injection vector; reject rather than hand to
-        getaddrinfo.
-        """
+        """CRLF in the host is a log/header-injection vector; reject it."""
         from dqliteclient.connection import _parse_address
 
         with pytest.raises(ValueError, match="invalid|not a valid"):
@@ -131,9 +121,7 @@ class TestParseAddress:
             _parse_address("bad host:9001")
 
     def test_idn_hostname_rejected(self) -> None:
-        """Non-ASCII hostnames are rejected (ASCII-only). dqlite's
-        wire format does not carry punycode correctly either.
-        """
+        """Non-ASCII hostnames are rejected; the wire format mishandles punycode."""
         from dqliteclient.connection import _parse_address
 
         with pytest.raises(ValueError, match="invalid|not a valid|non-ASCII"):
@@ -223,7 +211,6 @@ class TestDqliteConnection:
             await conn.execute("SELECT 1")
 
     async def test_nested_transaction_raises(self) -> None:
-        """Nested transaction() should raise, not silently no-op."""
         conn = DqliteConnection("localhost:9001")
 
         mock_reader = AsyncMock()
@@ -264,7 +251,6 @@ class TestDqliteConnection:
             await conn.fetch("SELECT 1")
 
     async def test_transaction_rollback_failure_preserves_original_exception(self) -> None:
-        """If ROLLBACK fails, the original exception should still propagate."""
         conn = DqliteConnection("localhost:9001")
 
         mock_reader = AsyncMock()
@@ -275,7 +261,6 @@ class TestDqliteConnection:
 
         from dqlitewire.messages import DbResponse, ResultResponse, WelcomeResponse
 
-        # Handshake + open_database + BEGIN succeed
         responses = [
             WelcomeResponse(heartbeat_timeout=15000).encode(),
             DbResponse(db_id=0).encode(),
@@ -286,7 +271,7 @@ class TestDqliteConnection:
         with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
             await conn.connect()
 
-        # Mock execute: BEGIN succeeds, ROLLBACK fails
+        # BEGIN succeeds, ROLLBACK fails.
         call_log: list[str] = []
 
         async def mock_execute(sql: str, params=None):
@@ -301,13 +286,10 @@ class TestDqliteConnection:
             async with conn.transaction():
                 raise ValueError("user error")
 
-        # ROLLBACK was attempted
         assert "ROLLBACK" in call_log
-        # _in_transaction was cleaned up
         assert not conn._in_transaction
 
     async def test_cancellation_invalidates_connection(self, connected_connection) -> None:
-        """CancelledError during a query must invalidate the connection."""
         import asyncio
 
         conn, mock_reader, _ = connected_connection
@@ -339,19 +321,14 @@ class TestDqliteConnection:
     async def test_cancel_between_handshake_and_first_query_keeps_connection_usable(
         self, connected_connection
     ) -> None:
-        """A CancelledError that lands AFTER a successful handshake but
-        BEFORE the next ``execute`` is a no-op for the connection state.
-        Pin the contract: the cancel does not invalidate the connection
-        and the next ``execute`` succeeds. Without this pin, a future
-        refactor that adds state mutation between handshake-complete and
-        first-query (e.g. a deferred init step) could silently break the
-        cancellation taxonomy."""
+        """A cancel landing after handshake but before the next ``execute`` is a
+        no-op: no in-flight wire op exists to corrupt, so the conn stays usable."""
         import asyncio
 
         conn, _, _ = connected_connection
         assert conn.is_connected
 
-        # Schedule a self-cancel that fires on the next event-loop tick.
+        # Self-cancel on the next event-loop tick.
         task = asyncio.current_task()
         assert task is not None
         loop = asyncio.get_running_loop()
@@ -361,13 +338,10 @@ class TestDqliteConnection:
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.sleep(0)
 
-        # The cancel was a no-op for the connection state — no in-flight
-        # wire operation existed for it to corrupt.
         assert conn.is_connected
         assert conn._invalidation_cause is None
 
     async def test_connection_invalidated_after_protocol_error(self, connected_connection) -> None:
-        """After a connection error, is_connected should return False."""
         conn, mock_reader, _ = connected_connection
         assert conn.is_connected
 
@@ -380,13 +354,9 @@ class TestDqliteConnection:
     async def test_connect_closes_transport_on_protocol_construction_failure(
         self, mock_reader, mock_writer
     ) -> None:
-        """If constructing DqliteProtocol raises after open_connection
-        has already returned a reader/writer pair, the writer must be
-        closed so the socket is not leaked. ``_abort_protocol`` is
-        gated on ``self._protocol is not None`` and therefore does
-        nothing in this window — an explicit close on the transport
-        is required.
-        """
+        """If DqliteProtocol construction raises after open_connection returned a
+        writer, the writer must be closed explicitly: ``_abort_protocol`` no-ops
+        here (it is gated on ``self._protocol is not None``)."""
         from unittest.mock import patch
 
         conn = DqliteConnection("localhost:9001")
@@ -405,9 +375,7 @@ class TestDqliteConnection:
     async def test_connect_emits_debug_logs_on_handshake_and_open(
         self, caplog, mock_reader, mock_writer, welcome_response, db_response
     ) -> None:
-        """DEBUG traces the happy-path connect sequence so an operator
-        can see which address actually landed through the log alone.
-        """
+        """DEBUG traces the happy-path connect sequence with the landed address."""
         import logging as _logging
         from unittest.mock import patch
 
@@ -423,19 +391,9 @@ class TestDqliteConnection:
         assert any("db opened" in m and "localhost:9001" in m for m in messages)
 
     async def test_invalidate_preserves_in_use_flag(self, connected_connection) -> None:
-        """_invalidate must NOT clear _in_use.
-
-        The flag's contract is "owned by the task that claimed it
-        between claim-site and clear-site". Clearing it from an
-        out-of-band path (``call_soon_threadsafe``, heartbeat,
-        ``transaction()`` rollback-failure arm) would let a second task
-        enter a ``_run_protocol``-protected critical section while the
-        original claimant is still mid-``await``. The in-flight task
-        observes the nulled ``_protocol`` and runs its own ``finally``
-        to clear the flag; the next caller transiently sees "another
-        operation is in progress" until that finally runs — which is
-        the correct behaviour for an in-flight claim.
-        """
+        """_invalidate must NOT clear _in_use: the flag is owned by the claiming
+        task until its own finally runs; clearing out-of-band would let a sibling
+        enter the critical section while the claimant is still mid-await."""
         conn, _, _ = connected_connection
         conn._in_use = True
         conn._invalidate(OperationalError("synthetic", 0))
@@ -443,7 +401,7 @@ class TestDqliteConnection:
         assert conn._protocol is None
 
     async def test_invalidate_closes_transport(self, connected_connection) -> None:
-        """_invalidate() should close the underlying transport to avoid socket leaks."""
+        """_invalidate() closes the transport to avoid socket leaks."""
         conn, mock_reader, mock_writer = connected_connection
 
         mock_reader.read.side_effect = [b""]
@@ -533,7 +491,6 @@ class TestDqliteConnection:
         assert result is None
 
     async def test_transaction_rollback_on_cancellation(self) -> None:
-        """CancelledError inside a transaction must trigger ROLLBACK."""
         import asyncio
 
         conn = DqliteConnection("localhost:9001")
@@ -555,7 +512,6 @@ class TestDqliteConnection:
         with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
             await conn.connect()
 
-        # Track which SQL statements are executed
         call_log: list[str] = []
 
         async def mock_execute(sql: str, params=None):
@@ -566,24 +522,21 @@ class TestDqliteConnection:
 
         async def cancelled_transaction():
             async with conn.transaction():
-                await asyncio.sleep(10)  # Will be cancelled here
+                await asyncio.sleep(10)  # cancelled here
 
         task = asyncio.create_task(cancelled_transaction())
-        await asyncio.sleep(0)  # Let the task enter the transaction
+        await asyncio.sleep(0)  # let the task enter the transaction
         task.cancel()
 
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        # ROLLBACK must have been issued
         assert "ROLLBACK" in call_log, (
             f"ROLLBACK was not issued on CancelledError. Calls: {call_log}"
         )
-        # _in_transaction must be cleaned up
         assert not conn._in_transaction
 
     async def test_connect_cancellation_cleans_up_protocol(self) -> None:
-        """Cancelling connect() during handshake must close the transport."""
         import asyncio
 
         conn = DqliteConnection("localhost:9001")
@@ -598,7 +551,7 @@ class TestDqliteConnection:
 
         async def slow_handshake(*args, **kwargs):
             handshake_entered.set()
-            await asyncio.sleep(10)  # Will be cancelled
+            await asyncio.sleep(10)  # cancelled
 
         with (
             patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)),
@@ -616,19 +569,15 @@ class TestDqliteConnection:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-        # The protocol must have been closed to avoid socket leak
         proto_instance.close.assert_called()
-        # The connection must not appear as connected
         assert not conn.is_connected
 
     async def test_not_leader_error_invalidates_connection(self, connected_connection) -> None:
-        """OperationalError with 'not leader' code should invalidate the connection."""
         conn, mock_reader, _ = connected_connection
         assert conn.is_connected
 
         from dqlitewire.messages import FailureResponse
 
-        # Server responds with "not leader" error
         # SQLITE_IOERR_NOT_LEADER = SQLITE_IOERR | (40 << 8) = 10250
         not_leader = FailureResponse(code=10250, message="not leader").encode()
         mock_reader.read.side_effect = [not_leader]
@@ -638,18 +587,16 @@ class TestDqliteConnection:
         with pytest.raises(OperationalError, match="not leader"):
             await conn.execute("INSERT INTO t VALUES (1)")
 
-        # Connection should be invalidated after a leader error
         assert not conn.is_connected
 
     async def test_concurrent_coroutines_raises_interface_error(self, connected_connection) -> None:
-        """Two coroutines using the same connection must raise InterfaceError."""
         import asyncio
 
         from dqliteclient.exceptions import InterfaceError
 
         conn, _, _ = connected_connection
 
-        # Make execute hang so two coroutines overlap
+        # Hang execute so two coroutines overlap.
         first_entered = asyncio.Event()
 
         async def slow_exec_sql(db_id, sql, params=None):
@@ -674,7 +621,7 @@ class TestDqliteConnection:
         task1 = asyncio.create_task(first_execute())
         task2 = asyncio.create_task(second_execute())
 
-        await task2  # second should raise InterfaceError
+        await task2
         task1.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task1
@@ -683,7 +630,6 @@ class TestDqliteConnection:
         assert "another operation is in progress" in str(errors[0])
 
     async def test_concurrent_connect_raises_interface_error(self) -> None:
-        """Two coroutines connecting the same object must raise InterfaceError."""
         import asyncio
 
         from dqliteclient.exceptions import InterfaceError
@@ -716,7 +662,7 @@ class TestDqliteConnection:
                 await conn.connect()
 
         async def second_connect():
-            await asyncio.sleep(0)  # Let first_connect start
+            await asyncio.sleep(0)  # let first_connect start
             try:
                 await conn.connect()
             except InterfaceError as e:
@@ -725,7 +671,7 @@ class TestDqliteConnection:
         task1 = asyncio.create_task(first_connect())
         task2 = asyncio.create_task(second_connect())
 
-        await asyncio.sleep(0)  # Let both start
+        await asyncio.sleep(0)  # let both start
         gate.set()
 
         await asyncio.gather(task1, task2, return_exceptions=True)
@@ -741,7 +687,7 @@ class TestDqliteConnection:
 
         conn, _, _ = connected_connection
 
-        # Make execute hang so close() runs while execute is in progress
+        # Hang execute so close() runs while execute is in progress.
         execute_entered = asyncio.Event()
 
         async def slow_exec_sql(db_id, sql, params=None):
@@ -757,7 +703,6 @@ class TestDqliteConnection:
         task = asyncio.create_task(do_execute())
         await execute_entered.wait()
 
-        # close() should raise because execute is in progress
         with pytest.raises(InterfaceError, match="another operation is in progress"):
             await conn.close()
 
@@ -766,7 +711,6 @@ class TestDqliteConnection:
             await task
 
     async def test_concurrent_transaction_raises_interface_error(self) -> None:
-        """Second concurrent transaction() must raise InterfaceError about nesting."""
         import asyncio
 
         from dqliteclient.exceptions import InterfaceError
@@ -790,7 +734,6 @@ class TestDqliteConnection:
         with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
             await conn.connect()
 
-        # Mock execute to track calls and allow concurrent entry
         begin_entered = asyncio.Event()
 
         async def mock_execute(sql: str, params=None):
@@ -818,12 +761,8 @@ class TestDqliteConnection:
         task_a = asyncio.create_task(tx_a())
         task_b = asyncio.create_task(tx_b())
 
-        # Sibling task hitting an in-progress transaction should see the
-        # "owned by another task" diagnostic from _check_in_use, NOT the
-        # "Nested transactions" diagnostic that points at SAVEPOINT.
-        # SAVEPOINT is the wrong guidance for cross-task connection
-        # sharing — the actual remedy is a separate connection from the
-        # pool.
+        # A cross-task sibling must see "owned by another task", NOT the
+        # "Nested transactions"/SAVEPOINT guidance (wrong remedy here).
         await task_b
 
         task_a.cancel()
@@ -839,26 +778,21 @@ class TestDqliteConnection:
         assert "owned by another task" in msg or "another operation" in msg, (
             f"Expected the cross-task / in-progress diagnostic, got: {msg!r}"
         )
-        # The nested-transactions wording is reserved for SAME-task
-        # re-entry; sibling-task usage must not see it.
+        # The nested-transactions wording is reserved for SAME-task re-entry.
         assert "Nested" not in msg and "nested" not in msg
 
     async def test_loop_guard_active_even_without_connect(self) -> None:
-        """The loop-mismatch guard must bind on first _check_in_use, not only
-        inside connect(). Otherwise bare-instantiation + mocked _protocol
-        patterns (common in tests) bypass the guard.
-        """
+        """The loop-mismatch guard binds on first _check_in_use, not only inside
+        connect(), so bare-instantiation + mocked _protocol can't bypass it."""
         import asyncio
         import threading
 
         from dqliteclient.exceptions import InterfaceError
 
         conn = DqliteConnection("localhost:9001")
-        # Simulate a test that mocks the protocol without calling connect().
         conn._protocol = MagicMock()
         conn._db_id = 1
 
-        # First operation in this loop should bind the loop implicitly.
         conn._check_in_use()
         assert conn._bound_loop_ref is not None
         first_loop = conn._bound_loop_ref()
@@ -866,7 +800,7 @@ class TestDqliteConnection:
             "first _check_in_use should bind the current event loop"
         )
 
-        # Crossing into a new loop from another thread should raise.
+        # A new loop in another thread must raise.
         error_from_thread: Exception | None = None
 
         def run_in_other_loop() -> None:
@@ -888,11 +822,8 @@ class TestDqliteConnection:
         assert "event loop" in str(error_from_thread).lower()
 
     async def test_connect_open_not_leader_surfaces_as_connection_error(self) -> None:
-        """If OPEN returns a leader-change code during connect(), callers must
-        see it as a transport-level DqliteConnectionError, not as a generic
-        OperationalError indistinguishable from a SQL error. Retry layers
-        and cluster failover hinge on this classification.
-        """
+        """A leader-change code from OPEN during connect() must surface as a
+        transport-level DqliteConnectionError; retry/failover hinge on this."""
         from dqlitewire.messages import FailureResponse, WelcomeResponse
 
         conn = DqliteConnection("localhost:9001")
@@ -915,16 +846,13 @@ class TestDqliteConnection:
         ):
             await conn.connect()
 
-        # Socket must also be cleaned up.
         assert not conn.is_connected
 
     async def test_client_side_error_does_not_invalidate_connection(
         self, connected_connection
     ) -> None:
-        """A client-side error (e.g., encoding bug) before any wire byte is
-        written must not destroy the connection. Only transport-level and
-        leader-change errors warrant invalidation.
-        """
+        """A client-side error before any wire byte is written must not invalidate
+        the connection; only transport-level / leader-change errors do."""
         conn, _, _ = connected_connection
         assert conn.is_connected
 
@@ -941,10 +869,8 @@ class TestDqliteConnection:
     async def test_not_connected_after_invalidation_chains_cause(
         self, connected_connection
     ) -> None:
-        """After invalidation, a subsequent operation's DqliteConnectionError
-        ('Not connected') must chain back to the original cause, so logs on
-        the second-use path still surface why the connection died.
-        """
+        """After invalidation, a later 'Not connected' DqliteConnectionError must
+        chain back to the original cause so logs still show why the conn died."""
         conn, mock_reader, _ = connected_connection
         from dqlitewire.messages import FailureResponse
 
@@ -954,49 +880,36 @@ class TestDqliteConnection:
             await conn.execute("SELECT 1")
         assert not conn.is_connected
 
-        # Second call: should surface the original cause, not a bare
-        # "Not connected".
         with pytest.raises(DqliteConnectionError) as exc_info:
             await conn.execute("SELECT 2")
         assert exc_info.value.__cause__ is not None
         assert isinstance(exc_info.value.__cause__, OperationalError)
 
     async def test_close_is_idempotent_on_second_call(self, connected_connection) -> None:
-        """close() must be safe to call twice; a second call must no-op
-        rather than re-enter _check_in_use and raise.
-        """
+        """A second close() must no-op rather than re-enter _check_in_use and raise."""
         conn, _, _ = connected_connection
         await conn.close()
-        # Second close should not raise.
         await conn.close()
         assert not conn.is_connected
 
     async def test_close_on_pool_released_connection_is_noop(self, connected_connection) -> None:
-        """A pool-released connection's close() must no-op rather than raise
-        InterfaceError. __aexit__ and try/finally cleanup patterns rely on
-        this.
-        """
+        """A pool-released connection's close() must no-op (relied on by __aexit__
+        and try/finally cleanup), not raise InterfaceError."""
         conn, _, _ = connected_connection
         conn._pool_released = True
-        # Would previously raise InterfaceError("returned to the pool").
         await conn.close()
 
     async def test_close_clears_bound_loop_for_cross_loop_reuse(self, connected_connection) -> None:
-        """close() must reset the loop binding so a subsequent connect()
-        on a different event loop is not rejected by _check_in_use with
-        "bound to a different event loop". Symmetric with the dbapi-async
-        adapter's loop reset on close and the existing failed-connect
-        path's clear in connect()'s finally block."""
+        """close() resets the loop binding so a later connect() on a different
+        loop is not rejected by _check_in_use."""
         conn, _, _ = connected_connection
         assert conn._bound_loop_ref is not None
         await conn.close()
         assert conn._bound_loop_ref is None
 
     async def test_commit_failure_invalidates_connection(self, connected_connection) -> None:
-        """A failed COMMIT leaves server-side state ambiguous; the connection
-        must be invalidated so the pool doesn't recycle it to another caller
-        in an unknown state.
-        """
+        """A failed COMMIT leaves ambiguous server state; invalidate so the pool
+        doesn't recycle the connection in an unknown state."""
         from dqliteclient.exceptions import OperationalError as OpError
         from dqlitewire.messages import FailureResponse, ResultResponse
 
@@ -1004,8 +917,7 @@ class TestDqliteConnection:
         mock_reader.read.side_effect = [
             ResultResponse(last_insert_id=0, rows_affected=0).encode(),  # BEGIN
             FailureResponse(code=1, message="disk I/O error").encode(),  # COMMIT
-            # ROLLBACK would also fail on an invalidated conn:
-            FailureResponse(code=1, message="should not reach").encode(),
+            FailureResponse(code=1, message="should not reach").encode(),  # ROLLBACK
         ]
         with pytest.raises(OpError):
             async with conn.transaction():
@@ -1013,11 +925,8 @@ class TestDqliteConnection:
         assert not conn.is_connected, "failed COMMIT must invalidate the connection"
 
     async def test_string_params_rejected_with_clear_error(self, connected_connection) -> None:
-        """Passing a bare string as params silently splits it into N character
-        parameters. Guard at the client boundary so the user gets a clear
-        DataError (a DqliteError subclass) instead of a confusing server-
-        side "wrong parameter count".
-        """
+        """A bare string as params would silently split into N char params; guard
+        with a clear DataError instead of a confusing server-side count error."""
         from dqliteclient.exceptions import DataError
 
         conn, _, _ = connected_connection
@@ -1025,9 +934,8 @@ class TestDqliteConnection:
             await conn.execute("SELECT ?", "alice")
 
     async def test_int64_overflow_raises_dataerror(self, connected_connection) -> None:
-        """Out-of-range int (|v| >= 2^63) must surface as DataError, not the
-        internal wire-package EncodeError. The connection must remain alive.
-        """
+        """An out-of-range int (|v| >= 2^63) surfaces as DataError, not the
+        internal EncodeError, and the connection stays alive."""
         from dqliteclient.exceptions import DataError
 
         conn, _, _ = connected_connection
@@ -1037,7 +945,6 @@ class TestDqliteConnection:
         assert conn.is_connected
 
     async def test_cross_event_loop_raises_interface_error(self) -> None:
-        """Using a connection from a different event loop must raise InterfaceError."""
         import asyncio
         import threading
 
@@ -1062,15 +969,13 @@ class TestDqliteConnection:
         with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
             await conn.connect()
 
-        # Now try to use the connection from a different event loop in another thread
         error_from_thread: Exception | None = None
 
         def run_in_other_loop():
             nonlocal error_from_thread
 
             async def use_conn():
-                # Provide a fresh response so the operation could succeed
-                # if the guard doesn't catch it
+                # Fresh response so the op would succeed if the guard missed it.
                 mock_reader.read.side_effect = [
                     ResultResponse(last_insert_id=0, rows_affected=0).encode(),
                 ]
@@ -1094,7 +999,6 @@ class TestDqliteConnection:
         assert "event loop" in str(error_from_thread).lower()
 
     async def test_other_task_rejected_during_transaction(self) -> None:
-        """Another task calling execute() during an active transaction must be rejected."""
         import asyncio
 
         from dqliteclient.exceptions import InterfaceError
@@ -1118,7 +1022,6 @@ class TestDqliteConnection:
         with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
             await conn.connect()
 
-        # Mock execute for the transaction owner (task A) — needs to work
         a_inside_tx = asyncio.Event()
 
         async def mock_execute_a(sql: str, params=None):
@@ -1139,7 +1042,7 @@ class TestDqliteConnection:
         async def task_b():
             await a_inside_tx.wait()
             try:
-                # Use _check_in_use directly — this is what real execute() calls
+                # _check_in_use is what real execute() calls.
                 conn._check_in_use()
             except InterfaceError as e:
                 errors.append(e)
@@ -1158,10 +1061,8 @@ class TestDqliteConnection:
 
 
 class TestAbortProtocolNarrowSuppression:
-    """_abort_protocol must let CancelledError propagate so an outer
-    ``asyncio.timeout`` scope sees the cancellation instead of being
-    swallowed along with the TimeoutError from the bounded drain.
-    """
+    """_abort_protocol lets CancelledError propagate so an outer
+    ``asyncio.timeout`` scope sees the cancellation, not just the drain TimeoutError."""
 
     async def test_outer_cancel_propagates_through_abort(self) -> None:
         import asyncio
@@ -1175,10 +1076,8 @@ class TestAbortProtocolNarrowSuppression:
         proto = MagicMock()
         proto.close = MagicMock()
 
-        # wait_closed hangs forever; we wrap the abort in wait_for with
-        # a short outer timeout and assert the outer TimeoutError
-        # propagates (in the previous BaseException-suppressing code
-        # it would have been eaten).
+        # wait_closed hangs; the outer wait_for TimeoutError must propagate
+        # (the old BaseException-suppressing code ate it).
         async def hang_forever() -> None:
             await asyncio.sleep(999)
 
@@ -1189,8 +1088,7 @@ class TestAbortProtocolNarrowSuppression:
             await asyncio.wait_for(conn._abort_protocol(), timeout=0.1)
 
     async def test_timeout_during_drain_is_suppressed(self) -> None:
-        """The bounded wait_closed budget *internally* expiring is
-        expected (slow peer) and must not propagate."""
+        """An internally-expiring wait_closed budget (slow peer) must not propagate."""
         import asyncio
         from unittest.mock import MagicMock
 
@@ -1206,17 +1104,12 @@ class TestAbortProtocolNarrowSuppression:
         proto.wait_closed = hang_forever
         conn._protocol = proto
 
-        # No outer timeout: the internal 0.5s wait_for expires, the
-        # resulting TimeoutError is suppressed, and the call returns.
         await conn._abort_protocol()
 
 
 class TestProtocolErrorHierarchy:
-    """Cross-layer exception catching works: dqliteclient.ProtocolError
-    is a subclass of BOTH dqliteclient.DqliteError and
-    dqlitewire.exceptions.ProtocolError, so callers can catch either
-    ancestor and get both variants.
-    """
+    """dqliteclient.ProtocolError subclasses BOTH dqliteclient.DqliteError and
+    dqlitewire.exceptions.ProtocolError, so either ancestor catches it."""
 
     def test_client_protocol_error_subclass_of_wire_version(self) -> None:
         import dqlitewire.exceptions

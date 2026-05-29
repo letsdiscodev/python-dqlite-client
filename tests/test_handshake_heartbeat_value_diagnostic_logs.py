@@ -1,10 +1,5 @@
-"""Diagnostic logs around the server-advertised heartbeat value.
-
-Three edge cases that the wire layer accepts but cannot remediate
-client-side. Each is non-fatal — but the operator chasing a
-mis-configured-peer / non-conforming-server symptom needs the
-breadcrumb to correlate against per-cluster config audits.
-"""
+"""Diagnostic logs for three non-fatal edge cases in the server-advertised
+heartbeat value, as breadcrumbs for a mis-configured/non-conforming peer."""
 
 from __future__ import annotations
 
@@ -37,8 +32,7 @@ async def test_zero_heartbeat_emits_diagnostic_debug(
     mock_writer: MagicMock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A server advertising ``heartbeat_timeout=0`` is flagged at DEBUG
-    as semantically ambiguous (per the wire spec)."""
+    """``heartbeat_timeout=0`` is flagged at DEBUG as ambiguous."""
     mock_reader.read.return_value = WelcomeResponse(heartbeat_timeout=0).encode()
     protocol = DqliteProtocol(mock_reader, mock_writer, timeout=5.0)
     caplog.set_level(logging.DEBUG, logger="dqliteclient.protocol")
@@ -55,8 +49,7 @@ async def test_over_cap_heartbeat_emits_clip_warning(
     mock_writer: MagicMock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A server advertising a heartbeat over the 300 s client cap emits
-    a WARNING so the operator can tell the value was clipped."""
+    """A heartbeat over the 300 s client cap emits a WARNING that it was clipped."""
     # 10000 seconds -> capped to 300 s.
     mock_reader.read.return_value = WelcomeResponse(heartbeat_timeout=10_000_000).encode()
     protocol = DqliteProtocol(mock_reader, mock_writer, timeout=5.0, trust_server_heartbeat=True)
@@ -78,10 +71,8 @@ async def test_heartbeat_smaller_than_read_timeout_emits_no_op_debug(
     mock_writer: MagicMock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """``trust_server_heartbeat=True`` plus a server-advertised heartbeat
-    smaller than the operator's configured read deadline emits a DEBUG
-    explaining the no-op widening. Operator opted in expecting
-    widening; the contradiction needs a breadcrumb."""
+    """``trust_server_heartbeat=True`` with a heartbeat smaller than the read
+    deadline emits a DEBUG explaining the no-op widening the operator expected."""
     # 1000 ms = 1 s; operator configured 5 s read deadline.
     mock_reader.read.return_value = WelcomeResponse(heartbeat_timeout=1_000).encode()
     protocol = DqliteProtocol(mock_reader, mock_writer, timeout=5.0, trust_server_heartbeat=True)

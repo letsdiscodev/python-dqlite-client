@@ -1,11 +1,7 @@
 """Pin: ``YamlNodeStore._load_from_disk`` rejects float ``ID`` values.
 
-``int(True) == 1`` is the documented bool-coerce trap that the
-loader's pre-int guard catches. ``int(3.7) == 3`` is the same shape
-of silent coercion for floats — the guard now diverts both to a
-clean ``ClusterError`` so a hand-edited / corrupt YAML store with a
-float ID cannot silently truncate to a different node id (or land on
-the ``node_id=0`` "no node" sentinel for ``ID: 0.5``).
+Like ``int(True)``, ``int(3.7) == 3`` silently coerces; the guard diverts floats to a
+ClusterError so a float ID can't truncate to a different node id (or the ``0`` sentinel).
 """
 
 from pathlib import Path
@@ -34,9 +30,7 @@ def test_id_float_zero_rejected(tmp_path: Path) -> None:
 
 
 def test_id_integer_valued_float_still_rejected(tmp_path: Path) -> None:
-    """``ID: 1.0`` (integer-valued float) is still rejected — the
-    point is that the YAML *type* is float, not whether the value
-    happens to be integral."""
+    """Rejection keys on the YAML *type* being float, not whether the value is integral."""
     yaml_file = tmp_path / "nodes.yml"
     yaml_file.write_text("- {ID: 1.0, Address: 'h:9001', Role: voter}\n")
 
@@ -53,8 +47,7 @@ def test_id_plain_integer_happy_path(tmp_path: Path) -> None:
 
 
 def test_id_string_int_still_accepted(tmp_path: Path) -> None:
-    """Preserve the ``int("5")`` fall-through path that the loader
-    uses to accept hand-edited string-typed integer IDs."""
+    """Preserve the ``int("5")`` path accepting hand-edited string-typed integer IDs."""
     yaml_file = tmp_path / "nodes.yml"
     yaml_file.write_text("- {ID: '5', Address: 'h:9001', Role: voter}\n")
 
@@ -63,7 +56,6 @@ def test_id_string_int_still_accepted(tmp_path: Path) -> None:
 
 
 def test_id_bool_still_rejected(tmp_path: Path) -> None:
-    """The existing bool guard is unchanged."""
     yaml_file = tmp_path / "nodes.yml"
     yaml_file.write_text("- {ID: true, Address: 'h:9001', Role: voter}\n")
 

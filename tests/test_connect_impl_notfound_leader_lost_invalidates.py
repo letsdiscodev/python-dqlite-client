@@ -1,15 +1,5 @@
-"""Pin: ``DqliteConnection._connect_impl``'s ``_is_leader_flip``
-predicate covers the substring-gated SQLITE_NOTFOUND arm during
-OPEN.
-
-The morning's Go-parity fix added a parallel SQLITE_NOTFOUND-leader-
-flip arm at TWO sites: ``_run_protocol`` (in-flight RPCs) and
-``_connect_impl`` (OPEN-time failures). The ``_run_protocol`` site
-is pinned by
-``test_run_protocol_notfound_after_leader_loss_invalidates_connection.py``.
-This file pins the ``_connect_impl`` site so a future refactor
-that drops the SQLITE_NOTFOUND clause from the connect-time
-``_is_leader_flip`` predicate is caught.
+"""``_connect_impl``'s ``_is_leader_flip`` covers the substring-gated SQLITE_NOTFOUND arm
+during OPEN (sibling of the ``_run_protocol`` site).
 """
 
 from __future__ import annotations
@@ -28,10 +18,8 @@ from dqlitewire import LEADER_LOST_DB_LOOKUP_SUBSTRING, SQLITE_NOTFOUND
 async def test_connect_translates_notfound_leader_lost_to_connection_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``open_database`` raising ``OperationalError(code=SQLITE_NOTFOUND,
-    raw_message="no database opened (db_id=7)")`` is rewrapped as
-    ``DqliteConnectionError`` with the leader-flip wording. The
-    underlying protocol is invalidated."""
+    """A leader-lost SQLITE_NOTFOUND from open_database rewraps as DqliteConnectionError
+    and invalidates the protocol."""
 
     async def _fake_open_connection(
         host: str, port: int, **_kwargs: object
@@ -64,9 +52,6 @@ async def test_connect_translates_notfound_leader_lost_to_connection_error(
             return None
 
     async def _fake_abort(self: DqliteConnection) -> None:
-        # Mirror the real ``_abort_protocol``'s teardown discipline:
-        # null out ``_protocol`` so the post-exception assertion sees
-        # a clean state.
         self._protocol = None
 
     real_proto = conn_mod.DqliteProtocol  # type: ignore[attr-defined]
@@ -92,12 +77,8 @@ async def test_connect_translates_notfound_leader_lost_to_connection_error(
 async def test_connect_propagates_notfound_lookup_stmt_as_operational_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Negative twin: ``OperationalError(code=SQLITE_NOTFOUND,
-    raw_message="no statement with the given id 7")`` (the
-    ``LOOKUP_STMT`` arm of gateway.c) is a server-side state bug, NOT
-    a transport flip. Must propagate as-is, not rewrap as
-    ``DqliteConnectionError``. Preserves the existing PEP 249
-    ``InternalError`` mapping for ``SQLITE_NOTFOUND``."""
+    """Negative twin: a LOOKUP_STMT SQLITE_NOTFOUND is a server bug, not a flip; it must
+    propagate as-is rather than rewrap as DqliteConnectionError."""
 
     async def _fake_open_connection(
         host: str, port: int, **_kwargs: object
@@ -130,9 +111,6 @@ async def test_connect_propagates_notfound_lookup_stmt_as_operational_error(
             return None
 
     async def _fake_abort(self: DqliteConnection) -> None:
-        # Mirror the real ``_abort_protocol``'s teardown discipline:
-        # null out ``_protocol`` so the post-exception assertion sees
-        # a clean state.
         self._protocol = None
 
     real_proto = conn_mod.DqliteProtocol  # type: ignore[attr-defined]
@@ -146,7 +124,6 @@ async def test_connect_propagates_notfound_lookup_stmt_as_operational_error(
         with pytest.raises(OperationalError) as ei:
             await conn.connect()
         assert ei.value.code == SQLITE_NOTFOUND
-        # NOT rewrapped to DqliteConnectionError.
         assert not isinstance(ei.value, DqliteConnectionError)
     finally:
         conn_mod.DqliteProtocol = real_proto  # type: ignore[attr-defined]

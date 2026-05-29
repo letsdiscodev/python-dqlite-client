@@ -1,24 +1,7 @@
-"""Pin: ``MemoryNodeStore`` and ``YamlNodeStore`` raise
-``InterfaceError`` on ``get_nodes`` / ``set_nodes`` after fork.
+"""The node stores raise InterfaceError on get_nodes/set_nodes after fork.
 
-The node-store classes hold a parent-loop-bound ``asyncio.Lock``
-and (for ``YamlNodeStore``) an in-memory tuple loaded from disk in
-the parent process. Without the fork-after-init guard, the
-dominant failure modes are:
-
-* Multi-threaded parent forks with one thread inside
-  ``set_nodes`` (the dbapi sync layer's daemon loop thread is the
-  obvious path) — the child inherits the lock in a
-  permanently-held state and the first child ``acquire()`` blocks
-  forever. The dbapi resolve-leader cache lock has an
-  ``os.register_at_fork(after_in_child=...)`` hook for the same
-  failure mode; the node-store locks were the missing twins.
-* Silent stale-snapshot reads from a child running on a fresh
-  loop where the parent's data is no longer authoritative.
-
-Uses ``monkeypatch.setattr`` to spoof ``_current_pid`` so the
-post-fork branch is reachable deterministically without a real
-``fork()``.
+Without the guard a child inherits the parent-loop-bound asyncio.Lock in a held state
+(deadlock) or reads a stale snapshot. Tests spoof getpid to reach the branch without fork().
 """
 
 from __future__ import annotations

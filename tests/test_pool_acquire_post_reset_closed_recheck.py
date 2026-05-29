@@ -1,25 +1,11 @@
-"""Pin: ``acquire()`` exception-arm re-checks ``_closed`` after the
-``_reset_connection`` yield.
+"""Pin: ``acquire()``'s exception arm re-checks ``_closed`` after the
+``_reset_connection`` (ROLLBACK) yield.
 
-The structurally-identical ``_release`` post-reset re-check is already
-pinned by ``test_pool_release_post_reset_closed_recheck.py``. The
-``acquire()`` exception-arm path is its own code with its own line
-range and was previously untested:
-
-```python
-async with pool.acquire() as conn:
-    raise <user-exception>     # falls into the BaseException arm
-```
-
-When the user's body raises, ``acquire()``'s ``except BaseException``
-runs ``_reset_connection`` (ROLLBACK) and on success would
-``put_nowait`` the conn back. ``pool.close()`` does not take
-``_lock``, so a concurrent close may flip ``_closed=True`` and drain
-the queue while the ROLLBACK is in flight. Without the post-reset
-re-check the conn would be queued into a drained pool and orphaned.
-
-A future refactor that drops the re-check on the acquire-side path
-would silently regress.
+close() does not take ``_lock``, so a concurrent close can flip
+``_closed=True`` and drain the queue while the ROLLBACK is in flight;
+without the re-check the conn would be queued into a drained pool and
+orphaned. (The structurally-identical ``_release`` path is pinned
+separately.)
 """
 
 from __future__ import annotations
@@ -71,10 +57,8 @@ def _make_pool() -> ConnectionPool:
 
 @pytest.mark.asyncio
 async def test_acquire_exception_post_reset_closes_when_pool_closed_during_reset() -> None:
-    """``acquire()``'s exception arm must observe a concurrent
-    ``pool.close()`` that lands during the ROLLBACK yield, route the
-    conn through close + reservation release, and not orphan it in
-    a drained queue."""
+    """A concurrent close() during the ROLLBACK yield must route the conn
+    through close + reservation release, not orphan it in a drained queue."""
     pool = _make_pool()
     pool._size = 1
     conn = _FakeConn()
@@ -110,7 +94,6 @@ async def test_acquire_exception_post_reset_closes_when_pool_closed_during_reset
         await user_task
     await close_task
 
-    # The conn must have been close()'d via the post-reset re-check
-    # branch on the acquire-side path, not orphaned in a drained queue.
+    # Closed via the post-reset re-check, not orphaned in a drained queue.
     assert conn.close_called is True
     assert conn._pool_released is True

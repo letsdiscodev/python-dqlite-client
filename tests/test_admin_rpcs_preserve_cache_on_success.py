@@ -1,13 +1,6 @@
-"""Pin: read-only / per-node admin RPCs (``cluster_info``,
-``leader_info``, ``describe``, ``set_weight``, ``dump``) preserve
-the leader cache on the SUCCESS path. On a leader-step-down failure
-(``OperationalError`` / ``DqliteConnectionError`` / ``ProtocolError``)
-the cache IS invalidated so the next ``find_leader`` re-sweeps.
+"""Read-only admin RPCs preserve the leader cache on success, invalidate it on failure.
 
-Matches go-dqlite's ``Client.Cluster``/``Describe``/``Weight``/``Dump``
-which never touch the leader tracker on success. Membership-changing
-RPCs (``add_node``/``remove_node``/``assign_role``/``transfer_leadership``)
-still invalidate unconditionally because they CAN trigger elections.
+Membership-changing RPCs invalidate unconditionally because they can trigger elections.
 """
 
 from __future__ import annotations
@@ -52,9 +45,6 @@ def _make_admin_cm(*, raises: BaseException | None = None) -> MagicMock:
     return fake_cm
 
 
-# ----- Success path: cache stays warm ------------------------------
-
-
 @pytest.mark.asyncio
 async def test_cluster_info_success_preserves_cache() -> None:
     cc = _make_cluster()
@@ -85,9 +75,6 @@ async def test_dump_success_preserves_cache() -> None:
     cc.open_admin_connection = MagicMock(return_value=_make_admin_cm())
     await cc.dump("db")
     assert cc._last_known_leader == "warm:9001"
-
-
-# ----- Failure path: cache invalidated ------------------------------
 
 
 @pytest.mark.asyncio

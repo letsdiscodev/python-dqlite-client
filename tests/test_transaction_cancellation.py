@@ -1,24 +1,4 @@
-"""Transaction-level cancellation invariants.
-
-Pins the cancellation behavior of ``DqliteConnection.transaction()``:
-
-- ROLLBACK failure in the body-raised path invalidates the connection
-  so the pool discards it on return. Without invalidation, the pool
-  would recycle a connection whose server-side transaction is still
-  open.
-- ``transaction()`` must not swallow ``CancelledError`` raised during
-  ROLLBACK. Structured concurrency (``TaskGroup`` / ``asyncio.timeout()``)
-  relies on cancellation propagating.
-- Parameterized cancellation-at-phase matrix:
-    - ``before_begin``: cancel between ``transaction()`` entry and BEGIN
-      returning
-    - ``in_body``: cancel during the yield body
-    - ``during_commit``: cancel during COMMIT
-    - ``during_rollback``: cancel during ROLLBACK (after body raised)
-
-Each test exercises one invariant against a controllable protocol fake.
-No cluster required.
-"""
+"""Cancellation invariants for ``DqliteConnection.transaction()``."""
 
 from __future__ import annotations
 
@@ -34,18 +14,11 @@ from dqliteclient.exceptions import OperationalError
 
 
 class _FakeProtocol:
-    """Controllable DqliteProtocol double.
-
-    Per-SQL-verb hooks: ``on[verb]`` may be set to a callable returning
-    an awaitable. Default behavior: each verb returns (0, 0) immediately.
-    The fake also exposes ``is_closing`` / ``at_eof`` for the pool's
-    socket-liveness probe via ``_writer.transport`` and ``_reader``.
-    """
+    """Controllable DqliteProtocol double; per-verb ``on_*`` hooks default to returning (0, 0)."""
 
     def __init__(self) -> None:
         self._open = True
         self.log: list[str] = []
-        # One hook per SQL verb; callable returns awaitable or raises.
         self.on_begin: Any = self._default_ok
         self.on_commit: Any = self._default_ok
         self.on_rollback: Any = self._default_ok
@@ -77,7 +50,6 @@ class _FakeProtocol:
 
 
 def _make_connection() -> tuple[DqliteConnection, _FakeProtocol]:
-    """Build a DqliteConnection wired up to a fake protocol, no TCP."""
     conn = DqliteConnection("localhost:9001")
     proto = _FakeProtocol()
     conn._protocol = proto  # type: ignore[assignment]
@@ -88,7 +60,7 @@ def _make_connection() -> tuple[DqliteConnection, _FakeProtocol]:
 
 @pytest.fixture
 def conn_and_proto() -> Any:
-    """Event-loop-aware fixture; asyncio test functions receive a fresh pair."""
+    """Event-loop-aware factory; asyncio tests await it for a fresh pair."""
 
     async def _make() -> tuple[DqliteConnection, _FakeProtocol]:
         conn = DqliteConnection("localhost:9001")
@@ -102,11 +74,7 @@ def conn_and_proto() -> Any:
 
 
 class TestRollbackFailureInvalidatesConnection:
-    """When the body raises AND ROLLBACK also fails, the connection
-    must be marked invalid so the pool discards it instead of
-    recycling a Python-side ``_in_transaction=False`` connection that
-    has a live server-side transaction.
-    """
+    """Body raises AND ROLLBACK fails: invalidate so the pool discards the still-open tx."""
 
     async def test_rollback_failure_invalidates_connection(self, conn_and_proto: Any) -> None:
         conn, proto = await conn_and_proto()
@@ -114,7 +82,6 @@ class TestRollbackFailureInvalidatesConnection:
         class _BodyError(Exception):
             pass
 
-        # Body will raise. ROLLBACK will also raise.
         async def _failing_rollback() -> tuple[int, int]:
             raise OperationalError("ROLLBACK failed: connection poisoned", 1)
 
@@ -124,25 +91,19 @@ class TestRollbackFailureInvalidatesConnection:
             async with conn.transaction():
                 raise _BodyError("user error")
 
-        # Strict invariant: the fix invalidates the connection when
-        # ROLLBACK fails (any reason, cancellation or error). The
-        # previous "or _in_transaction" tolerance was too weak — it
-        # would accept a still-open server-side transaction with a
-        # Python flag that the pool might not inspect.
+        # Invalidate on any ROLLBACK failure; an "or _in_transaction" tolerance is too weak.
         assert conn._protocol is None, (
             "After ROLLBACK failure in body-raised path, connection "
             "must be invalidated (protocol=None) so the pool discards "
             "it instead of recycling a connection with unknown "
             "server-side transaction state."
         )
-        # Finally block must still clear transaction state.
         assert not conn._in_transaction
         assert conn._tx_owner is None
 
 
 class TestRollbackHappyPath:
-    """Regression: body raises, ROLLBACK succeeds. Verify the fix did
-    not break the normal error-recovery path."""
+    """Body raises, ROLLBACK succeeds: the connection stays usable."""
 
     async def test_body_error_with_successful_rollback(self, conn_and_proto: Any) -> None:
         conn, proto = await conn_and_proto()
@@ -154,9 +115,6 @@ class TestRollbackHappyPath:
             async with conn.transaction():
                 raise _BodyError()
 
-        # ROLLBACK must have been sent; state must be clean; connection
-        # must be reusable (NOT invalidated — clean rollback preserves
-        # the connection).
         assert proto.log == ["BEGIN", "ROLLBACK"]
         assert conn._protocol is proto, "clean rollback must not invalidate"
         assert not conn._in_transaction
@@ -164,11 +122,7 @@ class TestRollbackHappyPath:
 
 
 class TestRollbackCancellationPropagates:
-    """CancelledError raised during the body-error ROLLBACK path must
-    not be swallowed. ``suppress(BaseException)`` catches it and the
-    enclosing task continues as if never cancelled, breaking
-    structured-concurrency guarantees.
-    """
+    """CancelledError during the body-error ROLLBACK must propagate, not be swallowed."""
 
     async def test_cancelled_error_during_rollback_propagates(self, conn_and_proto: Any) -> None:
         conn, proto = await conn_and_proto()
@@ -180,7 +134,7 @@ class TestRollbackCancellationPropagates:
 
         async def _rollback_that_sleeps() -> tuple[int, int]:
             rollback_started.set()
-            await asyncio.sleep(60)  # will be cancelled
+            await asyncio.sleep(60)
             return (0, 0)
 
         proto.on_rollback = _rollback_that_sleeps
@@ -193,23 +147,12 @@ class TestRollbackCancellationPropagates:
         await rollback_started.wait()
         task.cancel()
 
-        # After cancellation, the task must be either CancelledError (the
-        # new, fixed behavior) or _BodyError (the current bug — cancel was
-        # swallowed). We assert the fixed behavior.
         with pytest.raises(asyncio.CancelledError):
             await task
 
 
 class TestTransactionCancellationPhases:
-    """Exhaustive cancellation-at-phase matrix.
-
-    For each phase, we assert:
-    1. CancelledError is observed by the caller.
-    2. ``_in_transaction`` is cleared (no dangling Python-side state).
-    3. The connection is in a terminal state: either cleanly usable
-       (rolled back) or invalidated — never "looks clean but server
-       has open tx".
-    """
+    """Cancellation-at-phase matrix; each phase clears state and reaches a terminal state."""
 
     async def test_cancel_before_begin(self, conn_and_proto: Any) -> None:
         conn, proto = await conn_and_proto()
@@ -225,7 +168,7 @@ class TestTransactionCancellationPhases:
 
         async def run_transaction() -> None:
             async with conn.transaction():
-                pass  # unreachable
+                pass
 
         task = asyncio.create_task(run_transaction())
         await begin_started.wait()
@@ -234,7 +177,6 @@ class TestTransactionCancellationPhases:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        # Post-conditions.
         assert not conn._in_transaction, "in_transaction must be cleared"
         assert conn._tx_owner is None, "tx_owner must be cleared"
 
@@ -255,7 +197,6 @@ class TestTransactionCancellationPhases:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        # ROLLBACK should have been attempted; state must be clean.
         assert "ROLLBACK" in proto.log, "ROLLBACK must be attempted on cancel-in-body"
         assert not conn._in_transaction
         assert conn._tx_owner is None
@@ -274,7 +215,7 @@ class TestTransactionCancellationPhases:
 
         async def run_transaction() -> None:
             async with conn.transaction():
-                pass  # yield succeeds immediately
+                pass
 
         task = asyncio.create_task(run_transaction())
         await commit_started.wait()
@@ -283,8 +224,7 @@ class TestTransactionCancellationPhases:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        # Connection must be invalidated (COMMIT is ambiguous under cancel).
-        # Same contract as the commit_attempted branch above.
+        # COMMIT is ambiguous under cancel, so the connection must be invalidated.
         assert conn._protocol is None, (
             "Connection must be invalidated after COMMIT cancellation — "
             "server-side state is ambiguous (maybe committed, maybe not)."
@@ -292,10 +232,7 @@ class TestTransactionCancellationPhases:
         assert not conn._in_transaction
         assert conn._tx_owner is None
 
-        # The cancel that triggered the invalidation must be preserved
-        # as the invalidation cause so subsequent ``_ensure_connected``
-        # raises chain back to it. Operators reading "Not connected"
-        # logs need a breadcrumb to the originating cancel.
+        # Preserve the cancel as invalidation cause so later _ensure_connected raises chain to it.
         assert isinstance(conn._invalidation_cause, asyncio.CancelledError), (
             f"Expected CancelledError as invalidation cause, "
             f"got {type(conn._invalidation_cause).__name__}: "
@@ -303,7 +240,6 @@ class TestTransactionCancellationPhases:
         )
 
     async def test_cancel_during_rollback(self, conn_and_proto: Any) -> None:
-        # Body-error ROLLBACK cancellation, framed as a phase test.
         conn, proto = await conn_and_proto()
 
         class _BodyError(Exception):

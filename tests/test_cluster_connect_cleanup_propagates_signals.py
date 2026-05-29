@@ -1,23 +1,6 @@
-"""Pin: ``ClusterClient.connect``'s try_connect cleanup arm
-must NOT swallow unexpected exceptions raised by the
-shielded ``conn.close()``. The wide
-``contextlib.suppress(BaseException)`` catches a
-programming-bug class like ``AttributeError`` that the
-narrow canonical pattern (``suppress(asyncio.CancelledError)``
-plus a transport-class except) deliberately lets propagate.
-
-Mirrors the pool's discipline at
-``pool.py:1018-1042``:
-
-* ``CancelledError``: absorbed (asyncio re-delivers at next
-  await; the bare ``raise`` re-delivers the original
-  handshake exception).
-* ``OSError`` / ``DqliteConnectionError``: caught and logged
-  (transport-class teardown failures on a half-built conn
-  are expected).
-* anything else (KI / SystemExit / unexpected ``Exception``
-  subclasses): propagate.
-"""
+"""connect's cleanup arm must not swallow unexpected exceptions from the shielded
+conn.close(): only CancelledError and transport-class errors (OSError /
+DqliteConnectionError) are absorbed; a programming-bug AttributeError propagates."""
 
 from __future__ import annotations
 
@@ -47,10 +30,7 @@ async def test_connect_cleanup_arm_does_not_swallow_unexpected_exception() -> No
             raise OSError("simulated handshake failure")
 
         async def close(self) -> None:
-            # Programming-bug class — the wide BaseException
-            # suppress would silently swallow this; the narrow
-            # canonical pattern lets it propagate so the real
-            # source of the bug surfaces.
+            # Programming-bug class that must propagate, not be suppressed.
             raise AttributeError("unexpected attribute access in close()")
 
     cluster_mod.DqliteConnection = _StubDqliteConnection  # type: ignore[assignment,attr-defined]

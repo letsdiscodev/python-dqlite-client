@@ -1,19 +1,6 @@
-"""Systematic coverage of wrong-response-type / FailureResponse branches.
-
-DqliteProtocol's dispatcher methods each guard against two broken-
-server cases:
-
-* the server replies with a ``FailureResponse`` instead of the
-  opcode-specific response (mapped to ``OperationalError`` with the
-  failure code and message preserved); and
-* the server replies with some other unrelated message type (mapped
-  to ``ProtocolError`` citing the actual type received).
-
-Existing coverage only exercises ``finalize``'s wrong-type path and
-``open_database``'s FailureResponse path; the rest is a systematic
-test gap. Fill it in so a refactor that accidentally flips the
-exception type on any branch breaks the suite immediately.
-"""
+"""Systematic coverage of each dispatcher method's two broken-server guards:
+FailureResponse -> OperationalError (code+message preserved), and any other
+wrong type -> ProtocolError citing the received type."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -42,7 +29,6 @@ class TestHandshakeWrongResponseType:
     async def test_handshake_rejects_leader_response_instead_of_welcome(
         self, protocol: DqliteProtocol
     ) -> None:
-        # Feed a LeaderResponse where a Welcome is expected.
         protocol._reader.read.return_value = LeaderResponse(  # type: ignore[attr-defined]
             node_id=1, address="a:1"
         ).encode()
@@ -55,7 +41,6 @@ class TestGetLeaderErrorBranches:
         protocol._reader.read.return_value = FailureResponse(  # type: ignore[attr-defined]
             code=1, message="probe failed"
         ).encode()
-        # handshake must succeed first — simulate by setting the flag.
         with pytest.raises(OperationalError) as exc_info:
             await protocol.get_leader()
         assert exc_info.value.code == 1

@@ -1,13 +1,5 @@
-"""``_query_leader`` propagates pre-handshake transport errors
-(OSError, TimeoutError, ConnectionRefusedError) to the caller so
-``_probe_one`` can attribute them to the per-node aggregate
-``ClusterError`` with a specific exception class.
-
-Pre-fix the function swallowed OSError as ``None``, conflating
-"node unreachable" with "node up, no leader elected" — operators
-reading the aggregate could not distinguish the two and could not
-remediate appropriately.
-"""
+"""``_query_leader`` propagates pre-handshake transport errors so the aggregate
+ClusterError distinguishes "node unreachable" from "node up, no leader elected"."""
 
 import asyncio
 from unittest.mock import patch
@@ -59,9 +51,7 @@ async def test_query_leader_propagates_timeout() -> None:
 
 @pytest.mark.asyncio
 async def test_find_leader_aggregate_attributes_dial_error() -> None:
-    """End-to-end: a node that refuses connection appears in the
-    aggregate ClusterError with its specific exception class, not
-    a vague "no leader known"."""
+    """A refused node appears in the aggregate ClusterError with its specific class."""
     cluster = ClusterClient(
         MemoryNodeStore(["unreachable:9001"]),
         timeout=2.0,
@@ -81,8 +71,6 @@ async def test_find_leader_aggregate_attributes_dial_error() -> None:
     ):
         await cluster.find_leader()
 
-    # The aggregate error message must mention the node and the
-    # specific transport error rather than just "no leader known".
     msg = str(excinfo.value)
     assert "unreachable:9001" in msg
     assert "ConnectionRefusedError" in msg or "refused" in msg.lower() or "nothing listening" in msg

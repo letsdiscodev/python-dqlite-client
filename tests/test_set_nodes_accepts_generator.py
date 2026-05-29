@@ -1,17 +1,5 @@
-"""Pin: ``_validate_and_normalise_nodes`` accepts generator inputs.
-
-A perfectly idiomatic call-site like::
-
-    await store.set_nodes(NodeInfo(...) for n in seeds)
-
-used to trip a bare ``TypeError: object of type 'generator' has no
-len()`` deep inside the helper because the first runtime use was an
-upfront ``len(nodes) > _WIRE_MAX_NODES`` cap check. The helper now
-materialises non-list/tuple inputs first so that:
-
-* Generators succeed (DX win).
-* The wire-cap check still fires after materialisation.
-"""
+"""``_validate_and_normalise_nodes`` materialises generator inputs before the
+len()-based wire-cap check, so generators succeed and the cap still fires."""
 
 from __future__ import annotations
 

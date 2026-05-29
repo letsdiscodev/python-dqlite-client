@@ -1,20 +1,6 @@
-"""Pin: ``ConnectionPool`` holds a strong reference to the
-fire-and-forget ``_release_after_drain`` follow-up tasks it
-schedules from the cancel-drain paths.
-
-The stdlib ``asyncio`` docs are explicit: "Save a reference to the
-result of [create_task / ensure_future] to avoid a task disappearing
-mid-execution." Pre-fix the pool spawned the follow-up via
-``asyncio.ensure_future(self._release_after_drain(inner_drain))``
-with the result discarded. The follow-up holds a strong reference
-to ``inner_drain`` and stays rooted through it under normal
-operation, but during loop teardown / ``engine.dispose()`` the GC
-can reclaim the follow-up before ``_release_reservation`` runs,
-leaking the reservation slot.
-
-The fix tracks each follow-up in a per-pool ``_background_tasks``
-set; a ``add_done_callback(...)`` discard keeps the set bounded.
-"""
+"""``ConnectionPool`` tracks fire-and-forget ``_release_after_drain`` follow-ups in a
+``_background_tasks`` set (with a done-callback discard) so the GC cannot reclaim a
+follow-up before ``_release_reservation`` runs and leak the reservation slot."""
 
 from __future__ import annotations
 
@@ -28,21 +14,16 @@ from dqliteclient.pool import ConnectionPool
 
 @pytest.mark.asyncio
 async def test_pool_release_after_drain_task_is_strongly_referenced() -> None:
-    """When ``_release_after_drain`` is fired, the resulting Task
-    must be added to the pool's strong-ref set so a forced GC pass
-    cannot reclaim it before it completes."""
+    """A fired follow-up must be added to _background_tasks so a forced GC cannot
+    reclaim it before it completes."""
     pool = ConnectionPool(addresses=["10.0.0.1:9001"])
 
-    # Manually invoke the strong-ref pattern: schedule a long-running
-    # follow-up, confirm it lives in _background_tasks, then force a
-    # GC and confirm it still lives.
     completed = asyncio.Event()
 
     async def long_follow_up() -> None:
         await asyncio.sleep(0)
         completed.set()
 
-    # Emulate the production call site: spawn + register.
     task = asyncio.ensure_future(long_follow_up())
     pool._background_tasks.add(task)
     task.add_done_callback(pool._background_tasks.discard)
@@ -79,9 +60,6 @@ async def test_pool_background_tasks_set_does_not_grow_unboundedly() -> None:
         task.add_done_callback(pool._background_tasks.discard)
         tasks.append(task)
 
-    # Let each task complete; the done-callback fires synchronously
-    # from the loop's "ready" queue once the task is awaited or the
-    # loop yields enough times to schedule the completion callback.
     await asyncio.gather(*tasks)
     # One more yield so the discard callbacks land.
     await asyncio.sleep(0)

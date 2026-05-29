@@ -57,10 +57,7 @@ class TestRetryWithBackoff:
         assert call_count == 3
 
     async def test_max_attempts_one_raises_on_first_failure(self) -> None:
-        """Edge case: with ``max_attempts=1`` the loop breaks on its first
-        iteration. Covers the ``if attempt == max_attempts - 1: break``
-        path that the final ``raise last_error`` relies on.
-        """
+        """With ``max_attempts=1`` the loop breaks on its first iteration."""
         call_count = 0
 
         async def fail_once() -> str:
@@ -96,10 +93,9 @@ class TestRetryWithBackoff:
                 retryable_exceptions=(ValueError,),
             )
 
-        assert call_count == 1  # Should not retry
+        assert call_count == 1
 
     async def test_respects_max_delay(self) -> None:
-        """Verify that the backoff delay is capped at max_delay."""
         from unittest.mock import patch
 
         call_count = 0
@@ -116,7 +112,7 @@ class TestRetryWithBackoff:
 
         async def mock_sleep(delay: float) -> None:
             sleep_args.append(delay)
-            await original_sleep(0)  # Yield control without actual delay
+            await original_sleep(0)
 
         with patch("dqliteclient.retry.asyncio.sleep", side_effect=mock_sleep):
             await retry_with_backoff(
@@ -129,10 +125,9 @@ class TestRetryWithBackoff:
             )
 
         assert call_count == 3
-        assert len(sleep_args) == 2  # Two retries = two sleeps
-        # First delay: 0.1 * 2^0 = 0.1, capped to 0.05
+        assert len(sleep_args) == 2
+        # Uncapped delays would be 0.1 and 0.2; both clamp to max_delay=0.05.
         assert sleep_args[0] == pytest.approx(0.05)
-        # Second delay: 0.1 * 2^1 = 0.2, capped to 0.05
         assert sleep_args[1] == pytest.approx(0.05)
 
     async def test_jitter_does_not_exceed_max_delay(self) -> None:
@@ -150,7 +145,6 @@ class TestRetryWithBackoff:
             sleep_args.append(delay)
             await original_sleep(0)
 
-        # Force jitter to its positive endpoint so the multiplier is (1 + jitter)
         def max_jitter(_low: float, high: float) -> float:
             return high
 
@@ -168,15 +162,13 @@ class TestRetryWithBackoff:
                 retryable_exceptions=(ValueError,),
             )
 
-        # Several attempts will hit the cap; none should exceed max_delay.
         assert sleep_args, "expected at least one sleep"
         for d in sleep_args:
             assert d <= 2.0, f"delay {d} exceeded max_delay=2.0"
 
 
 class TestRetryDefaults:
-    """The default retryable set is restricted to transport- / cluster-
-    level exceptions; programming bugs propagate on first call."""
+    """The default retryable set covers transport/cluster errors; bugs propagate."""
 
     async def test_default_retries_oserror(self) -> None:
         call_count = 0
@@ -193,12 +185,8 @@ class TestRetryDefaults:
         assert call_count == 2
 
     async def test_default_retries_timeout_error_via_oserror(self) -> None:
-        """``_DEFAULT_RETRYABLE`` only lists ``OSError`` explicitly;
-        ``TimeoutError`` is an ``OSError`` subclass since Python 3.10,
-        so the default retry set covers it without a separate entry.
-        Regression guard for the ``TimeoutError`` removal from the
-        default tuple.
-        """
+        """``TimeoutError`` is an ``OSError`` subclass (3.10+), so the
+        ``OSError``-only default tuple covers it without a separate entry."""
         call_count = 0
 
         async def fail_once() -> str:

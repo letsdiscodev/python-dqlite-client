@@ -1,18 +1,6 @@
-"""Pin: ``ClusterClient.open_admin_connection`` performs version-only
-negotiation (``negotiate_protocol_only``) instead of the full
-``handshake()`` (version + ``ClientRequest`` + ``WelcomeResponse``).
-
-Go-dqlite's ``client.New`` / ``NewDirectConnector.Connect`` (see
-``client/client.go:56-75`` and
-``internal/protocol/connector.go:316-337``) speak ONLY the 8-byte
-version write on direct-admin connections — the ``ClientRequest``
-registration is reserved for the leader-finding path
-(``connector.go::connectAttemptOne``). Python's ``_query_leader``
-correctly uses ``negotiate_protocol_only``; ``open_admin_connection``
-previously did the full ``handshake()``, paying an extra RTT per
-admin RPC and allocating a server-side ``g->client_id`` slot that
-no admin RPC depends on.
-"""
+"""``open_admin_connection`` does version-only negotiation, not the full ``handshake()``:
+the full handshake costs an extra RTT and allocates a server-side g->client_id slot no
+admin RPC needs."""
 
 from __future__ import annotations
 
@@ -27,11 +15,6 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_open_admin_connection_uses_version_only_negotiation() -> None:
-    """Patch ``DqliteProtocol.handshake`` and ``negotiate_protocol_only``
-    on the cluster module so the test can detect which one
-    ``open_admin_connection`` calls. The full ``handshake`` MUST NOT
-    be invoked — only ``negotiate_protocol_only`` may run.
-    """
     cluster = ClusterClient(MemoryNodeStore(["localhost:9001"]))
 
     fake_reader = MagicMock()

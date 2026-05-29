@@ -1,14 +1,6 @@
-"""Pin: ``ClusterClient.connect``'s per-attempt-failure DEBUG log
-sanitises LF / Tab in the interpolated exception via
-``sanitize_for_log(_truncate_error(str(exc)))``. Mirrors the
-sibling WARNING at attempts-exhausted (cluster.py:1551-1556).
-
-A hostile peer can stuff ``\\n`` into a server-returned message
-(``sanitize_server_text`` deliberately preserves LF for interactive
-exception readability). The DEBUG arm was the lone log site at
-the connect-retry call surface that interpolated the raw exception
-``%s`` — CWE-117 log injection at DEBUG level.
-"""
+"""connect's per-attempt-failure DEBUG log sanitises LF/Tab in the interpolated
+exception: a hostile peer can stuff \\n into a server message (preserved by
+sanitize_server_text), so the raw %s here was a CWE-117 log injection site."""
 
 from __future__ import annotations
 
@@ -26,10 +18,7 @@ async def test_connect_attempt_failed_debug_log_strips_lf_in_exception(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Drive a synthetic ``DqliteConnectionError`` carrying LF in its
-    message into the connect-retry loop; verify the per-attempt
-    DEBUG record does not split into multiple journald lines.
-    """
+    """An LF-carrying exception must not split the per-attempt DEBUG record."""
     addr_with_lf = "victim:9001"
     poisoned_message = "leader-msg\nFORGED log row"
     cluster = ClusterClient(MemoryNodeStore([addr_with_lf]))
@@ -40,9 +29,6 @@ async def test_connect_attempt_failed_debug_log_strips_lf_in_exception(
     monkeypatch.setattr(cluster, "find_leader", _exploding_find_leader)
 
     caplog.set_level(logging.DEBUG, logger="dqliteclient.cluster")
-    # retry_with_backoff re-raises the inner exception after exhausting
-    # retries (it's already a retryable type); the DEBUG records get
-    # written on every attempt regardless.
     with pytest.raises((ClusterError, DqliteConnectionError)):
         await cluster.connect()
 

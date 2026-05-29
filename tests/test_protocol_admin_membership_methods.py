@@ -1,15 +1,6 @@
-"""Protocol-layer tests for the new admin methods on ``DqliteProtocol``.
-
-Covers ``add``, ``assign``, ``remove``, ``describe``, ``weight``,
-``dump`` — the methods added to mirror go-dqlite's ``Client.Add`` /
-``Assign`` / ``Remove`` / ``Describe`` / ``Weight`` / ``Dump``.
-
-Sister of ``test_protocol_admin_methods.py`` (which covers the
-earlier-added ``cluster`` and ``transfer``). The wire is mocked at
-the ``mock_reader`` / ``mock_writer`` boundary; each test pins one
-of: happy path, ``FailureResponse`` translation, wrong-response-
-type detection.
-"""
+"""Protocol-layer tests for ``add``/``assign``/``remove``/``describe``/
+``weight``/``dump`` on ``DqliteProtocol``: happy path, FailureResponse
+translation, wrong-response-type detection (wire mocked)."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,8 +17,6 @@ from dqlitewire.messages import (
     LeaderResponse,
     MetadataResponse,
 )
-
-# --- add ---
 
 
 class TestProtocolAdd:
@@ -60,9 +49,6 @@ class TestProtocolAdd:
             await protocol.add(node_id=42, address="node42:9001")
 
 
-# --- assign ---
-
-
 class TestProtocolAssign:
     @pytest.fixture
     def protocol(self, mock_reader: AsyncMock, mock_writer: MagicMock) -> DqliteProtocol:
@@ -87,9 +73,6 @@ class TestProtocolAssign:
         mock_reader.read.return_value = DbResponse(db_id=1).encode()
         with pytest.raises(ProtocolError, match="Expected EmptyResponse"):
             await protocol.assign(node_id=42, role=NodeRole.VOTER)
-
-
-# --- remove ---
 
 
 class TestProtocolRemove:
@@ -118,9 +101,6 @@ class TestProtocolRemove:
         mock_reader.read.return_value = LeaderResponse(node_id=1, address="x:1").encode()
         with pytest.raises(ProtocolError, match="Expected EmptyResponse"):
             await protocol.remove(node_id=42)
-
-
-# --- describe ---
 
 
 class TestProtocolDescribe:
@@ -152,9 +132,6 @@ class TestProtocolDescribe:
             await protocol.describe()
 
 
-# --- weight ---
-
-
 class TestProtocolWeight:
     @pytest.fixture
     def protocol(self, mock_reader: AsyncMock, mock_writer: MagicMock) -> DqliteProtocol:
@@ -181,9 +158,6 @@ class TestProtocolWeight:
             await protocol.weight(weight=5)
 
 
-# --- dump ---
-
-
 class TestProtocolDump:
     @pytest.fixture
     def protocol(self, mock_reader: AsyncMock, mock_writer: MagicMock) -> DqliteProtocol:
@@ -192,8 +166,7 @@ class TestProtocolDump:
     async def test_dump_returns_files_dict(
         self, protocol: DqliteProtocol, mock_reader: AsyncMock
     ) -> None:
-        # File contents must be 8-byte aligned per the wire-layer
-        # invariant (mirrors upstream gateway.c::dumpFile).
+        # File contents must be 8-byte aligned per the wire-layer invariant.
         files = {"main": b"x" * 4096, "main-wal": b"y" * 8}
         mock_reader.read.return_value = FilesResponse(files=files).encode()
         result = await protocol.dump(database="main")

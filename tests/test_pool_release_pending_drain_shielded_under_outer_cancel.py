@@ -1,25 +1,7 @@
-"""Pin: ``_release``'s ``await asyncio.shield(pending)`` survives an
-outer cancel landing mid-drain.
-
-The sibling test ``test_pool_release_pending_drain_awaited_on_cancel``
-pins that the drain runs *before* ``_pool_released`` flips. This test
-covers the second axis: when an outer caller cancels the
-``_release(conn)`` task while the drain is in flight, the drain task
-itself must complete (shield contract) and ``_pool_released`` must
-still be set in the finally.
-
-Without the shield, the inner ``await pending`` would receive the
-outer cancel, abort the drain mid-flight, and the reader-task could
-outlive the connection on shutdown — the very leak the original
-``shield`` exists to prevent.
-
-(The outer cancel itself is absorbed by the surrounding
-``contextlib.suppress(CancelledError)`` around the post-drain
-``_release_reservation`` shield — see the finally block in
-``pool._release``. That absorption is intentional: ``_release`` is a
-cleanup path and the queue invariants must always hold; the original
-cancel survives via the caller's own check on ``Task.cancelling()``
-when the caller chose to cancel us.)
+"""Pin: ``_release``'s ``await asyncio.shield(pending)`` survives an outer cancel
+landing mid-drain — the drain task completes (shield contract) and _pool_released
+is still set in the finally. Without the shield the inner await would take the
+cancel, abort the drain, and leak the reader-task on shutdown.
 """
 
 from __future__ import annotations
@@ -51,8 +33,7 @@ async def test_outer_cancel_during_drain_does_not_abort_drain() -> None:
         nonlocal drain_completed
         drain_started.set()
         await drain_release.wait()
-        # Note: a few extra yields to make sure we run to completion
-        # rather than racing with the surrounding cancel.
+        # Extra yields to run to completion rather than race the cancel.
         for _ in range(3):
             await asyncio.sleep(0)
         drain_completed = True
@@ -80,29 +61,20 @@ async def test_outer_cancel_during_drain_does_not_abort_drain() -> None:
         await drain_started.wait()
         # Cancel the outer release task while the drain is parked.
         release_task.cancel()
-        # Give the cancel one loop turn to land.
         await asyncio.sleep(0)
-        # Now release the drain so it can complete despite the cancel.
+        # Release the drain so it can complete despite the cancel.
         drain_release.set()
-        # ``_release`` swallows the cancel via its
-        # ``contextlib.suppress(CancelledError)`` around
-        # ``_release_reservation`` — verify completion either way.
+        # _release swallows the cancel via its suppress(CancelledError).
         with contextlib.suppress(asyncio.CancelledError):
             await release_task
-        # The shield's ``contextlib.suppress(BaseException)`` returned
-        # control to ``_release`` immediately on cancel; the underlying
-        # pending drain task is still scheduled and must complete on
-        # its own. Drain the remaining loop turns so we can observe it.
+        # The drain task is still scheduled; spin until it completes.
         for _ in range(10):
             if conn._pending_drain.done():
                 break
             await asyncio.sleep(0)
 
-    # The drain itself must have run to completion (shield contract).
     assert conn._pending_drain.done()
     assert drain_completed
-    # The finally clause still flipped the flag.
     assert conn._pool_released is True
-    # ``_release_reservation`` is wrapped in shield + suppress, so it
-    # ran despite the cancel.
+    # _release_reservation is shield + suppress wrapped, so it ran despite cancel.
     assert release_reservation_ran is True

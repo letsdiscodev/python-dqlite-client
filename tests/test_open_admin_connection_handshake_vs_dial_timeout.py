@@ -1,13 +1,5 @@
-"""``ClusterClient.open_admin_connection`` distinguishes the dial-stall
-arm from the handshake-stall arm with distinct error messages so an
-operator's grep can land on the right diagnostic.
-
-When ``attempt_timeout`` is smaller than the per-read ``timeout`` and
-the handshake stalls (e.g. TLS-terminating sidecar with delayed
-welcome), the outer envelope fires after the dial already returned.
-A single generic ``Connection to <addr> timed out`` would mislead the
-operator into suspecting the dial layer.
-"""
+"""``open_admin_connection`` gives the dial-stall and handshake-stall arms distinct error
+messages so operator grep lands on the right diagnostic."""
 
 from __future__ import annotations
 
@@ -23,10 +15,7 @@ from dqliteclient.node_store import MemoryNodeStore
 
 @pytest.mark.asyncio
 async def test_handshake_stall_uses_distinct_error_message() -> None:
-    """A peer that completes dial quickly but stalls during the welcome
-    handshake fires the outer ``attempt_timeout`` arm. The raised error
-    must name 'handshake' so the operator can distinguish from the dial
-    arm."""
+    """Dial completes but handshake stalls: error must name 'handshake'."""
     cc = ClusterClient(
         MemoryNodeStore(["127.0.0.1:9001"]),
         timeout=10.0,
@@ -35,10 +24,7 @@ async def test_handshake_stall_uses_distinct_error_message() -> None:
     )
 
     async def fake_open_connection(*_a: object, **_kw: object):
-        # Return a (reader, writer) pair instantly — dial succeeds.
         reader = asyncio.StreamReader()
-        # Build a minimal writer-ish stub with the methods the protocol
-        # constructor / close path touches.
 
         class _Stub:
             def get_extra_info(self, *_a: object, **_kw: object) -> object:
@@ -68,16 +54,12 @@ async def test_handshake_stall_uses_distinct_error_message() -> None:
         return reader, _Stub()
 
     async def stall_handshake(*_a: object, **_kw: object) -> None:
-        # Sleep well past the outer attempt_timeout so the envelope
-        # fires.
-        await asyncio.sleep(5.0)
+        await asyncio.sleep(5.0)  # past attempt_timeout so the envelope fires
 
     with (
         patch("dqliteclient.cluster.open_connection", new=fake_open_connection),
         patch(
-            # open_admin_connection migrated from the full handshake
-            # to the lighter negotiate_protocol_only (go-parity);
-            # stall the version-negotiation step instead.
+            # open_admin_connection uses negotiate_protocol_only, not the full handshake.
             "dqliteclient.cluster.DqliteProtocol.negotiate_protocol_only",
             new=stall_handshake,
         ),
@@ -99,9 +81,7 @@ async def test_handshake_stall_uses_distinct_error_message() -> None:
 
 @pytest.mark.asyncio
 async def test_dial_stall_uses_legacy_connection_timed_out_message() -> None:
-    """The dial-specific arm keeps the current 'Connection to ... timed
-    out' message so existing operator runbooks / log queries continue to
-    work."""
+    """The dial-stall arm keeps the legacy 'Connection to ... timed out' message."""
     cc = ClusterClient(
         MemoryNodeStore(["127.0.0.1:9001"]),
         timeout=10.0,

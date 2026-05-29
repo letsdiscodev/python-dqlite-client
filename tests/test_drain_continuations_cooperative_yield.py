@@ -1,19 +1,7 @@
-"""Pin: ``_drain_continuations`` yields cooperatively each iteration so
-a fast-burst server (many small frames already buffered in the
-``StreamReader``) cannot monopolise the event loop for the full drain.
+"""_drain_continuations yields each iteration so a fast-burst server can't monopolise the loop.
 
-asyncio's ``StreamReader.read*`` returns immediately when the requested
-bytes are already buffered, without scheduling a loop tick. So
-``await self._read_continuation(...)`` inside the drain loop does NOT
-yield to other coroutines on the fast-burst path. Without an explicit
-``await asyncio.sleep(0)`` at the bottom of the loop, a sibling
-coroutine scheduled before the drain is starved for the duration of
-the entire drain — heartbeat probes, pool acquirers, sibling RPCs all
-freeze.
-
-This test pins the cooperative-yield invariant directly: drain a
-prefetched-frame stream and assert a sibling coroutine gets at least
-one slice of loop time before the drain finishes.
+StreamReader.read* returns synchronously when bytes are already buffered, so the drain needs an
+explicit ``await asyncio.sleep(0)`` per iteration or sibling coroutines starve for the whole drain.
 """
 
 from __future__ import annotations
@@ -37,11 +25,7 @@ def _make_protocol() -> DqliteProtocol:
 
 @pytest.mark.asyncio
 async def test_drain_continuations_yields_between_prefetched_frames() -> None:
-    """Many continuation frames already decoded synchronously must not
-    starve sibling coroutines. ``_drain_continuations`` must yield to
-    the loop scheduler at least once per iteration even when every
-    ``_read_continuation`` returns without parking on the wire.
-    """
+    """Synchronously-decoded continuation frames must still yield to siblings each iteration."""
     proto = _make_protocol()
 
     # 200 prefetched continuation frames + a final has_more=False frame.
@@ -52,8 +36,7 @@ async def test_drain_continuations_yields_between_prefetched_frames() -> None:
     cont_iter = iter(cont_frames)
 
     async def fake_read_continuation(deadline: float) -> RowsResponse:
-        # No await: synchronous return mirrors the StreamReader fast
-        # path where the next frame is already buffered.
+        # No await: mirrors the StreamReader fast path with the next frame already buffered.
         return next(cont_iter)
 
     proto._read_continuation = fake_read_continuation  # type: ignore[assignment]
@@ -62,9 +45,6 @@ async def test_drain_continuations_yields_between_prefetched_frames() -> None:
 
     async def sibling() -> None:
         nonlocal sibling_ran
-        # Count how many times the sibling gets to run while the drain
-        # is executing. A non-yielding drain pins the loop and the
-        # sibling never gets a turn until the drain returns.
         while True:
             await asyncio.sleep(0)
             sibling_ran += 1
@@ -73,8 +53,7 @@ async def test_drain_continuations_yields_between_prefetched_frames() -> None:
 
     sibling_task = asyncio.create_task(sibling())
     try:
-        # Yield once so the sibling task is scheduled before the drain
-        # claims the loop.
+        # Schedule the sibling before the drain claims the loop.
         await asyncio.sleep(0)
         baseline = sibling_ran
 
@@ -87,12 +66,7 @@ async def test_drain_continuations_yields_between_prefetched_frames() -> None:
             await sibling_task
 
     assert len(rows) == 202, "all frames must be drained"
-    # The drain ran 201 iterations; under the cooperative-yield fix the
-    # sibling should pick up at least a non-trivial fraction of those.
-    # Pin at >= 50: any value greater than zero proves the drain yields
-    # at least sometimes; the higher bound guards against a future
-    # refactor that yields only on every Nth iteration with a very
-    # large N. Under the prior code this was zero.
+    # >= 50 (vs 0 under the prior code) guards against a future yield-every-Nth refactor.
     assert during >= 50, (
         f"sibling ran only {during} times while drain processed 201 "
         "prefetched frames; cooperative yield missing"

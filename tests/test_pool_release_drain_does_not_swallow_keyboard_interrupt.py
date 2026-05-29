@@ -1,17 +1,9 @@
-"""Pin: ``_release``'s shielded ``_pending_drain`` await suppresses
-``CancelledError`` and ``Exception``, but MUST NOT suppress arbitrary
-``BaseException``. The previous shape used
-``contextlib.suppress(BaseException)`` which silently consumed
-control-plane signals like ``KeyboardInterrupt`` / ``SystemExit``.
+"""Pin: ``_release``'s shielded ``_pending_drain`` await suppresses CancelledError
+and Exception but MUST NOT suppress arbitrary BaseException (e.g. KeyboardInterrupt /
+SystemExit) — Ctrl+C must escape the cleanup path.
 
-Operators expect Ctrl+C to escape the cleanup path; suppressing
-those signals at this boundary turns them into silent no-ops until
-the next checkpoint that re-raises (none, in this code path —
-``_release`` returns normally).
-
-The test uses a custom ``BaseException`` subclass instead of
-``KeyboardInterrupt`` / ``SystemExit`` so pytest's own top-level
-handling does not intercept the signal.
+Uses a custom BaseException subclass so pytest's top-level handling does not
+intercept the signal.
 """
 
 from __future__ import annotations
@@ -25,7 +17,7 @@ from dqliteclient.pool import ConnectionPool
 
 
 class _SyntheticControlPlaneSignal(BaseException):
-    """A BaseException subclass that pytest does not intercept."""
+    pass
 
 
 @pytest.mark.asyncio
@@ -38,7 +30,6 @@ async def test_drain_base_exception_propagates_through_release() -> None:
     conn._in_transaction = True
 
     async def signaling_drain() -> None:
-        # Start the task on the loop, then raise the BaseException.
         await asyncio.sleep(0)
         raise _SyntheticControlPlaneSignal("control-plane signal")
 

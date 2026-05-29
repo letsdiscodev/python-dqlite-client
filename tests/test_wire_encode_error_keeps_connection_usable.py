@@ -1,12 +1,6 @@
-"""``_run_protocol``'s ``_WireEncodeError`` arm must NOT invalidate
-the connection. The wire-layer encoder builds a fully-formed
-``bytes`` object before any ``writer.write`` call, so an encode
-failure leaves zero bytes on the wire — the connection is reusable.
+"""An encode failure leaves zero bytes on the wire, so the connection stays reusable.
 
-A future refactor to a streaming encoder would break this invariant.
-This test pins the contract; pair with
-``test_message_encode_returns_bytes_object`` in the wire suite which
-checks the encoder behaviour itself.
+A future streaming encoder would break this invariant.
 """
 
 from unittest.mock import MagicMock
@@ -20,8 +14,6 @@ from dqlitewire.exceptions import EncodeError
 
 @pytest.mark.asyncio
 async def test_wire_encode_error_does_not_invalidate() -> None:
-    """``_WireEncodeError`` raised inside the ``fn`` callable must
-    surface as ``DataError`` and leave the connection usable."""
     conn = DqliteConnection("localhost:9001", timeout=2.0)
     fake_protocol = MagicMock()
     conn._protocol = fake_protocol
@@ -30,28 +22,19 @@ async def test_wire_encode_error_does_not_invalidate() -> None:
     conn._ensure_connected = MagicMock(return_value=(fake_protocol, 1))
 
     async def encode_failing_op(_p: object, _db: int) -> None:
-        # Simulate the wire-layer raising during request construction
-        # (e.g. parameter type check) BEFORE any bytes touch the
-        # writer.
         raise EncodeError("simulated parameter encode failure")
 
     with pytest.raises(DataError, match="wire encode failed: simulated"):
         await conn._run_protocol(encode_failing_op)
 
-    # Connection must still be usable: not invalidated, _protocol
-    # still set, no invalidation cause.
     assert conn._protocol is fake_protocol
     assert conn._invalidation_cause is None
 
 
 @pytest.mark.asyncio
 async def test_wire_encode_error_dataerror_carries_prefix() -> None:
-    """The display surface must carry the ``"wire encode failed: "``
-    prefix so an operator triaging a log line can distinguish a
-    wire-encoder rejection (bytes never reached the network) from
-    another caller-side rejection emitting the same string. Symmetric
-    with ``_call_client``'s sibling ``_WireEncodeError`` arm at
-    ``dqlitedbapi/cursor.py``."""
+    """The prefix lets an operator distinguish a wire-encoder rejection from
+    another caller-side rejection emitting the same string."""
     conn = DqliteConnection("localhost:9001", timeout=2.0)
     fake_protocol = MagicMock()
     conn._protocol = fake_protocol
@@ -74,8 +57,7 @@ async def test_wire_encode_error_dataerror_carries_prefix() -> None:
 
 @pytest.mark.asyncio
 async def test_other_protocol_errors_do_invalidate() -> None:
-    """Counterpoint: a transport-level error (not _WireEncodeError)
-    DOES invalidate the connection. Sanity check the dispatch."""
+    """A transport-level error (not _WireEncodeError) DOES invalidate the connection."""
     conn = DqliteConnection("localhost:9001", timeout=2.0)
     fake_protocol = MagicMock()
     conn._protocol = fake_protocol

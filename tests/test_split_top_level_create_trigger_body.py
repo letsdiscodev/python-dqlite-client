@@ -1,20 +1,6 @@
-"""Pin: ``_split_top_level_statements`` keeps a CREATE TRIGGER body
-together as one statement.
-
-SQLite's parser treats ``;`` inside a ``BEGIN..END`` trigger body
-as inner-statement terminators that do NOT close the outer DDL
-(``parse.y::trigger_cmd_list``). The splitter previously had no
-awareness of trigger-body block scope, so a trigger DDL with
-embedded semicolons was split into multiple pieces — and the bare
-``END`` token at the end then matched the COMMIT/END branch in
-``_update_tx_flags_from_sql``, corrupting the transaction tracker.
-
-Scope of the fix is restricted to triggers: a bare ``BEGIN`` is
-transaction-control (``BEGIN``, ``BEGIN TRANSACTION``,
-``BEGIN DEFERRED/IMMEDIATE/EXCLUSIVE``) and must still split.
-Trigger-body mode is entered only after the lexer recognises
-``CREATE [TEMP|TEMPORARY] TRIGGER ... BEGIN``.
-"""
+"""``_split_top_level_statements`` keeps a CREATE TRIGGER BEGIN..END body as one
+piece: ``;`` inside it is an inner terminator, not an outer statement boundary.
+A bare top-level ``BEGIN`` is transaction-control and must still split."""
 
 from __future__ import annotations
 
@@ -55,8 +41,6 @@ class TestCreateTriggerBodyKeptTogether:
         assert len(pieces) == 1
 
     def test_trigger_followed_by_other_statement(self) -> None:
-        """The next statement after the trigger body's terminating ``;``
-        must split off correctly."""
         sql = (
             "CREATE TRIGGER aud AFTER INSERT ON x BEGIN\n"
             "  UPDATE y SET v=1;\n"
@@ -71,10 +55,8 @@ class TestCreateTriggerBodyKeptTogether:
 
 class TestRegularBeginEndStillSplits:
     def test_bare_begin_commit_still_split(self) -> None:
-        """Top-level ``BEGIN`` (transaction-control, NOT trigger body)
-        must still split on ``;`` boundaries — otherwise multi-
-        statement batches like ``BEGIN; INSERT; COMMIT;`` would be
-        glued together."""
+        """Top-level ``BEGIN`` is transaction-control, not a trigger body, so
+        ``BEGIN; INSERT; COMMIT;`` must still split."""
         sql = "BEGIN; INSERT INTO t VALUES (1); COMMIT;"
         pieces = _split_top_level_statements(sql)
         assert len(pieces) == 3
@@ -97,8 +79,7 @@ class TestTriggerKeywordsInsideQuotedContextDoNotFlipMode:
     def test_string_literal_with_create_trigger_text_does_not_enter_trigger_mode(self) -> None:
         sql = "INSERT INTO t VALUES ('CREATE TRIGGER a AFTER INSERT BEGIN'); SELECT 1"
         pieces = _split_top_level_statements(sql)
-        # The string literal contents are NOT parsed; the splitter
-        # sees an INSERT and a SELECT.
+        # String literal contents are not parsed: splitter sees INSERT then SELECT.
         assert len(pieces) == 2
         assert pieces[0].upper().startswith("INSERT")
         assert pieces[1].upper().startswith("SELECT")
@@ -109,8 +90,7 @@ class TestTriggerKeywordsInsideQuotedContextDoNotFlipMode:
         assert len(pieces) == 2
 
     def test_keyword_substring_does_not_match(self) -> None:
-        """A column or table whose name STARTS with ``trigger`` must
-        not flip mode."""
+        """A name that merely STARTS with ``trigger`` must not flip mode."""
         sql = "INSERT INTO triggers VALUES (1); SELECT 1"
         pieces = _split_top_level_statements(sql)
         assert len(pieces) == 2

@@ -1,7 +1,4 @@
-"""Integration tests for single node operations.
-
-Requires running dqlite cluster.
-"""
+"""Integration tests for single node operations. Requires a running cluster."""
 
 import datetime
 
@@ -59,67 +56,56 @@ class TestSingleNodeOperations:
             assert len(rows) == 0
 
     async def test_unicode_text(self, cluster_address: str) -> None:
-        """Test Unicode text handling including emojis, CJK, RTL."""
+        """Unicode text: emojis, CJK, RTL, combining chars."""
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_unicode")
             await conn.execute("CREATE TABLE test_unicode (id INTEGER PRIMARY KEY, val TEXT)")
 
             unicode_values = [
-                # Emojis (4-byte UTF-8)
                 "Hello 🎉 World",
                 "🎉🎊🎁🎂",
-                # CJK characters
                 "中文测试",
                 "日本語テスト",
                 "한국어 테스트",
-                # RTL languages
                 "العربية",
                 "עברית",
-                # Mixed scripts
                 "Hello 世界 🌍",
-                # Combining characters
                 "café résumé naïve",
-                # Long unicode
                 "日本語" * 50,
             ]
 
             for val in unicode_values:
-                # Insert
                 await conn.execute("INSERT INTO test_unicode (val) VALUES (?)", [val])
 
-                # Retrieve and verify
                 rows = await conn.fetch("SELECT val FROM test_unicode WHERE val = ?", [val])
                 assert len(rows) == 1, f"Failed to find: {repr(val)}"
                 assert rows[0]["val"] == val, f"Mismatch for: {repr(val)}"
 
-                # Delete to keep table clean between iterations
                 await conn.execute("DELETE FROM test_unicode WHERE val = ?", [val])
 
     async def test_binary_blob(self, cluster_address: str) -> None:
-        """Test binary blob handling including null bytes."""
+        """Binary blobs including null bytes."""
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_blob")
             await conn.execute("CREATE TABLE test_blob (id INTEGER PRIMARY KEY, data BLOB)")
 
             blob_values = [
                 b"simple",
-                b"\x00\x01\x02\x03",  # Null bytes
-                b"\xff\xfe\xfd",  # High bytes
-                bytes(range(256)),  # All byte values
+                b"\x00\x01\x02\x03",
+                b"\xff\xfe\xfd",
+                bytes(range(256)),
                 b"binary\x00with\x00nulls",
             ]
 
             for val in blob_values:
-                # Insert
                 await conn.execute("INSERT INTO test_blob (data) VALUES (?)", [val])
 
-                # Retrieve and verify
                 rows = await conn.fetch("SELECT data FROM test_blob ORDER BY id DESC LIMIT 1")
                 assert len(rows) == 1
                 assert rows[0]["data"] == val, f"Mismatch for blob: {repr(val)}"
 
     async def test_numeric_types(self, cluster_address: str) -> None:
-        """Test integer and float edge cases."""
+        """Integer and float edge cases."""
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_numeric")
             await conn.execute(
@@ -128,7 +114,6 @@ class TestSingleNodeOperations:
             )
 
             test_cases = [
-                # (integer, float)
                 (0, 0.0),
                 (1, 1.0),
                 (-1, -1.0),
@@ -149,35 +134,32 @@ class TestSingleNodeOperations:
                 )
                 assert len(rows) == 1
                 assert rows[0]["int_val"] == int_val, f"Integer mismatch for {int_val}"
-                # Float comparison with tolerance
                 assert abs(rows[0]["float_val"] - float_val) < 1e-9, (
                     f"Float mismatch for {float_val}"
                 )
 
     async def test_boolean_values(self, cluster_address: str) -> None:
-        """Test boolean handling (SQLite uses INTEGER 0/1)."""
+        """Boolean handling (SQLite uses INTEGER 0/1)."""
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_bool")
             await conn.execute("CREATE TABLE test_bool (id INTEGER PRIMARY KEY, flag INTEGER)")
 
-            # Insert True and False as integers (SQLite doesn't have native BOOLEAN)
             await conn.execute("INSERT INTO test_bool (flag) VALUES (?)", [1])
             await conn.execute("INSERT INTO test_bool (flag) VALUES (?)", [0])
 
             rows = await conn.fetch("SELECT flag FROM test_bool ORDER BY id")
             assert len(rows) == 2
-            assert rows[0]["flag"] == 1  # True
-            assert rows[1]["flag"] == 0  # False
+            assert rows[0]["flag"] == 1
+            assert rows[1]["flag"] == 0
 
     async def test_datetime_as_text(self, cluster_address: str) -> None:
-        """Test datetime stored as ISO8601 text."""
+        """Datetime stored as ISO8601 text."""
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_datetime")
             await conn.execute(
                 "CREATE TABLE test_datetime (id INTEGER PRIMARY KEY, created_at TEXT)"
             )
 
-            # Store datetime as ISO8601 string
             now = datetime.datetime.now()
             iso_string = now.isoformat()
 
@@ -187,12 +169,11 @@ class TestSingleNodeOperations:
             assert len(rows) == 1
             assert rows[0]["created_at"] == iso_string
 
-            # Parse it back
             parsed = datetime.datetime.fromisoformat(rows[0]["created_at"])
             assert parsed == now
 
     async def test_null_values(self, cluster_address: str) -> None:
-        """Test NULL handling in various column types."""
+        """NULL handling across column types."""
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_nulls")
             await conn.execute(
@@ -201,7 +182,6 @@ class TestSingleNodeOperations:
                 "real_col REAL, blob_col BLOB)"
             )
 
-            # Insert row with all NULLs
             await conn.execute(
                 "INSERT INTO test_nulls (int_col, text_col, real_col, blob_col) "
                 "VALUES (?, ?, ?, ?)",
@@ -219,12 +199,7 @@ class TestSingleNodeOperations:
             assert rows[0]["blob_col"] is None
 
     async def test_null_boolean_and_datetime(self, cluster_address: str) -> None:
-        """Test NULL handling specifically for BOOLEAN and DATETIME column types.
-
-        This test catches a dqlite bug where NULL values in BOOLEAN and DATETIME
-        columns are incorrectly returned as their zero values (False/empty string)
-        instead of NULL.
-        """
+        """Catches a dqlite bug returning NULL BOOLEAN/DATETIME as False/'' not None."""
         async with await connect(cluster_address) as conn:
             await conn.execute("DROP TABLE IF EXISTS test_null_special")
             await conn.execute(
@@ -232,11 +207,10 @@ class TestSingleNodeOperations:
                 "(id INTEGER PRIMARY KEY, bool_col BOOLEAN, dt_col DATETIME)"
             )
 
-            # Insert NULL values
             await conn.execute(
                 "INSERT INTO test_null_special (id, bool_col, dt_col) VALUES (1, NULL, NULL)"
             )
-            # Insert actual zero values for comparison
+            # Zero values for comparison against the NULLs above.
             await conn.execute(
                 "INSERT INTO test_null_special (id, bool_col, dt_col) VALUES (2, 0, '')"
             )
@@ -246,7 +220,6 @@ class TestSingleNodeOperations:
             )
             assert len(rows) == 2
 
-            # Row 1: NULL values should be None, not False/''
             assert rows[0]["bool_col"] is None, (
                 f"BOOLEAN NULL should be None, got {rows[0]['bool_col']!r}"
             )
@@ -254,6 +227,5 @@ class TestSingleNodeOperations:
                 f"DATETIME NULL should be None, got {rows[0]['dt_col']!r}"
             )
 
-            # Row 2: actual zero values
             assert rows[1]["bool_col"] is False or rows[1]["bool_col"] == 0
             assert rows[1]["dt_col"] == "" or rows[1]["dt_col"] is None

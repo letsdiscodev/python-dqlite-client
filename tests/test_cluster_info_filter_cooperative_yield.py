@@ -1,12 +1,6 @@
-"""Pin: ``ClusterClient.cluster_info``'s redirect-policy filter
-yields periodically so a hostile or buggy leader returning a
-node-list close to ``_MAX_NODE_COUNT`` (10_000) cannot pin the
-loop while the policy callable runs against each entry.
-
-The default policy calls ``parse_address`` + ``ipaddress.ip_address``
-per node — ~tens of microseconds per call on commodity hardware,
-hundreds of milliseconds total at the cap. Yield every K so the
-loop stays responsive.
+"""``cluster_info``'s redirect-policy filter yields periodically so a leader
+returning a node-list near _MAX_NODE_COUNT (10_000) cannot pin the loop while
+the per-node policy callable runs.
 """
 
 from __future__ import annotations
@@ -22,11 +16,7 @@ from dqliteclient.node_store import MemoryNodeStore
 
 @pytest.mark.asyncio
 async def test_cluster_info_filter_yields_on_large_reply() -> None:
-    """A ``cluster_info`` response with N=2000 nodes that all match
-    the policy must result in N / K + cooperative ``sleep(0)``
-    calls during the filter loop."""
-    # Build a leader that returns 2000 nodes; policy rejects none
-    # so we exercise the happy path through the loop body.
+    """A 2000-node accept-all response yields roughly N/K cooperative sleep(0)s."""
     from dqlitewire import NodeRole
     from dqlitewire.messages.responses import NodeInfo as _WireNodeInfo
 
@@ -42,16 +32,11 @@ async def test_cluster_info_filter_yields_on_large_reply() -> None:
         timeout=5.0,
     )
 
-    # Stub the wire path so cluster() returns our 2000-node payload
-    # without doing real network IO. Patch open_admin_connection
-    # to yield a fake protocol whose .cluster() returns the list.
-
     class _FakeProto:
         async def cluster(self) -> list[_WireNodeInfo]:
             return fake_nodes
 
         async def get_leader(self) -> tuple[int, str]:
-            # Return the seed address — no redirect needed.
             return (1, "10.0.0.0.0:9001")
 
     class _FakeAdminCM:
@@ -73,9 +58,7 @@ async def test_cluster_info_filter_yields_on_large_reply() -> None:
     async def fake_find_leader(*args: object, **kwargs: object) -> str:
         return "10.0.0.0.0:9001"
 
-    # Pass an explicit accept-all policy so the filter loop runs
-    # (the early-exit on ``effective_policy is None`` would skip
-    # the loop entirely).
+    # Explicit accept-all so the loop runs (effective_policy is None would skip it).
     accept_all: object = lambda _addr: True  # noqa: E731
 
     with (

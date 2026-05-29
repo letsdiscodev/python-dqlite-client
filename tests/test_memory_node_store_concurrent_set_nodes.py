@@ -1,13 +1,4 @@
-"""Pin: ``MemoryNodeStore.set_nodes`` serialises concurrent
-callers, so neither caller's final tuple-assignment is lost.
-
-Before the fix, two tasks racing on a freshly-constructed store
-would each pass the ``if self._set_nodes_lock is None`` check on
-the same scheduling slice, each construct a distinct
-``asyncio.Lock``, and acquire their own private lock — neither
-saw the other. The final ``self._nodes = tuple(unique)`` writes
-interleaved and one update was lost.
-"""
+"""``MemoryNodeStore.set_nodes`` serialises concurrent callers so no update is lost."""
 
 import asyncio
 
@@ -23,9 +14,7 @@ def _ni(address: str) -> NodeInfo:
 
 @pytest.mark.asyncio
 async def test_concurrent_first_set_nodes_serialised() -> None:
-    """Two tasks call set_nodes simultaneously on a fresh store.
-    Both must successfully complete; the final state must reflect
-    one of the two updates exactly (no torn / interleaved write)."""
+    """Final state reflects exactly one update, never a torn/interleaved write."""
     store = MemoryNodeStore(["seed:9001"])
 
     a_nodes = [_ni("a:9001"), _ni("a:9002"), _ni("a:9003")]
@@ -38,7 +27,6 @@ async def test_concurrent_first_set_nodes_serialised() -> None:
 
     final = list(await store.get_nodes())
     addresses = [n.address for n in final]
-    # Either A's update or B's — not a mix of both.
     assert addresses == ["a:9001", "a:9002", "a:9003"] or addresses == [
         "b:9001",
         "b:9002",
@@ -48,19 +36,14 @@ async def test_concurrent_first_set_nodes_serialised() -> None:
 
 @pytest.mark.asyncio
 async def test_set_nodes_lock_eager_constructed() -> None:
-    """Pin the constructor invariant: the lock is constructed
-    eagerly in __init__, not lazily on first set_nodes call.
-    Without eager construction, two first-time callers each
-    construct their own private Lock and the mutex contract is
-    broken on the very first contended call."""
+    """The lock is constructed eagerly in __init__, not lazily on first set_nodes call."""
     store = MemoryNodeStore(["seed:9001"])
     assert isinstance(store._set_nodes_lock, asyncio.Lock)
 
 
 @pytest.mark.asyncio
 async def test_many_concurrent_set_nodes_one_winner() -> None:
-    """Stress: 16 concurrent set_nodes; final state matches
-    exactly one of the 16 inputs."""
+    """Stress: 16 concurrent set_nodes; final state matches exactly one input."""
     store = MemoryNodeStore(["seed:9001"])
     inputs = [[_ni(f"node-{i}:9001")] for i in range(16)]
 

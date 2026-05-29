@@ -1,11 +1,6 @@
-"""``cluster_info(policy=...)`` filters returned nodes through the
-supplied predicate so a control-plane that auto-rotates membership
-based on the result cannot be steered to attacker-controlled
+"""``cluster_info(policy=...)`` filters returned nodes through the predicate so a
+control-plane auto-rotating membership cannot be steered to attacker-controlled
 addresses by a hostile leader.
-
-Without the kwarg, the only protection at the higher layer was the
-caller's own filter logic. Pair with default_safe_redirect_policy /
-allowlist_policy.
 """
 
 import logging
@@ -20,7 +15,7 @@ from dqlitewire import NodeRole
 
 @pytest.fixture
 def cluster_with_returned_nodes():
-    """Build a cluster client whose cluster_info() returns three nodes."""
+    """Cluster client whose cluster_info() returns three nodes."""
     cluster = ClusterClient(MemoryNodeStore(["leader:9001"]), timeout=2.0)
     cluster.find_leader = AsyncMock(return_value="leader:9001")
 
@@ -32,9 +27,7 @@ def cluster_with_returned_nodes():
 
     fake_proto = MagicMock()
     fake_proto.cluster = AsyncMock(return_value=nodes)
-    # Re-confirm leadership round-trip: same address as ``leader_addr``
-    # selects the no-flip happy path. The mid-flip arm is exercised by
-    # the dedicated leader-flip tests.
+    # Same address as leader_addr selects the no-flip happy path.
     fake_proto.get_leader = AsyncMock(return_value=(1, "leader:9001"))
 
     fake_admin_cm = MagicMock()
@@ -76,10 +69,7 @@ async def test_policy_rejection_logs_warning(
 
 @pytest.mark.asyncio
 async def test_instance_redirect_policy_used_when_no_per_call_policy() -> None:
-    """When no per-call ``policy`` is provided, ``cluster_info`` falls
-    back to the instance-level ``redirect_policy`` configured at
-    construction. Mirrors the precedence used by ``leader_info`` and
-    by ``find_leader``'s redirect arms."""
+    """No per-call policy falls back to the instance-level redirect_policy."""
 
     def reject_hostile(addr: str) -> bool:
         return "hostile" not in addr
@@ -103,15 +93,13 @@ async def test_instance_redirect_policy_used_when_no_per_call_policy() -> None:
     fake_admin_cm.__aexit__ = AsyncMock(return_value=None)
     cluster.open_admin_connection = MagicMock(return_value=fake_admin_cm)
 
-    # Caller passes no per-call policy; instance default kicks in.
     filtered = await cluster.cluster_info()
     assert {n.address for n in filtered} == {"leader:9001"}
 
 
 @pytest.mark.asyncio
 async def test_per_call_policy_overrides_instance_policy() -> None:
-    """A per-call ``policy`` overrides the instance-level
-    ``redirect_policy``, including a deliberately permissive override."""
+    """A per-call policy overrides the instance redirect_policy, even a permissive one."""
 
     def reject_everything(_addr: str) -> bool:
         return False
@@ -135,11 +123,8 @@ async def test_per_call_policy_overrides_instance_policy() -> None:
     fake_admin_cm.__aexit__ = AsyncMock(return_value=None)
     cluster.open_admin_connection = MagicMock(return_value=fake_admin_cm)
 
-    # Per-call accept-everything overrides the instance reject-everything.
     filtered = await cluster.cluster_info(policy=accept_everything)
     assert len(filtered) == 1
-    # Per-call reject-everything also exercised — instance is the same shape;
-    # we want to be sure the per-call WINS regardless.
     cluster_default = ClusterClient(
         MemoryNodeStore(["leader:9001"]),
         timeout=2.0,

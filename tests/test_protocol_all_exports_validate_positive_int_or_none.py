@@ -1,12 +1,5 @@
-"""Pin: ``dqliteclient.protocol`` lists ``validate_positive_int_or_none``
-in ``__all__`` so ``from dqliteclient.protocol import *`` surfaces
-the validator and IDE auto-import tooling treats it as a public
-member of the submodule (not a private import).
-
-The validator was already re-exported at the top-level package
-(``dqliteclient.validate_positive_int_or_none``); this pins parity
-on the submodule's own public-symbol declaration.
-"""
+"""``dqliteclient.protocol.__all__`` lists ``validate_positive_int_or_none``
+so star-imports and IDE tooling treat it as a public submodule member."""
 
 from __future__ import annotations
 

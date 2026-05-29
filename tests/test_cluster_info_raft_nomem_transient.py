@@ -1,19 +1,6 @@
-"""Pin: ``cluster_info`` tolerates the ``(node_id != 0, address == "")``
-RAFT_NOMEM transient on its post-``find_leader`` ``get_leader()``
-round-trip, mirroring ``leader_info``'s handling of the same wire
-shape.
-
-The wire layer documents two distinct "leader not currently known"
-shapes (see ``dqlitewire/messages/responses.py:441-470``):
-
-1. ``(node_id == 0, address == "")`` — canonical sentinel.
-2. ``(node_id != 0, address == "")`` — RAFT_NOMEM transient.
-
-Before this fix ``cluster_info`` recognised only shape (1) and ran
-the redirect-chase on shape (2). The chase dialled the empty address,
-failed verification, and surfaced as ``ClusterError("leadership
-flipped mid-RPC and the responder's hint did not re-confirm")`` —
-operator-confusing misclassification of a recoverable transient.
+"""``cluster_info`` tolerates the (node_id != 0, address == "") RAFT_NOMEM
+transient on its post-find_leader get_leader(), treating it like the canonical
+(0, "") sentinel rather than chasing the empty address into a false ClusterError.
 """
 
 from __future__ import annotations
@@ -36,21 +23,16 @@ def _make_admin_cm(proto: MagicMock) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_raft_nomem_transient_falls_back_to_local_responder() -> None:
-    """`(node_id=N, address="")` from the responder is the RAFT_NOMEM
-    transient. ``cluster_info`` reads cluster configuration from the
-    current responder (the address ``find_leader`` already approved),
-    matching the discipline applied to the ``(0, "")`` sentinel."""
+    """(N, "") RAFT_NOMEM transient: read config from the current responder."""
     cluster = ClusterClient(MemoryNodeStore(["leader:9001"]), timeout=2.0)
     cluster.find_leader = AsyncMock(return_value="leader:9001")
 
     nodes = [NodeInfo(node_id=1, address="leader:9001", role=NodeRole.VOTER)]
     proto = MagicMock()
-    # RAFT_NOMEM transient: known leader id, no address yet.
-    proto.get_leader = AsyncMock(return_value=(99, ""))
+    proto.get_leader = AsyncMock(return_value=(99, ""))  # RAFT_NOMEM: id, no address
     proto.cluster = AsyncMock(return_value=nodes)
     cluster.open_admin_connection = MagicMock(return_value=_make_admin_cm(proto))
 
-    # No ClusterError — fall through to local-responder cluster view.
     result = await cluster.cluster_info()
 
     assert result == nodes
@@ -60,9 +42,7 @@ async def test_raft_nomem_transient_falls_back_to_local_responder() -> None:
 
 @pytest.mark.asyncio
 async def test_no_leader_known_sentinel_falls_back_to_local_responder() -> None:
-    """Sibling positive: the canonical (0, "") sentinel was already
-    handled correctly before the fix. Pin the behaviour so the fix
-    doesn't accidentally regress the canonical path."""
+    """Canonical (0, "") sentinel also falls back to the local responder."""
     cluster = ClusterClient(MemoryNodeStore(["leader:9001"]), timeout=2.0)
     cluster.find_leader = AsyncMock(return_value="leader:9001")
 

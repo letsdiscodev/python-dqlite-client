@@ -1,14 +1,5 @@
-"""Pin: ``_split_top_level_statements`` returns the comment as a
-single piece for all-comment input — downstream classifiers
-(``_update_tx_flags_from_sql`` via ``_strip_leading_comments``) then
-handle it as a no-op.
-
-Existing tests cover ``""``, ``"   "``, ``";;"`` (all returning
-empty list). The all-comment cases preserve the comment text since
-the splitter only filters empty-after-strip pieces — comment text is
-non-empty. Pin both behaviours so a future scanner refactor cannot
-silently change either contract.
-"""
+"""``_split_top_level_statements`` returns all-comment input as a single
+(non-empty) piece; downstream classifiers strip it to a no-op."""
 
 from __future__ import annotations
 
@@ -16,8 +7,6 @@ from dqliteclient.connection import _split_top_level_statements
 
 
 def test_line_comment_only_returns_single_piece() -> None:
-    """``"-- comment\\n"`` is one piece (the comment text); downstream
-    classifiers strip it via ``_strip_leading_comments``."""
     pieces = _split_top_level_statements("-- just a comment\n")
     assert pieces == ["-- just a comment"]
 

@@ -1,17 +1,7 @@
-"""``ClusterClient.transfer_leadership`` does NOT pre-invalidate the
-leader cache before calling ``find_leader``. The find_leader fast-
-path handles the "cache points at a stepped-down peer" case by
-falling through to the sweep on a leader-flip code — one extra probe
-RTT, not a full sweep.
-
-Pre-invalidating would force a full N-node sweep on every transfer
-call, including the warm-cached no-op case (transfer to the same
-node, or transfer the cluster rejects). Matches go-dqlite's
-``Client.Transfer`` which doesn't pre-invalidate the leader tracker.
-
-The post-RPC invalidation in the ``finally:`` still fires (covers
-the leader-step-down-mid-RPC case).
-"""
+"""``ClusterClient.transfer_leadership`` does NOT pre-invalidate the leader
+cache (avoids a full N-node sweep on every call; find_leader's fast-path
+falls through to the sweep on staleness). The finally: invalidation still
+fires post-RPC. Matches go-dqlite's ``Client.Transfer``."""
 
 from __future__ import annotations
 
@@ -25,8 +15,7 @@ from dqliteclient.node_store import MemoryNodeStore
 
 @pytest.mark.asyncio
 async def test_transfer_leadership_does_not_pre_invalidate_cache() -> None:
-    """The cache is preserved through the find_leader entry — the
-    fast-path handles staleness via fall-through-to-sweep."""
+    """The cache is preserved through the find_leader entry."""
     cc = ClusterClient(MemoryNodeStore(["127.0.0.1:9001"]), timeout=2.0)
     cc._set_last_known_leader("warm.example.com:9001")
     observed_cache_at_find_leader: list[str | None] = []
@@ -55,9 +44,8 @@ async def test_transfer_leadership_does_not_pre_invalidate_cache() -> None:
 
 @pytest.mark.asyncio
 async def test_transfer_leadership_still_invalidates_cache_after_failure() -> None:
-    """The post-RPC finally invalidation still fires: a failure inside
-    ``open_admin_connection`` must leave the cache empty on the way
-    out so the next call re-probes."""
+    """The finally: invalidation fires even when open_admin_connection
+    raises, leaving the cache empty so the next call re-probes."""
     cc = ClusterClient(MemoryNodeStore(["127.0.0.1:9001"]), timeout=2.0)
     cc._set_last_known_leader("warm.example.com:9001")
 
@@ -76,9 +64,8 @@ async def test_transfer_leadership_still_invalidates_cache_after_failure() -> No
 
 @pytest.mark.asyncio
 async def test_transfer_leadership_invalidates_cache_on_success() -> None:
-    """The post-RPC finally invalidation also fires on success: the
-    transfer succeeded, so the leader-just-stepped-down semantic
-    means the cached peer is suspect for the next call."""
+    """The finally: invalidation also fires on success — the leader just
+    stepped down, so the cached peer is suspect for the next call."""
     cc = ClusterClient(MemoryNodeStore(["127.0.0.1:9001"]), timeout=2.0)
     cc._set_last_known_leader("warm.example.com:9001")
 
@@ -93,7 +80,4 @@ async def test_transfer_leadership_invalidates_cache_on_success() -> None:
 
     await cc.transfer_leadership(42)
 
-    # Post-RPC invalidation discipline: the leader just stepped down,
-    # so the cache (which may have been updated by find_leader during
-    # the transfer's own sweep) is suspect for the next call.
     assert cc._get_last_known_leader() is None

@@ -1,21 +1,6 @@
-"""Pin: ``ClusterClient`` per-address admin paths
-(``describe(address=...)``, ``set_weight(address=...)``,
-``open_admin_connection``) raise ``InterfaceError`` when called
-after fork — symmetric with the existing ``find_leader`` guard.
-
-The previous discipline only guarded ``find_leader``. The
-``address=<specific>`` arms bypass ``find_leader`` and the public
-``open_admin_connection`` primitive opens a socket directly,
-leaving three documented per-node escape hatches without the
-fork-after-init contract. A child built bespoke admin tooling
-against a parent-allocated instance would silently succeed for
-those paths and raise the canonical ``InterfaceError`` only on
-leader-routed calls — confusing for cross-driver retry middleware.
-
-Uses ``monkeypatch.setattr`` to spoof ``_current_pid`` so the test
-exercises the post-fork branch deterministically without a real
-``fork()``.
-"""
+"""The per-address admin paths (``describe(address=...)``, ``set_weight(address=...)``,
+``open_admin_connection``) bypass ``find_leader`` and so must run their own fork guard,
+raising ``InterfaceError`` after fork like the leader-routed calls do."""
 
 from __future__ import annotations
 
@@ -58,9 +43,8 @@ async def test_set_weight_with_address_raises_after_fork(
 async def test_open_admin_connection_raises_after_fork(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The guard fires BEFORE invoking the operator-supplied
-    ``dial_func``, so a callable capturing parent-loop-bound state
-    (e.g. ``aiohttp.ClientSession``) is never called post-fork."""
+    """The guard fires before invoking the operator-supplied ``dial_func``, so a callable
+    capturing parent-loop-bound state is never called post-fork."""
     cluster = _make_cluster()
     _real_getpid = os.getpid
     monkeypatch.setattr("dqliteclient.connection.os.getpid", lambda: _real_getpid() + 1)
@@ -73,8 +57,7 @@ async def test_open_admin_connection_raises_after_fork(
 async def test_find_leader_still_raises_after_fork(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression pin: the existing leader-routed guard must
-    survive the refactor that lifts the check into a shared
+    """The leader-routed guard must survive lifting the check into the shared
     ``_check_pid()`` helper."""
     cluster = _make_cluster()
     _real_getpid = os.getpid

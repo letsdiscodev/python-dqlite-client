@@ -1,14 +1,6 @@
-"""Pin: ``DqliteConnection.__aexit__`` must not let a non-cancel
-close-time exception supplant a body exception.
+"""__aexit__ must not let a non-cancel close-time exception supplant a body exception.
 
-The cancel arm and the non-cancel arm follow the same discipline: a
-close-time ``CancelledError`` / ``OSError`` / ``InterfaceError`` must
-not supplant an in-flight body exception, because that flips the
-*primary* exception class as seen by ``except``-by-class consumers.
-
-This test pins the symmetric fix: the body's ``ValueError("body")``
-propagates to the caller, and the close-time ``OSError("close")`` is
-captured at DEBUG level on the ``dqliteclient.connection`` logger.
+Supplanting would flip the primary exception class seen by except-by-class consumers.
 """
 
 from __future__ import annotations
@@ -25,12 +17,9 @@ from dqliteclient.connection import DqliteConnection
 async def test_aexit_close_oserror_does_not_supplant_body_valueerror(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Body raises ``ValueError("body")``; ``close()`` raises
-    ``OSError("close")``. Caller must observe ``ValueError("body")``,
-    and the close-time error must be DEBUG-logged."""
+    """Body ValueError propagates; close-time OSError is DEBUG-logged, not raised."""
     conn = DqliteConnection("localhost:9001", database="test", timeout=5.0)
 
-    # Patch close() to simulate a close-time non-cancel failure.
     with (
         patch.object(
             DqliteConnection,
@@ -43,7 +32,6 @@ async def test_aexit_close_oserror_does_not_supplant_body_valueerror(
         async with conn:
             raise ValueError("body")
 
-    # The close-time OSError should be DEBUG-logged with a useful marker.
     matching = [
         r
         for r in caplog.records
@@ -60,8 +48,7 @@ async def test_aexit_close_oserror_does_not_supplant_body_valueerror(
 
 @pytest.mark.asyncio
 async def test_aexit_clean_body_close_oserror_propagates() -> None:
-    """Regression guard: when the body exits cleanly, a close-time
-    ``OSError`` must still propagate (no body exception to preserve)."""
+    """When the body exits cleanly, a close-time OSError must still propagate."""
     conn = DqliteConnection("localhost:9001", database="test", timeout=5.0)
 
     with (

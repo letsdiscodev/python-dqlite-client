@@ -1,9 +1,5 @@
-"""Concurrent ``pool.close()`` callers must serialise on the first
-caller's drain rather than each racing ``_drain_idle``.
-
-Two awaiters must see exactly one "pool.close: draining" log record
-and must both return only after the drain has finished.
-"""
+"""Concurrent pool.close() callers serialise on the first caller's drain: exactly
+one "pool.close: draining" log record, and both return only after it finishes."""
 
 from __future__ import annotations
 
@@ -64,7 +60,7 @@ async def test_concurrent_close_logs_drain_once_and_both_wait(
         timeout=1.0,
         cluster=cluster,
     )
-    # Seed one idle connection so _drain_idle actually does work.
+    # Seed one idle connection so _drain_idle has work to do.
     pool._size = 1
     pool._pool.put_nowait(conn)  # type: ignore[arg-type]
 
@@ -73,18 +69,14 @@ async def test_concurrent_close_logs_drain_once_and_both_wait(
     close_a = asyncio.create_task(pool.close())
     close_b = asyncio.create_task(pool.close())
 
-    # Let both tasks start and block on the gated close().
     await asyncio.sleep(0.05)
     assert not close_a.done()
     assert not close_b.done()
 
-    # Release the slow close so _drain_idle can finish.
     gate.set()
     await asyncio.wait_for(asyncio.gather(close_a, close_b), timeout=1.0)
 
     drain_logs = [r for r in caplog.records if r.message.startswith("pool.close: draining")]
     assert len(drain_logs) == 1, f"expected a single drain log, got {len(drain_logs)}: {drain_logs}"
-    # Both callers must only return after close() has actually
-    # finished the drain (idempotency contract).
     assert conn.close_called
     assert pool._closed

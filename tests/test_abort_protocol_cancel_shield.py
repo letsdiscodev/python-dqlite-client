@@ -1,15 +1,5 @@
-"""Pin: ``DqliteConnection._abort_protocol`` shields its inner drain
-across outer cancels so the underlying StreamReader task is not
-orphaned.
-
-An outer cancel landing while ``wait_closed`` is in flight
-previously cancelled the drain without awaiting the inner task to
-completion — surfacing as ``"Task was destroyed but it is pending"``
-warnings at GC. The shield+done-callback discipline (mirroring the
-sibling ``_connect_impl`` finally arm and
-``ClusterClient.open_admin_connection``'s drain) keeps the inner
-task alive and observed.
-"""
+"""Pin: ``DqliteConnection._abort_protocol`` shields its inner drain across outer
+cancels so the StreamReader task is not orphaned ("Task was destroyed" at GC)."""
 
 from __future__ import annotations
 
@@ -30,13 +20,10 @@ def _make_connection_with_stub_protocol_owning_inner_task(
     inner_running: asyncio.Event,
     inner_done: asyncio.Event,
 ) -> tuple[DqliteConnection, MagicMock, list[asyncio.Task[None]]]:
-    """Build a connection whose ``protocol.wait_closed`` body spawns a
-    real ``asyncio.Task`` (the orphan-class of bug the shield+
-    done-callback discipline targets).
+    """Build a connection whose ``wait_closed`` spawns a real inner ``asyncio.Task``.
 
-    Without a real inner Task, ``asyncio.wait_for(coro)`` cancellation
-    propagates cleanly to the awaiter with no orphan and the test
-    cannot distinguish the pre-fix shape from the post-fix shape.
+    Without a real inner Task there is no orphan to observe, so the test could not
+    distinguish pre-fix from post-fix behaviour.
     """
     conn = DqliteConnection.__new__(DqliteConnection)
     conn._close_timeout = 5.0
@@ -57,11 +44,7 @@ def _make_connection_with_stub_protocol_owning_inner_task(
         inner = loop.create_task(_inner_body())
         inner_tasks.append(inner)
         inner_running.set()
-        # Await the inner Task: the orphan-class manifests if the
-        # outer cancel discards this await without observing the
-        # inner Task. With shield + done-callback the inner is
-        # owned and observed; without, the inner would be left as
-        # "Task was destroyed but it is pending" at GC.
+        # Awaiting inner: an unobserved outer cancel here orphans the inner Task.
         await inner
 
     proto.wait_closed = AsyncMock(side_effect=_slow_wait_closed)
@@ -70,12 +53,8 @@ def _make_connection_with_stub_protocol_owning_inner_task(
 
 
 async def test_abort_protocol_outer_cancel_does_not_orphan_inner_task() -> None:
-    """Schedule ``_abort_protocol`` inside an ``asyncio.timeout`` that
-    fires while the stub's ``wait_closed`` is awaiting a real inner
-    ``asyncio.Task``. The shield + done-callback discipline must
-    keep the inner Task observed so no ``"Task was destroyed but
-    it is pending"`` warning lands at GC.
-    """
+    """An ``asyncio.timeout`` fires while ``wait_closed`` awaits the inner Task;
+    the shield + done-callback must keep it observed (no orphan warning at GC)."""
     from dqliteclient.cluster import _observe_drain_exception  # noqa: F401
 
     inner_running = asyncio.Event()
@@ -87,12 +66,8 @@ async def test_abort_protocol_outer_cancel_does_not_orphan_inner_task() -> None:
     observer_invocations: list[asyncio.Task[None]] = []
 
     async def run_abort_under_timeout() -> None:
-        # Spy on ``_observe_drain_exception`` so the test can assert
-        # the done-callback actually fired on the inner Task. Patch
-        # the imported symbol on the cluster module — the production
-        # code's local-import resolves to the patched object because
-        # ``from dqliteclient.cluster import _observe_drain_exception``
-        # binds to the current module-attribute value at import time.
+        # Patch on the cluster module: the production code's local import
+        # re-reads the module attribute, so the spy is picked up.
         import dqliteclient.cluster as _cluster_mod
 
         original = _cluster_mod._observe_drain_exception
@@ -110,10 +85,7 @@ async def test_abort_protocol_outer_cancel_does_not_orphan_inner_task() -> None:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         await run_abort_under_timeout()
-        # Cancel the spawned inner Task explicitly (the production
-        # close paths normally tear it down via the surrounding
-        # connection finalisers; in this test the inner is a sleep
-        # stub that would otherwise dangle for 10s).
+        # Cancel the inner sleep stub so it doesn't dangle for 10s.
         for t in inner_tasks:
             t.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -130,27 +102,19 @@ async def test_abort_protocol_outer_cancel_does_not_orphan_inner_task() -> None:
     assert pending_task_warnings == [], (
         f"outer cancel must not orphan the inner drain task; got {pending_task_warnings!r}"
     )
-    # Done-callback discipline pin: the spy was invoked on the
-    # shield-wrapped Task. Without the explicit
-    # ``add_done_callback(_observe_drain_exception)`` at
-    # connection.py:2068, this assertion fires.
+    # Pin that the done-callback fired; fails without add_done_callback on the Task.
     assert observer_invocations, (
         "shield's done-callback discipline failed to invoke "
         "_observe_drain_exception on the inner drain Task"
     )
-    # Sync ``proto.close()`` tear-down still ran.
     proto.close.assert_called_once_with()
 
 
 async def test_abort_protocol_with_no_protocol_returns_immediately() -> None:
-    """If ``_protocol`` is None (already aborted / never connected),
-    the method is a no-op. Preserved across the shield migration.
-    """
+    """A None ``_protocol`` makes the method a no-op."""
     conn = DqliteConnection.__new__(DqliteConnection)
     conn._close_timeout = 5.0
     conn._address = "localhost:9001"
     conn._protocol = None
     await conn._abort_protocol()
-    # ``conn._protocol`` was None to begin with; the early return
-    # leaves it untouched.
     assert conn._protocol is None

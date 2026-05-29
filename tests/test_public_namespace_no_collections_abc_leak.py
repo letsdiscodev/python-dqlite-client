@@ -1,6 +1,5 @@
-"""Pin: ``collections.abc.Sequence`` is imported as a typing helper,
-not as a public symbol. Underscore-alias keeps it out of the public
-namespace, matching the sibling ``_Final`` convention.
+"""Pin: ``collections.abc.Sequence`` is underscore-aliased so it does
+not leak into ``dqliteclient``'s public namespace.
 """
 
 from __future__ import annotations

@@ -33,10 +33,8 @@ class TestDqliteProtocol:
         mock_writer: MagicMock,
         err: BaseException,
     ) -> None:
-        """Transport errors raised by writer.drain() must surface as
-        DqliteConnectionError so callers catching the client's error
-        hierarchy don't miss them, with the original attached via __cause__.
-        """
+        """writer.drain() transport errors surface as DqliteConnectionError
+        with the original attached via __cause__."""
         from dqliteclient.exceptions import DqliteConnectionError
 
         mock_writer.drain = AsyncMock(side_effect=err)
@@ -50,10 +48,8 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_writer: MagicMock,
     ) -> None:
-        """Exceptions outside the transport-error tuple must propagate
-        unchanged, so a future over-collapse (e.g. catching Exception)
-        would fail this pin. Mirror of _read_data unrelated-exception pin.
-        """
+        """Exceptions outside the transport-error tuple propagate unchanged,
+        so an over-collapse to catching Exception would fail this pin."""
         err = ValueError("unrelated")
         mock_writer.drain = AsyncMock(side_effect=err)
 
@@ -77,9 +73,7 @@ class TestDqliteProtocol:
         mock_reader: AsyncMock,
         err: BaseException,
     ) -> None:
-        """Transport errors on _read_data must also surface as
-        DqliteConnectionError, matching the write-path behaviour.
-        """
+        """_read_data transport errors also surface as DqliteConnectionError."""
         from dqliteclient.exceptions import DqliteConnectionError
 
         mock_reader.read.side_effect = err
@@ -92,10 +86,7 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """Exceptions outside the transport-error tuple must propagate
-        unchanged, so a future over-collapse (e.g. catching Exception)
-        would fail this pin.
-        """
+        """Exceptions outside the transport-error tuple propagate unchanged."""
         err = ValueError("unrelated")
         mock_reader.read.side_effect = err
 
@@ -108,11 +99,8 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """A per-read timeout must surface as DqliteConnectionError with
-        __cause__ set to the underlying TimeoutError, so traceback
-        chains distinguish a genuine server timeout from a synthesised
-        one.
-        """
+        """A per-read timeout surfaces as DqliteConnectionError with __cause__
+        set to the underlying TimeoutError."""
         import asyncio
 
         from dqliteclient.exceptions import DqliteConnectionError
@@ -133,22 +121,19 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """Even if each individual read returns just under the per-read
-        timeout, the cumulative operation deadline must fire.
-        """
+        """Even if each read returns under the per-read timeout, the cumulative
+        operation deadline must fire."""
         import asyncio
         import time
 
-        # Set both the write-path timeout AND the read-path timeout
-        # so the operation deadline (which keys off ``_read_timeout``
-        # so the heartbeat widening flows through) reflects the
-        # tightened budget.
+        # Set both timeouts so the deadline (keyed off _read_timeout) reflects
+        # the tightened budget.
         protocol._timeout = 0.2
         protocol._read_timeout = 0.2
 
         async def drip_forever(_n: int) -> bytes:
             await asyncio.sleep(0.1)
-            return b"\x00"  # 1 byte, never completes a message
+            return b"\x00"  # never completes a message
 
         mock_reader.read.side_effect = drip_forever
 
@@ -165,12 +150,9 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """Pin: setting ``_read_timeout`` (e.g. via the
-        ``trust_server_heartbeat`` opt-in widening) genuinely extends
-        the per-operation read deadline; the widening is not dead
-        code. A read that takes longer than ``_timeout`` but less
-        than the widened ``_read_timeout`` must complete cleanly.
-        """
+        """Setting ``_read_timeout`` genuinely extends the per-operation read
+        deadline (the widening is not dead code): a read longer than ``_timeout``
+        but under ``_read_timeout`` completes cleanly."""
         import asyncio
 
         from dqlitewire.messages import EmptyResponse
@@ -182,9 +164,7 @@ class TestDqliteProtocol:
         sent = [False]
 
         async def slow_first_read(_n: int) -> bytes:
-            # First call takes longer than _timeout but well within
-            # _read_timeout; deliver the full response so the
-            # decoder completes.
+            # Longer than _timeout but within _read_timeout; deliver full response.
             if not sent[0]:
                 sent[0] = True
                 await asyncio.sleep(0.2)
@@ -193,8 +173,7 @@ class TestDqliteProtocol:
 
         mock_reader.read.side_effect = slow_first_read
 
-        # Must NOT raise: the widening flowed through into the
-        # deadline budget. Pre-fix this raised TimeoutError at 0.05s.
+        # Must NOT raise: pre-fix this raised TimeoutError at 0.05s.
         await protocol._read_response()
 
     async def test_read_data_deadline_already_in_past_raises_immediately(
@@ -202,14 +181,9 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """The fast-path branch in ``_read_data`` short-circuits when the
-        deadline has ALREADY passed before entering ``asyncio.wait_for``.
-        It exists to dodge ``wait_for(timeout=0)`` semantic drift across
-        Python versions and to avoid passing a negative timeout (which
-        raises ``ValueError`` on some builds). Test deterministically:
-        deadline 1 second in the past must raise without entering the
-        reader.
-        """
+        """``_read_data`` short-circuits an already-passed deadline before
+        ``wait_for`` to dodge ``wait_for(timeout=0)`` drift and negative-timeout
+        ValueError on some builds; must raise without entering the reader."""
         import asyncio
 
         loop = asyncio.get_running_loop()
@@ -227,9 +201,7 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """Counter-test: a deadline in the future must NOT take the
-        fast-path; the reader is entered and produces data.
-        """
+        """A future deadline must NOT take the fast-path; the reader is entered."""
         import asyncio
 
         loop = asyncio.get_running_loop()
@@ -258,12 +230,8 @@ class TestDqliteProtocol:
         mock_writer: MagicMock,
         welcome_response: bytes,
     ) -> None:
-        """When no client_id is passed, handshake must generate a unique non-zero id.
-
-        Every connection defaulting to client_id=0 collapses all clients in
-        the server's per-client metrics and tracing. The client must opaquely
-        generate a random id per connection.
-        """
+        """Without a client_id, handshake generates a unique non-zero id;
+        defaulting to 0 would collapse all clients in server-side metrics/tracing."""
         mock_reader.read.return_value = welcome_response
 
         p1 = DqliteProtocol(mock_reader, mock_writer)
@@ -280,17 +248,15 @@ class TestDqliteProtocol:
         mock_reader: AsyncMock,
         mock_writer: MagicMock,
     ) -> None:
-        """A huge heartbeat_timeout should be capped to prevent timeout bypass."""
+        """A huge heartbeat_timeout is capped to prevent timeout bypass."""
         from dqlitewire.messages import WelcomeResponse
 
-        # Server sends an absurdly large heartbeat timeout (e.g., corrupted value)
         huge_timeout_ms = 10_000_000  # 10000 seconds
         mock_reader.read.return_value = WelcomeResponse(heartbeat_timeout=huge_timeout_ms).encode()
 
         protocol = DqliteProtocol(mock_reader, mock_writer, timeout=10.0)
         await protocol.handshake()
 
-        # The read timeout should be capped, not set to 10000 seconds
         assert protocol._timeout <= 300.0
 
     async def test_handshake_emits_debug_when_trust_widens_timeout(
@@ -299,9 +265,8 @@ class TestDqliteProtocol:
         mock_writer: MagicMock,
         caplog,
     ) -> None:
-        """``trust_server_heartbeat=True`` with a server heartbeat that
-        actually widens the per-read deadline emits a DEBUG log so an
-        operator can confirm the security-opt-in took effect."""
+        """``trust_server_heartbeat=True`` that widens the deadline emits a DEBUG
+        log so an operator can confirm the opt-in took effect."""
         import logging as _logging
 
         from dqlitewire.messages import WelcomeResponse
@@ -322,10 +287,8 @@ class TestDqliteProtocol:
         mock_writer: MagicMock,
         caplog,
     ) -> None:
-        """Default (``trust_server_heartbeat=False``) path must not log
-        at all for the server-advertised heartbeat — even when the
-        server sends a useful value. DEBUG should stay quiet in the
-        common case to avoid noisy diagnostics in production."""
+        """Default (``trust_server_heartbeat=False``) must not log for the
+        server-advertised heartbeat, even when the value is useful."""
         import logging as _logging
 
         from dqlitewire.messages import WelcomeResponse
@@ -348,8 +311,6 @@ class TestDqliteProtocol:
 
         with pytest.raises(OperationalError, match="Handshake failed") as ei:
             await protocol.handshake()
-        # Structured ``code`` matches the wire code (mirrors the 16
-        # sibling FailureResponse-derived raise sites).
         assert ei.value.code == 1
 
     async def test_handshake_failure_includes_code_and_address(
@@ -357,12 +318,8 @@ class TestDqliteProtocol:
         mock_reader: AsyncMock,
         mock_writer: MagicMock,
     ) -> None:
-        """Pin that handshake FailureResponse surfaces the server-
-        reported code and the peer address, mirroring the query-path
-        FailureResponse raises. Without this, a "[Handshake failed:
-        bad protocol]" message gives operators no way to distinguish
-        a DQLITE_PARSE from a DQLITE_NOTLEADER without re-running.
-        """
+        """Handshake FailureResponse surfaces the server code and peer address
+        so operators can distinguish e.g. DQLITE_PARSE from DQLITE_NOTLEADER."""
         failure = FailureResponse(code=101, message="bad protocol version").encode()
         mock_reader.read.return_value = failure
         protocol = DqliteProtocol(mock_reader, mock_writer, address="leader.example:9001")
@@ -381,10 +338,8 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """An empty server message must surface the
-        ``"(no diagnostic from server)"`` placeholder rather than a
-        bare ``"[1] "`` rendering.
-        """
+        """An empty server message surfaces the "(no diagnostic from server)"
+        placeholder rather than a bare "[1] " rendering."""
         failure = FailureResponse(code=1, message="").encode()
         mock_reader.read.return_value = failure
 
@@ -424,10 +379,9 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """finalize() should reject non-EmptyResponse (catches protocol desync)."""
+        """finalize() rejects non-EmptyResponse (catches protocol desync)."""
         from dqlitewire.messages import DbResponse
 
-        # Server sends wrong response type
         mock_reader.read.return_value = DbResponse(db_id=99).encode()
 
         with pytest.raises(ProtocolError, match="Expected EmptyResponse"):
@@ -453,13 +407,11 @@ class TestDqliteProtocol:
         mock_writer: MagicMock,
         result_response: bytes,
     ) -> None:
-        """Empty tuple params should be preserved, not replaced with []."""
+        """Empty tuple params are preserved, not replaced with []."""
         mock_reader.read.return_value = result_response
 
-        # This should not raise -- empty tuple is a valid Sequence
         await protocol.exec_sql(1, "SELECT 1", params=())
 
-        # Verify the request was written (meaning params=() was accepted)
         mock_writer.write.assert_called()
 
     async def test_exec_sql_rejects_extra_response(
@@ -467,19 +419,9 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """exec_sql reads exactly one ResultResponse — extra response
-        bytes from the server are a wire-spec violation and must
-        invalidate the connection rather than be silently buffered.
-
-        The C dqlite server emits exactly one RESULT per EXEC_SQL
-        call, even for multi-statement SQL: handle_exec_sql_done_cb
-        recurses internally on exec->tail and calls SUCCESS(...,
-        RESULT) only after the last statement completes. Extra bytes
-        could only come from a hostile or buggy server, and silently
-        buffering them would let the next user RPC consume the stray
-        as its own response (misclassified error against an
-        unrelated operation).
-        """
+        """exec_sql reads exactly one ResultResponse (the C server emits one
+        RESULT per EXEC_SQL even for multi-statement SQL); extra bytes must
+        invalidate rather than be buffered for the next RPC to misconsume."""
         from dqliteclient.exceptions import ProtocolError
         from dqlitewire.messages import ResultResponse
 
@@ -495,13 +437,8 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """query_sql reads exactly one RowsResponse — it must not drain extras.
-
-        The C server rejects multi-statement SELECT with a FailureResponse
-        ("nonempty statement tail") rather than sending multiple RowsResponses.
-        Any stray post-response bytes must be left alone, not silently
-        consumed.
-        """
+        """query_sql reads exactly one RowsResponse and must not drain extras
+        (the C server rejects multi-statement SELECT rather than sending more)."""
         from dqlitewire.constants import ValueType
         from dqlitewire.messages import RowsResponse
 
@@ -523,7 +460,7 @@ class TestDqliteProtocol:
 
         assert columns == ["a"]
         assert rows == [[1]]
-        # Stray response must remain in the buffer, not silently consumed.
+        # Stray response must remain buffered, not silently consumed.
         assert protocol._decoder.has_message()
 
     async def test_query_sql_raises_if_continuation_has_no_progress(
@@ -531,11 +468,9 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """A ROWS continuation that sets has_more=True but delivers 0 rows
-        must raise rather than loop forever. Known pathological server case:
-        column header alone exceeds the page buffer, so query__batch sends a
-        frame with no rows encoded but still marks it as partial.
-        """
+        """A ROWS continuation with has_more=True but 0 rows must raise rather
+        than loop forever (pathological case: column header alone exceeds the
+        page buffer, so query__batch sends a partial frame with no rows)."""
         from dqlitewire.constants import ValueType
         from dqlitewire.messages import RowsResponse
 
@@ -562,10 +497,7 @@ class TestDqliteProtocol:
         mock_reader: AsyncMock,
     ) -> None:
         """query_sql_typed returns wire ValueType ints (column + per-row)
-        alongside names+rows, so DBAPI cursors can populate
-        cursor.description[i][1] (type_code) and per-row converters
-        can dispatch on each row's actual wire types.
-        """
+        alongside names+rows for DBAPI cursor.description and per-row dispatch."""
         from dqlitewire.constants import ValueType
         from dqlitewire.messages import RowsResponse
 
@@ -615,7 +547,7 @@ class TestDqliteProtocol:
 
         types = [ValueType.INTEGER, ValueType.TEXT]
 
-        # Initial frame (has_more=True)
+        # Initial frame (has_more=True).
         body1 = encode_uint64(2)
         body1 += encode_text("id") + encode_text("name")
         body1 += encode_row_header(types)
@@ -623,8 +555,8 @@ class TestDqliteProtocol:
         body1 += encode_uint64(ROW_PART_MARKER)
         h1 = Header(size_words=len(body1) // 8, msg_type=7, schema=0)
 
-        # Continuation frame (has_more=False) — C server always
-        # includes column_count + column_names in every ROWS frame
+        # Continuation frame (has_more=False); C server repeats column
+        # count + names in every ROWS frame.
         body2 = encode_uint64(2)
         body2 += encode_text("id") + encode_text("name")
         body2 += encode_row_header(types)
@@ -632,7 +564,6 @@ class TestDqliteProtocol:
         body2 += encode_uint64(ROW_DONE_MARKER)
         h2 = Header(size_words=len(body2) // 8, msg_type=7, schema=0)
 
-        # Feed both frames in one chunk
         all_bytes = h1.encode() + body1 + h2.encode() + body2
         mock_reader.read.return_value = all_bytes
 
@@ -675,20 +606,12 @@ class TestDqliteProtocol:
         protocol: DqliteProtocol,
         mock_reader: AsyncMock,
     ) -> None:
-        """Pin: a server-emitted ``StmtResponse`` whose ``db_id``
-        does not match the prepare's ``db_id`` argument indicates
-        prepared-statement registry drift. The fix prefixes the
-        resulting ``ProtocolError`` with the
-        canonical ``"wire decode failed:"`` phrase so SA's
-        ``is_disconnect`` substring matcher routes it through
-        the pool-invalidate path. Without the prefix, the
-        registry-drift event would surface as a non-disconnect
-        ProtocolError and the SA pool would keep the broken
-        slot."""
+        """A StmtResponse db_id mismatch (registry drift) raises ProtocolError
+        prefixed with "wire decode failed:" so SA's is_disconnect matcher routes
+        it through pool-invalidate instead of keeping the broken slot."""
         from dqlitewire.messages import StmtResponse
 
-        # Request prepare against db_id=1 but server returns db_id=99
-        # — the registry-drift signal.
+        # Prepare against db_id=1 but server returns db_id=99 (drift signal).
         mock_reader.read.return_value = StmtResponse(db_id=99, stmt_id=42, num_params=0).encode()
 
         with pytest.raises(ProtocolError) as exc_info:
@@ -696,8 +619,7 @@ class TestDqliteProtocol:
 
         message = str(exc_info.value)
         assert message.startswith("wire decode failed:"), (
-            f"prefix is load-bearing for SA's is_disconnect "
-            f"substring matcher. Got message: {message!r}"
+            f"prefix is load-bearing for SA's is_disconnect matcher; got: {message!r}"
         )
         assert "db_id 99" in message
         assert "db_id 1" in message
@@ -711,7 +633,6 @@ class TestDqliteProtocol:
 
         mock_reader.read.return_value = EmptyResponse().encode()
 
-        # Should not raise
         await protocol.finalize(1, 1)
 
     async def test_connection_closed_during_read(
@@ -731,12 +652,11 @@ class TestDqliteProtocol:
         mock_reader: AsyncMock,
         mock_writer: MagicMock,
     ) -> None:
-        """Protocol reads should time out instead of blocking forever."""
+        """Protocol reads time out instead of blocking forever."""
         import asyncio
 
         protocol = DqliteProtocol(mock_reader, mock_writer, timeout=0.1)
 
-        # Simulate a server that hangs (never returns data)
         async def hang_forever(*args, **kwargs):
             await asyncio.sleep(100)
             return b""
@@ -753,10 +673,8 @@ class TestDqliteProtocol:
         mock_reader: AsyncMock,
         mock_writer: MagicMock,
     ) -> None:
-        """When ``address`` is threaded through, transport errors must
-        embed it so an operator correlating a stall across many nodes
-        can tell which one hung without having to cross-reference with
-        higher-layer logs."""
+        """When ``address`` is set, transport errors embed it so an operator
+        can tell which node hung."""
         import asyncio
 
         protocol = DqliteProtocol(mock_reader, mock_writer, timeout=0.05, address="node-a:9001")
@@ -777,9 +695,7 @@ class TestDqliteProtocol:
         mock_reader: AsyncMock,
         mock_writer: MagicMock,
     ) -> None:
-        """Without an address, the message must not include a stray
-        ``to None`` fragment — the existing format is preserved for
-        callers that don't know the peer."""
+        """Without an address, the message must not include a stray "to None"."""
         import asyncio
 
         protocol = DqliteProtocol(mock_reader, mock_writer, timeout=0.05)
@@ -795,8 +711,7 @@ class TestDqliteProtocol:
         with pytest.raises(DqliteConnectionError) as exc_info:
             await protocol.exec_sql(1, "SELECT 1")
         assert " to " not in str(exc_info.value), (
-            f"Address-less protocol should not inject 'to None' into the "
-            f"error message, got: {exc_info.value!s}"
+            f"Address-less protocol should not inject 'to None'; got: {exc_info.value!s}"
         )
 
     async def test_close(

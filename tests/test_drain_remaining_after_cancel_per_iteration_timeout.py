@@ -1,19 +1,6 @@
-"""Pin: ``_drain_remaining_after_cancel`` bounds each connection's
-close attempt by ``close_timeout + 0.5`` so one hung connection
-does not block the rest of the queue from being cleaned up.
-
-The per-iteration ``asyncio.wait_for(...)`` is the upper bound that
-holds even when the inner ``close_timeout`` discipline has a bug.
-The ``+0.5`` headroom absorbs the graceful-vs-force step inside
-``_close_impl`` without truncating it. The ``except TimeoutError``
-arm logs at WARNING with the ``"abandoning to drain"`` substring;
-operators grep for that marker when debugging stuck shutdowns.
-
-A regression that drops the ``wait_for`` would re-introduce the
-unbounded-block hazard. A regression that re-raises ``TimeoutError``
-would abort the drain loop on the first hung conn and leak the rest.
-A regression that swallows ``TimeoutError`` silently would lose the
-operator-visible audit trail.
+"""_drain_remaining_after_cancel bounds each close by a per-iteration wait_for so one hung conn
+does not block the rest of the queue. The except TimeoutError arm logs WARNING with the
+"abandoning to drain" marker that operators grep for when debugging stuck shutdowns.
 """
 
 from __future__ import annotations
@@ -31,8 +18,7 @@ from dqliteclient.pool import ConnectionPool
 async def test_drain_remaining_after_cancel_per_iteration_timeout_abandons_and_continues(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A hung close() is abandoned with a WARN log; the next queued
-    connection still gets its close attempt."""
+    """A hung close() is abandoned with a WARN log; the next queued conn still gets its attempt."""
     pool = ConnectionPool(["a:9001", "b:9001"], min_size=0, max_size=2)
     pool._close_timeout = 0.05
 
@@ -59,8 +45,7 @@ async def test_drain_remaining_after_cancel_per_iteration_timeout_abandons_and_c
     pool._pool.put_nowait(hung_conn)
     pool._pool.put_nowait(fast_conn)
 
-    # Stub the release-reservation to avoid touching the lock /
-    # signal infrastructure beyond the unit under test.
+    # Stub release-reservation to avoid touching the lock/signal infrastructure.
     pool._release_reservation = MagicMock(
         side_effect=lambda: asyncio.sleep(0),
     )
@@ -82,13 +67,8 @@ async def test_drain_remaining_after_cancel_per_iteration_timeout_abandons_and_c
 
 
 def test_drain_remaining_after_cancel_source_carries_per_iteration_timeout() -> None:
-    """Inspection pin: the ``asyncio.wait_for`` envelope must remain
-    in the source and the timeout must be derived from
-    ``_DRAIN_PER_CONN_CAP_MULTIPLIER`` rather than a bare ``+ 0.5``
-    literal. A regression that drops the wait_for, reverts to the
-    magic literal, or short-circuits the cap would re-introduce
-    either the unbounded-block hazard or the truncate-graceful-
-    drain hazard the cap was sized to prevent."""
+    """The wait_for envelope must remain and its timeout derive from
+    _DRAIN_PER_CONN_CAP_MULTIPLIER, not a bare ``+ 0.5`` literal."""
     import inspect
 
     src = inspect.getsource(ConnectionPool._drain_remaining_after_cancel)

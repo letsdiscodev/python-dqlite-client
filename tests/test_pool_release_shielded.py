@@ -1,19 +1,7 @@
-"""Pool reservation release must survive outer cancellation.
-
-The exception-path of ``acquire()``, the success-path ``_release``,
-and the ``_drain_idle`` ``finally`` block all wrap
-``_release_reservation()`` in ``asyncio.shield``. Without the
-shield, an outer ``asyncio.timeout`` that fires during a
-lock-contended reservation decrement leaves ``_size`` incremented
-permanently — repeatable occurrences drift the pool toward
-``max_size`` with no actual open connections and eventually
-deadlock.
-
-These are regression fences pinning the shield pattern at both call
-sites. They inspect the source to confirm the shield is in place
-alongside the release calls — behavioral tests of the race are
-inherently flaky because the cancel timing can never be guaranteed
-to land inside the specific microsecond window.
+"""Pin: acquire()'s exception path, _release, and _drain_idle's finally all wrap
+``_release_reservation()`` in ``asyncio.shield``. Without it an outer timeout firing
+mid-decrement leaks _size, drifting the pool toward max_size with no open
+connections until deadlock. Source-inspected because the race timing is unpinnable.
 """
 
 from __future__ import annotations
@@ -30,18 +18,12 @@ def _source_of(method_name: str) -> str:
 
 class TestReleaseReservationShielded:
     def test_release_has_shielded_release_reservation(self) -> None:
-        """The success-path of _release MUST wrap _release_reservation
-        in asyncio.shield so outer cancellation cannot interrupt the
-        size-counter decrement.
-        """
+        """_release shields _release_reservation so cancellation cannot interrupt
+        the size-counter decrement."""
         source = _source_of("_release")
-        # Three release paths: Pool closed, reset failed, QueueFull.
-        # Each must go through a shielded release.
         assert "asyncio.shield" in source or "_safe_release" in source, (
             "_release must shield _release_reservation against cancellation"
         )
-        # The bare `await self._release_reservation()` calls must be gone.
-        # At most they are inside a shield/suppress wrapper.
         bare_calls = source.count("await self._release_reservation()")
         shielded_calls = source.count("asyncio.shield(self._release_reservation())")
         assert shielded_calls >= bare_calls, (
@@ -50,9 +32,7 @@ class TestReleaseReservationShielded:
         )
 
     def test_drain_idle_has_shielded_release_reservation(self) -> None:
-        """The finally block in _drain_idle MUST shield
-        _release_reservation — otherwise an outer cancel landing on the
-        lock acquire inside the helper leaves _size inconsistent.
-        """
+        """_drain_idle's finally shields _release_reservation; otherwise an outer
+        cancel on the helper's lock acquire leaves _size inconsistent."""
         source = _source_of("_drain_idle")
         assert "asyncio.shield" in source, "_drain_idle must shield _release_reservation"

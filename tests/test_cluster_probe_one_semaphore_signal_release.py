@@ -1,25 +1,10 @@
-"""Pin: ``_probe_one`` wraps the semaphore acquire+store pair in a
-``try/except (KeyboardInterrupt, SystemExit)`` arm that releases the
-permit before re-raising.
+"""_probe_one wraps the semaphore acquire+store in a try/except
+(KeyboardInterrupt, SystemExit) that releases the permit before re-raising: a
+signal landing in the bytecode window between acquire and `sem_acquired = True`
+would otherwise leak the permit and wedge the find_leader sweep.
 
-The prior shape — bare ``await semaphore.acquire()`` followed by
-``sem_acquired = True`` — has a 1-3 bytecode signal-delivery window
-between the acquire returning (permit decremented) and the
-bookkeeping store. A ``KeyboardInterrupt`` / ``SystemExit`` /
-``PyErr_SetAsyncExc`` landing there leaks the permit permanently:
-the outer ``finally``'s ``if sem_acquired: semaphore.release()``
-guard misfires because ``sem_acquired`` is still ``False``. With
-``_concurrent_leader_conns=10`` (default) a handful of these wedges
-the entire ``find_leader`` sweep.
-
-Mirrors the threading-lock discipline at ``dqlitedbapi.connection``'s
-``_loop_lock`` acquire arm.
-
-This is a structural pin via source inspection: a runtime-level
-test is impractical because pytest-asyncio's runner intercepts
-both ``KeyboardInterrupt`` and ``SystemExit`` (the two BaseException
-subclasses the production ``except`` arm targets) as abort signals
-before any in-test capture can observe them.
+Structural pin via source inspection: pytest-asyncio's runner intercepts both
+signals before an in-test capture could observe a runtime version.
 """
 
 from __future__ import annotations
@@ -32,8 +17,7 @@ from dqliteclient import cluster as cluster_mod
 
 
 def _find_probe_one_source() -> str:
-    """Locate the ``_probe_one`` nested closure inside
-    ``ClusterClient._find_leader_impl`` and return its source code."""
+    """Return the source of the _probe_one closure inside _find_leader_impl."""
     enclosing_src = textwrap.dedent(inspect.getsource(cluster_mod.ClusterClient._find_leader_impl))
     module = ast.parse(enclosing_src)
     for inner in ast.walk(module):
@@ -45,13 +29,8 @@ def _find_probe_one_source() -> str:
 
 
 def test_probe_one_wraps_semaphore_acquire_store_in_signal_safe_arm() -> None:
-    """The acquire+store pair must live inside a ``try`` whose
-    ``except (KeyboardInterrupt, SystemExit)`` arm releases the
-    semaphore before re-raising. Pin the structural shape so a
-    future contributor cannot accidentally revert the discipline
-    by inlining ``await semaphore.acquire(); sem_acquired = True``
-    as bare statements outside the guard.
-    """
+    """The acquire+store pair lives in a try whose (KeyboardInterrupt, SystemExit)
+    arm releases the semaphore before re-raising."""
     src = _find_probe_one_source()
 
     assert "semaphore.acquire()" in src, (
@@ -65,8 +44,7 @@ def test_probe_one_wraps_semaphore_acquire_store_in_signal_safe_arm() -> None:
         "threading-lock discipline at dqlitedbapi.connection's "
         "_loop_lock acquire arm)"
     )
-    # Verify the except arm contains a release call so the structural
-    # shape is enforced beyond the bare ``except`` clause text.
+    # The except arm must contain a release call, not just the clause text.
     tree = ast.parse(src)
     found_signal_safe_release = False
     for node in ast.walk(tree):
@@ -74,11 +52,9 @@ def test_probe_one_wraps_semaphore_acquire_store_in_signal_safe_arm() -> None:
             continue
         if node.type is None:
             continue
-        # Expect ``except (KeyboardInterrupt, SystemExit)``.
         if isinstance(node.type, ast.Tuple):
             names = {elt.id for elt in node.type.elts if isinstance(elt, ast.Name)}
             if {"KeyboardInterrupt", "SystemExit"} <= names:
-                # Walk the arm body for a semaphore.release() call.
                 for body_node in ast.walk(ast.Module(body=node.body, type_ignores=[])):
                     if (
                         isinstance(body_node, ast.Call)
@@ -97,12 +73,8 @@ def test_probe_one_wraps_semaphore_acquire_store_in_signal_safe_arm() -> None:
 
 
 def test_probe_one_outer_finally_release_safety_net_remains() -> None:
-    """Regression guard: the outer ``finally: if sem_acquired:
-    semaphore.release()`` safety net must still exist — the
-    signal-safe arm covers the narrow acquire/store window, but
-    every other exception path (DqliteConnectionError, ProtocolError,
-    etc.) still relies on the finally for permit release.
-    """
+    """The outer finally `if sem_acquired: semaphore.release()` safety net remains:
+    every non-signal exception path still relies on it for permit release."""
     src = _find_probe_one_source()
     assert "if sem_acquired:" in src, "outer finally safety-net release was removed"
     assert "semaphore.release()" in src, "no semaphore.release() call remains"

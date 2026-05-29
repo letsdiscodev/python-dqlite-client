@@ -1,12 +1,6 @@
-"""Per-flag isolation tests for the pool-reset predicate.
-
-The predicate is the OR of four flags: ``_in_transaction``,
-populated ``_savepoint_stack``, ``_savepoint_implicit_begin``, and
-``_has_untracked_savepoint``. Each flag has dedicated tests EXCEPT
-the lone ``_savepoint_implicit_begin=True`` case (with all others
-False). The state is internally inconsistent — it would arise only
-from a tracker bug — but the predicate must defend against it, so
-the test pin makes future refactors of the predicate visible.
+"""Per-flag isolation for the pool-reset predicate: the lone
+_savepoint_implicit_begin=True case (internally inconsistent, but the
+predicate must still defend against it).
 """
 
 from __future__ import annotations
@@ -42,7 +36,6 @@ async def test_reset_fires_when_only_savepoint_implicit_begin_true() -> None:
         with patch.object(conn, "execute", new=fake_execute):
             result = await pool._reset_connection(conn)
 
-    # Predicate fired: a safety ROLLBACK was issued.
     assert executed == [_TRANSACTION_ROLLBACK_SQL]
     assert result is True
 

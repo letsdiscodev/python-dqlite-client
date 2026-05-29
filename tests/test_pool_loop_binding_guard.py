@@ -1,14 +1,5 @@
-"""Pin: ``ConnectionPool`` lazy-binds to an event loop on first use
-and raises ``InterfaceError`` on cross-loop misuse — mirroring the
-sibling discipline at ``DqliteConnection._check_in_use``.
-
-The pool's ``asyncio.Queue`` and ``asyncio.Lock`` are constructed
-eagerly in ``__init__`` and lazy-bind to whichever loop touches them
-first. Pre-fix, silent cross-loop misuse (pool created on loop A,
-awaited from loop B) surfaced only as a deep asyncio-internal error
-or a deadlock. Post-fix, ``_check_loop_binding`` at each public
-entry point produces an actionable ``InterfaceError``.
-"""
+"""``ConnectionPool`` lazy-binds to an event loop on first use and raises
+``InterfaceError`` on cross-loop misuse, instead of a deep asyncio error or deadlock."""
 
 from __future__ import annotations
 
@@ -22,8 +13,7 @@ from dqliteclient.pool import ConnectionPool
 
 
 def test_pool_construction_outside_loop_does_not_bind() -> None:
-    """Factory-style construction outside any running loop must work;
-    the bind happens lazily on first use."""
+    """Construction outside a running loop must not bind; the bind is lazy."""
     pool = ConnectionPool(["127.0.0.1:9001"], min_size=0, max_size=1, timeout=1.0)
     assert pool._loop_ref is None, "construction outside a running loop must not eagerly bind"
 
@@ -38,21 +28,17 @@ async def test_pool_first_use_lazy_binds_to_current_loop() -> None:
 
 
 def test_pool_cross_loop_misuse_raises_interface_error() -> None:
-    """A pool bound to loop A and awaited from loop B must raise
-    ``InterfaceError("bound to a different event loop")`` instead of
-    a deep asyncio-internal error."""
+    """A pool bound to loop A and awaited from loop B must raise InterfaceError."""
     pool = ConnectionPool(["127.0.0.1:9001"], min_size=0, max_size=1, timeout=1.0)
 
-    # Bind to loop A on this thread.
     loop_a = asyncio.new_event_loop()
     try:
-        loop_a.run_until_complete(asyncio.sleep(0))  # establish the loop
-        # Stand in for a real call by invoking the guard directly on loop A.
+        loop_a.run_until_complete(asyncio.sleep(0))
         loop_a.run_until_complete(_bind_on_loop(pool))
     finally:
         loop_a.close()
 
-    # Now drive the guard from a fresh loop B on a different thread.
+    # Drive the guard from a fresh loop B on a different thread.
     captured: list[BaseException] = []
 
     def _runner() -> None:
@@ -85,18 +71,15 @@ async def _bind_on_loop(pool: ConnectionPool) -> None:
 
 def test_pool_guard_outside_async_context_raises_interface_error() -> None:
     """Calling _check_loop_binding outside any running loop must raise
-    a clean ``InterfaceError("async context")`` — the same shape the
-    connection-layer guard raises in the same scenario."""
+    ``InterfaceError("async context")``."""
     pool = ConnectionPool(["127.0.0.1:9001"], min_size=0, max_size=1, timeout=1.0)
     with pytest.raises(InterfaceError, match="async context"):
         pool._check_loop_binding()
 
 
 def test_pool_guard_after_closed_loop_raises_clean_diagnostic() -> None:
-    """If the bound loop is GC'd (the weakref expires), a subsequent
-    call from a fresh loop must raise ``InterfaceError("closed event
-    loop")`` rather than ``"different event loop"`` — mirrors the
-    connection-layer expired-weakref arm."""
+    """If the bound loop is GC'd (weakref expires), a call from a fresh loop must raise
+    ``InterfaceError("closed event loop")``, not ``"different event loop"``."""
     pool = ConnectionPool(["127.0.0.1:9001"], min_size=0, max_size=1, timeout=1.0)
 
     loop_a = asyncio.new_event_loop()
@@ -104,7 +87,6 @@ def test_pool_guard_after_closed_loop_raises_clean_diagnostic() -> None:
         loop_a.run_until_complete(_bind_on_loop(pool))
     finally:
         loop_a.close()
-    # Drop the strong ref so the weakref expires.
     import gc
 
     del loop_a

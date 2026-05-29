@@ -1,20 +1,4 @@
-"""Pin: ``transaction()`` ROLLBACK-failure paths emit DEBUG log records.
-
-Operators correlating production logs across the dbapi and client
-layers need to disambiguate "body exception" from "rollback failure"
-when both surface during a transaction. The dbapi layer's
-``__exit__`` already logs at DEBUG; the client-layer
-``transaction()`` follows the same discipline.
-
-Pin two records (one per branch):
-- ROLLBACK failed for a non-cancellation reason: substring
-  ``"rollback failed"``.
-- ROLLBACK was cancelled mid-flight: substring
-  ``"rollback was cancelled"``.
-
-Both records carry ``(address=..., id=...)`` correlator tokens matching
-the dbapi-layer convention.
-"""
+"""``transaction()`` ROLLBACK-failure paths emit DEBUG log records."""
 
 from __future__ import annotations
 
@@ -48,13 +32,11 @@ class TestTransactionRollbackFailureLogged:
             async with conn.transaction():
                 raise ValueError("body")
 
-        # Exactly one record from this path.
         rollback_records = [r for r in caplog.records if "rollback failed" in r.getMessage()]
         assert len(rollback_records) == 1
         rec = rollback_records[0]
         assert "address=localhost:9001" in rec.getMessage()
         assert f"id={id(conn)}" in rec.getMessage()
-        # ``exc_info=True`` should populate exception details on the record.
         assert rec.exc_info is not None
 
     async def test_rollback_cancellation_emits_debug_log(

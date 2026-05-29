@@ -18,33 +18,26 @@ from dqlitewire.messages import (
     WelcomeResponse,
 )
 
-# Add python-dqlite-dev's testlib to sys.path so tests (in particular
-# the integration suite) can import shared utilities from
-# ``dqlitetestlib``. ``python-dqlite-dev`` is expected as a sibling of
-# this checkout — see ``python-dqlite-dev/testlib/README.md``. The
-# insertion is harmless when the sibling repo is absent.
+# Add python-dqlite-dev's testlib (expected as a sibling checkout) to sys.path so
+# the integration suite can import ``dqlitetestlib``; harmless when the sibling is absent.
 _TESTLIB = Path(__file__).resolve().parent.parent.parent / "python-dqlite-dev" / "testlib"
 if _TESTLIB.exists() and str(_TESTLIB) not in sys.path:
     sys.path.insert(0, str(_TESTLIB))
 
-# Pytest 8+ requires ``pytest_plugins`` at the top-level conftest.
-# Only register the testlib's fixtures plugin when the path resolved
-# so consumers running unit tests without the sibling repo see no
-# difference.
+# Pytest 8+ requires ``pytest_plugins`` at the top-level conftest. Only register when
+# the testlib resolved so unit-test-only consumers without the sibling repo are unaffected.
 if _TESTLIB.exists():
     pytest_plugins = ["dqlitetestlib.fixtures"]
 
 
 @pytest.fixture
 def mock_reader() -> AsyncMock:
-    """Create a mock StreamReader."""
     reader = AsyncMock()
     return reader
 
 
 @pytest.fixture
 def mock_writer() -> MagicMock:
-    """Create a mock StreamWriter."""
     writer = MagicMock()
     writer.write = MagicMock()
     writer.drain = AsyncMock()
@@ -55,38 +48,28 @@ def mock_writer() -> MagicMock:
 
 @pytest.fixture
 def welcome_response() -> bytes:
-    """Create encoded WelcomeResponse."""
     return WelcomeResponse(heartbeat_timeout=15000).encode()
 
 
 @pytest.fixture
 def leader_response() -> bytes:
-    """Create encoded LeaderResponse."""
     return LeaderResponse(node_id=1, address="localhost:9001").encode()
 
 
 @pytest.fixture
 def db_response() -> bytes:
-    """Create encoded DbResponse.
-
-    Upstream ``gateway.c::handle_open`` always assigns ``id=0`` to
-    the first (and only) database opened on a fresh connection; the
-    client enforces this with a defence-in-depth guard in
-    ``DqliteProtocol.open_database``. Tests that mock the wire MUST
-    use ``db_id=0`` to match the server contract.
-    """
+    # Upstream always assigns id=0 to the first database on a fresh connection; mocks
+    # MUST use db_id=0 to match (the client guards on it in open_database).
     return DbResponse(db_id=0).encode()
 
 
 @pytest.fixture
 def result_response() -> bytes:
-    """Create encoded ResultResponse."""
     return ResultResponse(last_insert_id=1, rows_affected=1).encode()
 
 
 @pytest.fixture
 def rows_response() -> bytes:
-    """Create encoded RowsResponse."""
     return RowsResponse(
         column_names=["id", "name"],
         column_types=[ValueType.INTEGER, ValueType.TEXT],
@@ -102,13 +85,7 @@ async def connected_connection(
     welcome_response: bytes,
     db_response: bytes,
 ) -> AsyncIterator[tuple[DqliteConnection, AsyncMock, MagicMock]]:
-    """A DqliteConnection that is already connected with mocked transport.
-
-    Yields (conn, mock_reader, mock_writer) so tests can configure
-    additional response data on mock_reader. Closes the connection on
-    teardown so the suite-wide leak-hygiene contract holds (no
-    ResourceWarning under stricter pytest configs).
-    """
+    """Connected DqliteConnection with mocked transport; yields (conn, reader, writer)."""
     mock_reader.read.side_effect = [welcome_response, db_response]
     conn = DqliteConnection("localhost:9001")
     with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):

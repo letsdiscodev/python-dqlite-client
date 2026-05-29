@@ -1,29 +1,7 @@
-"""Pool-level cancellation and partial-failure invariants.
-
-Pins the ``ConnectionPool`` lifecycle guarantees against cancellation
-and partial failures:
-
-- Cancelling a parked ``acquire()`` caller must not leak ``_size``.
-  ``_size`` must reflect reality at all times.
-- ``pool.close()`` must wake every parked acquirer via the close
-  signal, not via the per-poll timeout. Waking via timeout would
-  produce "Timed out waiting for a connection" instead of
-  "Pool is closed" — the message is the observable signal.
-- ``_reset_connection`` failure during cleanup must release the
-  reservation and effectively close the connection. ``_FakeConn``
-  replicates the real ``DqliteConnection.close`` early-return guard
-  on ``_pool_released``, so any regression that flips the flag
-  before calling close() surfaces as a failed ``close_effective``
-  assertion.
-- ``initialize()`` partial failure: sibling connections that already
-  succeeded must be effectively closed before ``gather()`` propagates
-  the first failure. The previous default
-  ``return_exceptions=False`` cancelled siblings but did NOT close
-  them, leaking transports.
-
-No cluster needed — the pool is instantiated with a mock cluster whose
-``connect`` coroutine is stubbed per test.
-"""
+"""ConnectionPool lifecycle invariants under cancellation and partial failure:
+cancelled/failed acquirers and init survivors must release _size and effectively
+close their connections; close() must wake parked acquirers via the close signal
+(message "Pool is closed"), not the per-poll timeout."""
 
 from __future__ import annotations
 
@@ -39,20 +17,10 @@ from dqliteclient.pool import ConnectionPool
 
 
 class _FakeConn:
-    """Minimal DqliteConnection stand-in the pool accepts.
-
-    Matches the real connection's close() semantics: the early-return
-    guard on ``_pool_released`` / ``_protocol is None`` means close() is
-    a no-op when either is set. Pool callers MUST close before flipping
-    ``_pool_released`` — the fake replicates that guard so a test-side
-    mistake surfaces the same symptom as a bug in the real pool code
-    (transport leaked, socket still open).
-
-    ``close_effective`` tracks whether close() actually did work (the
-    guard did NOT short-circuit). Tests assert on this rather than
-    ``close_called`` when they care about "the transport actually
-    closed", not "close() method was invoked".
-    """
+    """Minimal DqliteConnection stand-in replicating the real close() guard:
+    close() is a no-op once _pool_released/_protocol is None, so callers MUST
+    close before flipping _pool_released. close_effective tracks whether close()
+    actually ran (guard did not short-circuit), as opposed to merely being called."""
 
     def __init__(self, name: str = "fake") -> None:
         self.name = name
@@ -67,7 +35,7 @@ class _FakeConn:
         self._protocol._reader = MagicMock()
         self._protocol._reader.at_eof = lambda: False
         self.close_called = False
-        self.close_effective = False  # did close() do actual work?
+        self.close_effective = False
 
     @property
     def is_connected(self) -> bool:
@@ -75,9 +43,8 @@ class _FakeConn:
 
     async def close(self) -> None:
         self.close_called = True
-        # Match real DqliteConnection.close guard. If the pool flipped
-        # the flag first, this is a no-op and the transport leaks — the
-        # exact bug the pool code must not have.
+        # Match real DqliteConnection.close guard: if the pool flipped the flag
+        # first, this is a no-op and the transport leaks.
         if self._pool_released or self._protocol is None:
             return
         self.close_effective = True
@@ -93,12 +60,8 @@ def _make_pool_with_fake_cluster(
     max_size: int = 2,
     connect_impl: Any = None,
 ) -> tuple[ConnectionPool, list[_FakeConn]]:
-    """Build a pool whose cluster.connect is stubbed.
-
-    ``connect_impl`` is an async callable returning a _FakeConn (or
-    raising). Default returns a fresh _FakeConn each call. Returns the
-    pool and the list where created conns are appended.
-    """
+    """Build a pool whose cluster.connect is stubbed; returns the pool and the
+    list where created conns are appended."""
     created: list[_FakeConn] = []
 
     async def _default_connect(**kwargs: Any) -> _FakeConn:
@@ -120,11 +83,9 @@ def _make_pool_with_fake_cluster(
 
 
 class TestInitializePartialFailureClosesSurvivors:
-    """If a single _create_connection fails in initialize's gather,
-    the connections that already succeeded must be closed. Previously
-    they leaked (asyncio.gather cancels siblings but does not await
-    their .close()).
-    """
+    """If one _create_connection fails in initialize's gather, the already-
+    succeeded conns must be closed (gather cancels siblings but never awaits
+    their .close())."""
 
     async def test_survivors_closed_on_partial_init_failure(self) -> None:
         created: list[_FakeConn] = []
@@ -137,7 +98,7 @@ class TestInitializePartialFailureClosesSurvivors:
                 raise DqliteConnectionError("simulated failure on 3rd connect")
             c = _FakeConn(name=f"c{n}")
             created.append(c)
-            # First two finish quickly; failing one loses the race.
+            # First two finish quickly; the failing one loses the race.
             await asyncio.sleep(0.01)
             return c
 
@@ -154,14 +115,11 @@ class TestInitializePartialFailureClosesSurvivors:
         with pytest.raises(DqliteConnectionError):
             await pool.initialize()
 
-        # Post-conditions:
-        # 1. _size must equal 0 (all reservations released).
         assert pool._size == 0, (
             f"After partial-failure initialize, _size must be 0, got {pool._size}"
         )
-        # 2. Every connection that got created must be EFFECTIVELY
-        #    closed — not just method-called. initialize() does not
-        #    flip _pool_released, so close_effective should be True.
+        # Created conns must be effectively closed, not just method-called;
+        # initialize() does not flip _pool_released.
         unclosed = [c for c in created if not c.close_effective]
         assert not unclosed, (
             f"Survivors of partial-failure gather must be effectively "
@@ -170,14 +128,10 @@ class TestInitializePartialFailureClosesSurvivors:
 
 
 class TestInitializeCancelDuringGatherDoesNotLeakCompletedConns:
-    """An outer cancel landing while ``asyncio.gather`` inside
-    ``initialize`` still has children pending must close the
-    children that already completed. Today the
-    ``unqueued_survivors`` list is populated AFTER gather returns,
-    so a CancelledError raised out of gather skips the assignment
-    and the finally iterates an empty list — leaking every
-    completed conn's transport.
-    """
+    """An outer cancel while initialize's gather still has children pending
+    must close the already-completed children. The unqueued_survivors list is
+    populated AFTER gather returns, so a CancelledError out of gather skips the
+    assignment and the finally iterates an empty list, leaking every transport."""
 
     async def test_initialize_cancel_during_gather_closes_completed_conns(self) -> None:
         completed: list[_FakeConn] = []
@@ -188,13 +142,13 @@ class TestInitializeCancelDuringGatherDoesNotLeakCompletedConns:
             i = call_idx[0]
             call_idx[0] += 1
             if i < 5:
-                # Fast path: completes before the timeout fires.
+                # Fast path: completes before the cancel fires.
                 c = _FakeConn(name=f"c{i}")
                 completed.append(c)
                 if len(completed) == 5:
                     completed_event.set()
                 return c
-            # Slow path: hangs forever (cancelled by the timeout).
+            # Slow path: hangs forever (cancelled).
             await asyncio.sleep(60)
             raise RuntimeError("unreachable")
 
@@ -211,9 +165,8 @@ class TestInitializeCancelDuringGatherDoesNotLeakCompletedConns:
         async def _wrapped() -> None:
             await pool.initialize()
 
-        # Drive the timeout / cancel while the slow children are
-        # still pending. Wait for the fast 5 to complete first so
-        # the leak is deterministic.
+        # Cancel while the slow children are still pending; wait for the fast 5
+        # first so the leak is deterministic.
         init_task = asyncio.create_task(_wrapped())
         await completed_event.wait()
         await asyncio.sleep(0.01)  # let gather observe the 5 results
@@ -221,10 +174,6 @@ class TestInitializeCancelDuringGatherDoesNotLeakCompletedConns:
         with pytest.raises(asyncio.CancelledError):
             await init_task
 
-        # Every conn that completed before the cancel must have
-        # been effectively closed. Today (without the fix), the
-        # unqueued_survivors list is empty in the finally because
-        # the assignment happens AFTER gather returns.
         unclosed = [c for c in completed if not c.close_effective]
         assert not unclosed, (
             f"Cancel-during-gather leaked {len(unclosed)} of {len(completed)} "
@@ -232,26 +181,20 @@ class TestInitializeCancelDuringGatherDoesNotLeakCompletedConns:
             "finally must walk gather's child tasks (not just the post-gather "
             "successes list) to reach completed-but-unqueued conns."
         )
-        # _size must also be drained — without it the pool drifts
-        # toward max_size on repeated cancel-during-gather and
-        # eventually deadlocks.
+        # _size must drain, else the pool drifts toward max_size on repeated
+        # cancel-during-gather and eventually deadlocks.
         assert pool._size == 0
 
 
 class TestAcquireCancellationRestoresSize:
     """A caller cancelled while parked in acquire() must not leak the
-    pool reservation. If a connection was pulled off the queue and
-    handed to the cancelled task's get_task, it must either be
-    returned to the pool or closed with _size decremented. Likewise
-    for body-raised cancellation during yield cleanup.
-    """
+    reservation: a conn handed to the cancelled get_task must be returned to the
+    pool or closed with _size decremented. Likewise for body-raised cancellation."""
 
     async def test_cancelled_waiter_does_not_leak_size(self) -> None:
         pool, created = _make_pool_with_fake_cluster(max_size=1)
-        # Pre-fill one connection so a second caller parks.
         await pool.initialize()
 
-        # Take the one connection so the pool is at capacity.
         async def holder() -> None:
             async with pool.acquire():
                 await asyncio.Event().wait()  # never release
@@ -259,7 +202,6 @@ class TestAcquireCancellationRestoresSize:
         holder_task = asyncio.create_task(holder())
         await asyncio.sleep(0.01)
 
-        # Second caller will park waiting for the queue.
         async def waiter() -> None:
             async with pool.acquire():
                 pass
@@ -267,12 +209,11 @@ class TestAcquireCancellationRestoresSize:
         waiter_task = asyncio.create_task(waiter())
         await asyncio.sleep(0.05)
 
-        # Cancel the waiter while it's parked on the queue.
+        # Cancel the waiter while it is parked on the queue.
         waiter_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter_task
 
-        # holder still holds its one slot; waiter never got one.
         assert pool._size == 1, (
             f"After cancelling a parked acquirer, _size must still be 1 "
             f"(the holder), got {pool._size}"
@@ -284,10 +225,8 @@ class TestAcquireCancellationRestoresSize:
         await pool.close()
 
     async def test_reset_connection_failure_releases_reservation(self) -> None:
-        """When the pool's cleanup path runs _reset_connection and it
-        fails (e.g. ROLLBACK raises), the reservation must be released
-        and the connection closed — never leaked.
-        """
+        """When _reset_connection fails (e.g. ROLLBACK raises), the reservation
+        must be released and the connection closed, never leaked."""
 
         class _RollbackFailingConn(_FakeConn):
             async def execute(self, sql: str, params: Any = None) -> tuple[int, int]:
@@ -316,14 +255,12 @@ class TestAcquireCancellationRestoresSize:
 
         with pytest.raises(_BodyError):
             async with pool.acquire() as c:
-                # Simulate user-visible BEGIN so pool thinks there's a tx to roll back.
+                # Simulate BEGIN so the pool thinks there is a tx to roll back.
                 c._in_transaction = True
                 raise _BodyError()
 
-        # After the cleanup, the reservation must be back and the conn
-        # must have been effectively closed (not just method-called —
-        # the pool previously set _pool_released before close(), making
-        # close() a silent no-op and leaking the transport).
+        # Reservation must be back and the conn effectively closed: the pool must
+        # close() BEFORE setting _pool_released or close() no-ops and leaks.
         assert pool._size == 0, (
             f"After _reset_connection failure, _size must be 0 (reservation "
             f"released), got {pool._size}"
@@ -340,17 +277,14 @@ class TestAcquireCancellationRestoresSize:
 
 
 class TestCloseWakesAllWaiters:
-    """When pool.close() runs, every parked acquire() must return
-    DqliteConnectionError promptly. The current clear()-then-wait
-    pattern has a tiny window where close()'s set() can be erased,
-    leaving waiters stalled until timeout.
-    """
+    """pool.close() must wake every parked acquire() with DqliteConnectionError
+    promptly; the clear()-then-wait pattern can erase close()'s set() and stall
+    waiters until timeout."""
 
     async def test_close_wakes_parked_waiters(self) -> None:
         pool, _ = _make_pool_with_fake_cluster(max_size=1)
         await pool.initialize()
 
-        # Hold the one connection.
         async def holder() -> None:
             async with pool.acquire():
                 await asyncio.Event().wait()
@@ -358,7 +292,6 @@ class TestCloseWakesAllWaiters:
         holder_task = asyncio.create_task(holder())
         await asyncio.sleep(0.01)
 
-        # Spawn N parked waiters.
         async def waiter() -> Any:
             try:
                 async with pool.acquire():
@@ -370,12 +303,9 @@ class TestCloseWakesAllWaiters:
         waiters = [asyncio.create_task(waiter()) for _ in range(N)]
         await asyncio.sleep(0.05)
 
-        # Close the pool. All waiters must return DqliteConnectionError
-        # with the "Pool is closed" message. The MESSAGE is the real
-        # invariant here: a waiter that hit the closed_event.clear()
-        # race would wake via the per-poll timeout instead and raise
-        # "Timed out waiting for a connection". We check the message
-        # text, not elapsed time — CI latency is variable.
+        # The message is the invariant: a waiter that hit the closed_event.clear()
+        # race wakes via the per-poll timeout and raises "Timed out..." instead.
+        # Assert on message text, not elapsed time (CI latency is variable).
         await pool.close()
 
         results = await asyncio.wait_for(
@@ -399,11 +329,8 @@ class TestCloseWakesAllWaiters:
 
 
 class TestResetConnectionNarrowsException:
-    """_reset_connection's ROLLBACK catch must not swallow programming
-    errors or cancellation. Only transport-level categories should be
-    treated as "connection is unhealthy, drop it"; anything else signals
-    a bug or a structured-concurrency cancel that must propagate.
-    """
+    """_reset_connection's ROLLBACK catch must only treat transport-level errors
+    as "drop the connection"; programming errors and cancellation must propagate."""
 
     async def test_rollback_programming_error_propagates(self) -> None:
         class _BoomConn(_FakeConn):
@@ -430,9 +357,6 @@ class TestResetConnectionNarrowsException:
         class _BodyDone(Exception):
             pass
 
-        # Programming errors from ROLLBACK must not be silently logged
-        # and converted into "drop the connection". A bare
-        # `except BaseException` would swallow the AttributeError.
         with pytest.raises(AttributeError, match="stale attribute"):
             async with pool.acquire() as c:
                 c._in_transaction = True
@@ -442,10 +366,8 @@ class TestResetConnectionNarrowsException:
 
 
 class TestInitializeCleanupNarrowsException:
-    """initialize() cleanup on partial failure must not swallow
-    programming errors during conn.close(). A bare
-    `suppress(BaseException)` masks refactor bugs and cancellation.
-    """
+    """initialize() partial-failure cleanup must not swallow programming errors
+    during conn.close(); a bare suppress(BaseException) masks bugs and cancels."""
 
     async def test_cleanup_programming_error_propagates(self) -> None:
         call_count = [0]
@@ -458,7 +380,7 @@ class TestInitializeCleanupNarrowsException:
             n = call_count[0]
             call_count[0] += 1
             if n == 1:
-                # Second connect fails → cleanup path runs on the first.
+                # Second connect fails so the cleanup path runs on the first.
                 await asyncio.sleep(0.01)
                 raise DqliteConnectionError("second connect failed")
             c = _CloseBoomConn(name=f"c{n}")
@@ -474,9 +396,5 @@ class TestInitializeCleanupNarrowsException:
             cluster=cluster,
         )
 
-        # The cleanup loop previously wrapped conn.close() in
-        # `suppress(BaseException)`, masking an AttributeError in a
-        # survivor's close. After narrowing, the programming error
-        # propagates out of initialize().
         with pytest.raises(AttributeError, match="close bug"):
             await pool.initialize()

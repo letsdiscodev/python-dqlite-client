@@ -1,21 +1,5 @@
-"""Integration tests for the public ``query_raw`` and
-``query_raw_typed`` APIs.
-
-These methods are documented as the entry points for "DBAPI cursor
-implementations that need column names separately" but no test
-exercises them directly at the client layer (the dbapi cursor's
-``description`` builder calls ``query_raw_typed`` in production,
-but the client suite only tests through ``execute`` / ``fetchall``
-which take different paths).
-
-Closes the documented-API coverage gap reported by ``pytest --cov``
-at ``connection.py:862-863`` and ``connection.py:881-882``.
-
-Also covers ``__init__.py:143-157`` (``create_pool`` body) by
-opening a pool through the public function rather than the
-``ConnectionPool`` constructor + ``initialize`` pair the rest of
-the suite uses.
-"""
+"""Integration tests for the public ``query_raw`` / ``query_raw_typed`` and
+``create_pool`` APIs."""
 
 from __future__ import annotations
 
@@ -49,25 +33,19 @@ class TestQueryRawApis:
                 "SELECT n, s FROM query_raw_typed_t"
             )
             assert cols == ["n", "s"]
-            assert len(col_types) == 2  # INTEGER + TEXT type codes
-            assert len(row_types) == 1  # one row's per-column type tags
+            assert len(col_types) == 2
+            assert len(row_types) == 1
             assert rows == [[1, "a"]]
 
 
 @pytest.mark.integration
 class TestCreatePool:
     async def test_create_pool_returns_initialized_usable_pool(self, cluster_address: str) -> None:
-        """Drive the ``create_pool`` body in ``__init__.py`` (the
-        recommended public constructor for callers who don't want
-        to assemble ``ConnectionPool(...) + await pool.initialize()``
-        manually). Pin that the returned pool is initialized and
-        usable via ``acquire()``."""
+        """``create_pool`` returns an initialized pool usable via ``acquire()``."""
         pool = await create_pool([cluster_address], min_size=1, max_size=1)
         try:
             async with pool.acquire() as conn:
-                # ``fetchall`` returns positional row lists, NOT
-                # dicts (no aliasing). Pin that shape — drift here
-                # would break every caller that indexes by position.
+                # fetchall returns positional row lists, not dicts.
                 rows = await conn.fetchall("SELECT 1 AS n")
                 assert rows == [[1]]
         finally:

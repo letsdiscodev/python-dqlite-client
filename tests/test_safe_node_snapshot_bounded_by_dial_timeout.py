@@ -1,19 +1,6 @@
-"""Pin: ``ClusterClient._safe_node_snapshot`` wraps the
-``NodeStore.get_nodes`` await in an ``asyncio.timeout`` cancel scope
-bounded by ``dial_timeout``.
-
-In-tree stores (``MemoryNodeStore``, ``YamlNodeStore``) return
-synchronously so the wrap is a no-op for them. A third-party store
-backed by blocking I/O (etcd / consul / service-discovery lookup)
-would otherwise hang ``find_leader`` indefinitely because no
-``asyncio.timeout`` envelope previously wrapped the store call. The
-outer ``find_leader`` envelope and the per-probe timeouts both run
-AFTER the store snapshot — neither bounds it.
-
-Mirrors go-dqlite's ``NodeStore.Get(ctx)`` contract and the
-``asyncio.timeout`` discipline applied to every other awaitable in
-``cluster.py``.
-"""
+"""``_safe_node_snapshot`` bounds the ``NodeStore.get_nodes`` await by ``dial_timeout``;
+otherwise a blocking third-party store (etcd/consul) would hang ``find_leader`` forever,
+since the outer envelope and per-probe timeouts both run AFTER the store snapshot."""
 
 from __future__ import annotations
 
@@ -31,13 +18,7 @@ pytestmark = pytest.mark.asyncio
 
 
 class _SlowNodeStore:
-    """Test fixture: a NodeStore whose ``get_nodes`` blocks for 60 s.
-
-    Without the timeout wrap, ``find_leader`` hangs until the outer
-    deadline (none here) fires. With the wrap, the store call is
-    bounded by ``dial_timeout`` and surfaces a TimeoutError-class
-    raise within ``dial_timeout``.
-    """
+    """A NodeStore whose ``get_nodes`` blocks for 60 s."""
 
     async def get_nodes(self) -> Sequence[NodeInfo]:
         await asyncio.sleep(60)

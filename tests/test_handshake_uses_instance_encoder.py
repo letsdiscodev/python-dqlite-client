@@ -1,14 +1,7 @@
-"""Pin: ``handshake`` and ``negotiate_protocol_only`` use the
-instance-bound ``self._encoder`` rather than constructing a fresh
-``MessageEncoder()`` for the handshake bytes.
-
-The handshake byte itself is invariant under cap settings (8-byte
-version word), so the bare-constructor form has no behavioural impact
-today. The pin guards against a future refactor that routes more
-content through the same fresh encoder — which would silently bypass
-the operator's configured ``max_message_size`` cap (and any other
-per-connection knob the bound encoder carries).
-"""
+"""Pin: ``handshake`` and ``negotiate_protocol_only`` use the bound
+``self._encoder``, not a fresh ``MessageEncoder()``. Harmless today (the version
+word is invariant) but a fresh encoder would bypass per-connection caps if more
+content were later routed through it."""
 
 from __future__ import annotations
 
@@ -30,12 +23,9 @@ def _make_protocol() -> DqliteProtocol:
 
 @pytest.mark.asyncio
 async def test_handshake_uses_instance_encoder() -> None:
-    """Pin: handshake calls ``self._encoder.encode_handshake`` (not a
-    bare ``MessageEncoder().encode_handshake()``)."""
+    """Pin: handshake calls ``self._encoder.encode_handshake``, not a bare one."""
     proto = _make_protocol()
     sentinel = b"\x42" * 8
-    # Replace just the encode_handshake method so we can detect the
-    # bound-encoder call.
     proto._encoder.encode_handshake = MagicMock(return_value=sentinel)
     proto._send = AsyncMock()
     proto._read_response = AsyncMock(return_value=WelcomeResponse(heartbeat_timeout=0))
@@ -51,7 +41,7 @@ async def test_handshake_uses_instance_encoder() -> None:
 
 @pytest.mark.asyncio
 async def test_negotiate_protocol_only_uses_instance_encoder() -> None:
-    """Pin: negotiate_protocol_only also uses the bound encoder."""
+    """negotiate_protocol_only also uses the bound encoder."""
     proto = _make_protocol()
     sentinel = b"\x99" * 8
     proto._encoder.encode_handshake = MagicMock(return_value=sentinel)

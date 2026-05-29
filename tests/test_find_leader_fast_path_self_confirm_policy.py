@@ -1,14 +1,6 @@
-"""When the cached leader self-confirms on the fast path, the
-redirect policy MUST still be re-validated. Without this, a tightened
-allowlist (set after the cache was populated) would not take effect
-until the cache was independently invalidated by the next leader
-flip — leaving a stale grace window where the old policy applied.
-
-The cached node also was already redirect-policy-checked at the time
-of caching, so the redirect arm at line 586 calls ``_check_redirect``
-on the redirected target. The self-confirm arm is the symmetric case:
-the cached address may now be outside the policy.
-"""
+"""When the cached leader self-confirms on the fast path, the redirect
+policy must still be re-validated, or a tightened allowlist would not
+take effect until the next leader flip invalidated the cache."""
 
 from collections.abc import Callable
 from unittest.mock import AsyncMock
@@ -34,9 +26,8 @@ def _query_leader_factory(
 
 @pytest.mark.asyncio
 async def test_self_confirm_revalidates_redirect_policy() -> None:
-    """A redirect_policy that is tightened after the cache was
-    populated must be honoured on the next fast-path probe even
-    when the cached node self-confirms."""
+    """A redirect_policy tightened after caching must be honoured on the
+    next fast-path probe even when the cached node self-confirms."""
     addresses = ["node-a:9001", "node-b:9001"]
     cluster = ClusterClient.from_addresses(
         addresses,
@@ -55,12 +46,10 @@ async def test_self_confirm_revalidates_redirect_policy() -> None:
     assert leader == "node-a:9001"
     assert cluster._get_last_known_leader() == "node-a:9001"
 
-    # Tighten the policy: reject node-a entirely.
     def _strict_policy(addr: str) -> bool:
         return addr != "node-a:9001"
 
     cluster._redirect_policy = _strict_policy
 
-    # Next fast-path probe must surface the policy rejection.
     with pytest.raises(ClusterPolicyError):
         await cluster.find_leader()

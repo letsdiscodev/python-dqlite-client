@@ -1,15 +1,5 @@
-"""Pin: ``ClusterClient.find_leader`` snapshots the node store once at
-the start of a sweep. A concurrent ``store.set_nodes(...)`` does NOT
-affect the in-flight sweep — the staleness window is intentional and
-documented at ``cluster.py:182-191``.
-
-The next sweep (after the in-flight one completes) does observe the
-update.
-
-These tests pin both halves of the contract so a future refactor that
-e.g. re-reads the store mid-sweep, or that propagates updates into a
-running sweep, has to be a deliberate behavior change.
-"""
+"""Pin: ``find_leader`` snapshots the node store once per sweep; a concurrent
+``set_nodes`` is invisible to the in-flight sweep but observed by the next one."""
 
 from __future__ import annotations
 
@@ -29,8 +19,7 @@ def _node(addr: str, node_id: int = 1) -> NodeInfo:
 
 @pytest.mark.asyncio
 async def test_in_flight_sweep_does_not_observe_concurrent_set_nodes() -> None:
-    """A concurrent ``set_nodes`` during an in-flight sweep does not
-    rewrite the snapshot the sweep is iterating."""
+    """A concurrent ``set_nodes`` must not rewrite the in-flight sweep's snapshot."""
     store = MemoryNodeStore(["a:9001", "b:9002"])
     cluster = ClusterClient(store, timeout=0.5)
 
@@ -50,14 +39,12 @@ async def test_in_flight_sweep_does_not_observe_concurrent_set_nodes() -> None:
     sweep = asyncio.create_task(cluster.find_leader())
     await parked.wait()
 
-    # Concurrent update — must not affect the in-flight sweep.
     await store.set_nodes([_node("c:9003", 3), _node("d:9004", 4)])
 
     release.set()
     result = await sweep
     assert result == "leader:9001"
 
-    # The first (in-flight) sweep saw the original list.
     assert snapshots[0] == ["a:9001", "b:9002"], (
         "in-flight sweep must use its initial node-store snapshot, not"
         f" observe a concurrent set_nodes; saw {snapshots[0]}"
@@ -66,8 +53,7 @@ async def test_in_flight_sweep_does_not_observe_concurrent_set_nodes() -> None:
 
 @pytest.mark.asyncio
 async def test_next_sweep_after_set_nodes_observes_update() -> None:
-    """The single-flight cache clears after a sweep completes; the
-    next call observes the updated node store."""
+    """After a sweep completes the next call observes the updated node store."""
     store = MemoryNodeStore(["a:9001"])
     cluster = ClusterClient(store, timeout=0.5)
 
@@ -94,10 +80,8 @@ async def test_next_sweep_after_set_nodes_observes_update() -> None:
 
 @pytest.mark.asyncio
 async def test_late_callers_during_sweep_see_inflight_snapshot_too() -> None:
-    """Single-flight collapses concurrent callers; a caller that
-    arrives mid-sweep waits on the same task and inherits its snapshot
-    — even if ``set_nodes`` was called after they entered.
-    """
+    """A caller arriving mid-sweep joins the in-flight task and inherits its
+    snapshot, even if ``set_nodes`` ran after it entered."""
     store = MemoryNodeStore(["a:9001"])
     cluster = ClusterClient(store, timeout=0.5)
 

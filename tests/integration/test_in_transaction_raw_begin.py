@@ -1,9 +1,5 @@
-"""DqliteConnection's _in_transaction flag must track raw BEGIN /
-COMMIT / ROLLBACK statements, not only the transaction() context
-manager. The dbapi's in_transaction property delegates to this flag
-and the documented contract is parity with stdlib
-sqlite3.Connection.in_transaction.
-"""
+"""The _in_transaction flag must track raw BEGIN/COMMIT/ROLLBACK, not just transaction(),
+for parity with stdlib ``sqlite3.Connection.in_transaction`` (the dbapi property delegates)."""
 
 from __future__ import annotations
 

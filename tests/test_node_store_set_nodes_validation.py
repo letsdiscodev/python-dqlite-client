@@ -1,20 +1,5 @@
-"""Pin: ``MemoryNodeStore.set_nodes`` mirrors ``__init__``'s
-strip / dedup / empty-rejection validation contract.
-
-The ``__init__`` validation is also applied to ``set_nodes`` to
-close a runtime-update bypass. Without these tests, a regression
-that drops the validation block silently re-introduces the
-defect the validation was meant to prevent.
-
-Six contract behaviours covered:
-
-* ``TypeError`` on non-string address.
-* ``ValueError`` on empty/whitespace-only address.
-* Whitespace stripping with NodeInfo rebuild (frozen
-  dataclass).
-* Dedup of duplicate addresses (first wins).
-* Stripped variants of an already-seen address are dedup'd.
-"""
+"""``MemoryNodeStore.set_nodes`` applies the same strip/dedup/empty-rejection validation
+as ``__init__``, closing a runtime-update bypass."""
 
 from __future__ import annotations
 
@@ -73,10 +58,7 @@ async def test_set_nodes_dedups_duplicates_first_wins() -> None:
 
 @pytest.mark.asyncio
 async def test_set_nodes_rebuilds_nodeinfo_when_address_stripped() -> None:
-    """Frozen-dataclass rebuild: a stripped address yields a new
-    NodeInfo instance, not the caller's original. A refactor that
-    drops the rebuild branch (and tries in-place mutation, which
-    would TypeError on the frozen dataclass) surfaces here."""
+    """A stripped address yields a new NodeInfo instance (frozen dataclass rebuild)."""
     store = MemoryNodeStore()
     original = NodeInfo(node_id=1, address="  127.0.0.1:9001  ", role=NodeRole.VOTER)
     await store.set_nodes([original])
@@ -84,6 +66,5 @@ async def test_set_nodes_rebuilds_nodeinfo_when_address_stripped() -> None:
     stored = nodes[0]
     assert stored is not original
     assert stored.address == "127.0.0.1:9001"
-    # node_id and role are preserved across the rebuild.
     assert stored.node_id == original.node_id
     assert stored.role == original.role

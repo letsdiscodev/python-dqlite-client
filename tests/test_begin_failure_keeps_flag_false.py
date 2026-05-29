@@ -1,20 +1,7 @@
-"""``DqliteConnection.execute("BEGIN")`` failing must leave ``_in_transaction`` False.
+"""execute("BEGIN") failing must leave _in_transaction False.
 
-The ``execute`` flow runs the protocol first and only updates the
-transaction-tracking flags after a successful round-trip
-(``_update_tx_flags_from_sql`` at ``connection.py:843-860`` runs only on
-the post-await line). A FailureResponse on BEGIN therefore must NOT
-flip ``_in_transaction``. The invariant is implicit in the source; this
-file pins it so a refactor that moved the sniff before the protocol
-call (or special-cased BEGIN to flip eagerly) breaks the suite
-immediately.
-
-The pin matters because the dbapi's ``commit()`` / ``rollback()`` use
-``_NO_TX_SUBSTRINGS`` substring suppression to swallow the genuine
-"no transaction is active" reply. If a failed BEGIN left
-``_in_transaction = True``, the next ``commit()`` would either send a
-COMMIT against a server with no tx open (suppressed) or surface a
-confusing "no tx" error to the caller.
+Tx flags update only after a successful round-trip. A stale True would make the next
+commit()/rollback() send a COMMIT with no tx open or surface a confusing "no tx" error.
 """
 
 from __future__ import annotations
@@ -30,8 +17,7 @@ from dqlitewire.messages import FailureResponse
 
 @pytest.fixture
 def connected_conn() -> DqliteConnection:
-    """A DqliteConnection whose protocol mock can be primed with a
-    FailureResponse and whose ``_ensure_connected`` short-circuits."""
+    """A DqliteConnection with a mock protocol ready to be primed with a FailureResponse."""
     conn = DqliteConnection("localhost:9001")
     conn._protocol = MagicMock()
     conn._protocol._reader = AsyncMock()
@@ -65,15 +51,13 @@ def _prime_failure(conn: DqliteConnection, code: int, message: str) -> None:
 async def test_begin_failure_response_leaves_flag_false(
     connected_conn: DqliteConnection, begin_sql: str
 ) -> None:
-    """A FailureResponse on any BEGIN variant must propagate the
-    OperationalError and leave ``_in_transaction`` False."""
+    """A FailureResponse on any BEGIN variant propagates and leaves _in_transaction False."""
     _prime_failure(connected_conn, code=1, message="forced failure")
     assert connected_conn._in_transaction is False
 
     with pytest.raises(OperationalError):
         await connected_conn.execute(begin_sql)
 
-    # Failed BEGIN must not have flipped any tracker state.
     assert connected_conn._in_transaction is False
     assert connected_conn._tx_owner is None
     assert connected_conn._savepoint_stack == []
@@ -83,8 +67,7 @@ async def test_begin_failure_response_leaves_flag_false(
 async def test_savepoint_failure_response_leaves_stack_unchanged(
     connected_conn: DqliteConnection,
 ) -> None:
-    """Mirror for SAVEPOINT autobegin: a failed SAVEPOINT must not
-    push onto the stack or flip the autobegin flag."""
+    """A failed SAVEPOINT must not push onto the stack or flip the autobegin flag."""
     _prime_failure(connected_conn, code=1, message="forced failure")
     assert connected_conn._in_transaction is False
 
@@ -97,6 +80,6 @@ async def test_savepoint_failure_response_leaves_stack_unchanged(
 
 
 def test_failure_response_constructable_with_code_one() -> None:
-    """Sanity: the codec round-trips the failure-shape we're priming."""
+    """The codec round-trips the failure shape we prime with."""
     body = FailureResponse(code=1, message="forced failure").encode()
-    assert body  # non-empty encode confirms primary code 1 is valid input
+    assert body

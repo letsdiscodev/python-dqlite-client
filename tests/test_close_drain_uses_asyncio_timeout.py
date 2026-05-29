@@ -1,20 +1,8 @@
-"""Pin: close-path drain sites use ``asyncio.timeout`` cancel-scope
-semantics inside the inner Task, not ``asyncio.wait_for``.
+"""Close-path drain sites use ``asyncio.timeout`` cancel-scope semantics, not
+``asyncio.wait_for``, so an outer cancel cannot discard a return value.
 
-The send/read sites in ``DqliteProtocol`` migrated from
-``asyncio.wait_for`` to ``asyncio.timeout`` so an outer cancel landing
-while the awaited coroutine has a return value would not discard that
-value. The close-path drains (``DqliteConnection._connect_impl``,
-``_close_impl``, ``_abort_protocol``, ``_invalidate._bounded_drain``,
-``ClusterClient._query_leader``, ``ClusterClient.open_admin_connection``)
-must use the same discipline so a future refactor that gives
-``wait_closed()`` a return value does not silently regress.
-
-Today ``writer.wait_closed()`` returns ``None`` so the regression would
-be invisible at runtime — pin the source shape instead. The discipline
-contract is: no ``asyncio.wait_for(... wait_closed() ...)`` calls in
-the connection / cluster modules; use ``async with asyncio.timeout(...):
-await ... wait_closed()`` instead.
+``wait_closed()`` returns None today, so a regression is runtime-invisible —
+pin the source shape instead.
 """
 
 from __future__ import annotations
@@ -26,15 +14,9 @@ from dqliteclient import cluster, connection
 
 
 def test_no_wait_for_around_wait_closed_in_connection_module() -> None:
-    """Source-level pin: ``connection.py`` must not wrap
-    ``wait_closed()`` in ``asyncio.wait_for(...)`` — the migration
-    placed ``async with asyncio.timeout(...)`` inside an inner drain
-    coroutine instead. Mirrors the discipline at
-    ``protocol.py::_send`` and ``_read_data``.
-    """
+    """``connection.py`` must not wrap ``wait_closed()`` in ``asyncio.wait_for``."""
     src = inspect.getsource(connection)
-    # Strip Python comments so cross-references in docstrings or
-    # comments do not trip the pin.
+    # Strip comments so cross-references in them do not trip the pin.
     code = "\n".join(re.sub(r"#.*$", "", line) for line in src.splitlines() if line.strip())
     bad = re.findall(r"asyncio\.wait_for\([^)]*wait_closed", code)
     assert not bad, (
@@ -44,11 +26,7 @@ def test_no_wait_for_around_wait_closed_in_connection_module() -> None:
 
 
 def test_no_wait_for_around_wait_closed_in_cluster_module() -> None:
-    """Source-level pin: ``cluster.py`` must not wrap ``wait_closed()``
-    in ``asyncio.wait_for(...)``. ``_query_leader`` and
-    ``open_admin_connection`` migrated to the inner ``asyncio.timeout``
-    shape.
-    """
+    """``cluster.py`` must not wrap ``wait_closed()`` in ``asyncio.wait_for``."""
     src = inspect.getsource(cluster)
     code = "\n".join(re.sub(r"#.*$", "", line) for line in src.splitlines() if line.strip())
     bad = re.findall(r"asyncio\.wait_for\([^)]*wait_closed", code)
@@ -59,13 +37,9 @@ def test_no_wait_for_around_wait_closed_in_cluster_module() -> None:
 
 
 def test_connection_module_uses_asyncio_timeout_around_wait_closed() -> None:
-    """Positive pin: at least one drain site in ``connection.py`` uses
-    the migrated ``async with asyncio.timeout(...): await ...
-    wait_closed()`` shape. Guards against accidental removal of the
-    discipline at all sites.
-    """
+    """At least one drain site in ``connection.py`` uses the
+    ``async with asyncio.timeout(...): await ...wait_closed()`` shape."""
     src = inspect.getsource(connection)
-    # Look for the inner-task drain coroutine shape.
     pattern = re.compile(
         r"async with asyncio\.timeout\([^)]+\):\s*\n\s*await [^.]+\.wait_closed",
         re.MULTILINE,
@@ -78,9 +52,7 @@ def test_connection_module_uses_asyncio_timeout_around_wait_closed() -> None:
 
 
 def test_cluster_module_uses_asyncio_timeout_around_wait_closed() -> None:
-    """Positive pin for ``cluster.py``: ``_query_leader`` and
-    ``open_admin_connection`` both use the migrated inner-timeout shape.
-    """
+    """``_query_leader`` and ``open_admin_connection`` both use the inner-timeout shape."""
     src = inspect.getsource(cluster)
     pattern = re.compile(
         r"async with asyncio\.timeout\([^)]+\):\s*\n\s*await [^.]+\.wait_closed",

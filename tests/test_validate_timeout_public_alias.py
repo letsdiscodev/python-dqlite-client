@@ -1,11 +1,5 @@
-"""Pin: ``validate_timeout`` is the public name for the timeout
-validator and is re-exported from the package root. Downstream
-consumers (``dqlitedbapi.connection``) import the public name.
-
-The previously-kept underscore-prefixed ``_validate_timeout`` alias
-has been removed: zero in-tree call sites used it after the
-public-name migration, so the alias was dead surface.
-"""
+"""``validate_timeout`` is the public name re-exported from the package root;
+the old ``_validate_timeout`` alias has been removed."""
 
 from __future__ import annotations
 
@@ -21,10 +15,8 @@ def test_validate_timeout_in_public_all() -> None:
 
 
 def test_underscore_alias_removed_from_module() -> None:
-    """Pin: the ``_validate_timeout`` alias has been deleted; the
-    module no longer exposes it. The dbapi has a separately-named
-    ``_validate_timeout`` on its own module — that one is unrelated
-    and must not be confused with the (now-removed) client alias."""
+    """The client ``_validate_timeout`` alias is deleted (the dbapi has an
+    unrelated same-named symbol on its own module)."""
     import dqliteclient.connection as _conn_mod
 
     assert not hasattr(_conn_mod, "_validate_timeout")
