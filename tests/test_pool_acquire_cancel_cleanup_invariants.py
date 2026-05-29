@@ -78,10 +78,13 @@ async def test_acquire_size_invariant_survives_cancel_churn() -> None:
         release_held.set()
         await held_task
 
-        # After the holder releases, the pool should have at most
-        # max_size connections accounted for and zero in flight.
-        assert pool._size <= pool._max_size
-        assert pool._size >= 0
+        # After the holder releases and every cancelled waiter has been
+        # cleaned up, the pool must drift back to exactly zero accounted
+        # slots — a leaked or over-allocated reservation would show as
+        # _size > 0, which the looser `0 <= _size <= max_size` bound
+        # would silently accept.
+        assert pool._size == 0
+        assert pool._pool.qsize() == 0
 
 
 @pytest.mark.asyncio
