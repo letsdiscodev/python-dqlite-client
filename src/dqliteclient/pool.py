@@ -185,39 +185,26 @@ class ConnectionPool:
         concurrent_leader_conns: int | None = None,
         redirect_policy: RedirectPolicy | None = None,
     ) -> None:
-        """Initialize connection pool.
+        """Initialize a connection pool (does not connect until ``initialize()``).
 
-        Args:
-            addresses: Node addresses; ignored if ``cluster``/``node_store`` given.
-            database: Database name.
-            min_size: Connections to pre-warm at :meth:`initialize`. NOT a
-                steady-state floor — the pool does not replenish after a drain.
-            max_size: Maximum connections allowed.
-            timeout: Per-RPC-phase timeout (each phase gets the full budget, so a
-                call can take ~N × timeout). Default for dial/attempt timeouts and
-                the per-acquire wall-clock clamp.
-            dial_timeout: Per-dial TCP-establish budget; defaults to ``timeout``.
-            attempt_timeout: Per-attempt envelope (dial + handshake + first
-                round-trip); defaults to ``timeout``.
-            cluster: Externally-owned ClusterClient (caller-owned; pool does not
-                close it). Lets multiple pools share one cluster.
-            node_store: Externally-owned NodeStore to build a cluster from;
-                mutually exclusive with ``cluster``.
-            max_total_rows: Cumulative row cap per query; ``None`` disables it
-                (drops the slow-drip memory bound — avoid in production).
-            max_continuation_frames: Per-query frame cap; bounds O(n) decode work
-                from a server sending 1 row per frame.
-            trust_server_heartbeat: When True, widen the per-read deadline to the
-                server-advertised heartbeat (300 s cap); else ``timeout`` rules.
-            close_timeout: Per-connection drain budget for ``close()``. close()
-                drains serially, so total close wall-clock ~ qsize × close_timeout;
-                size ``max_size × close_timeout`` against SIGTERM grace periods.
-            max_attempts: Leader-discovery attempts per connect; ``None`` uses the
-                cluster default of 3. Must be ``>= 1``.
-            max_elapsed_seconds: Wall-clock cap on the connect retry loop; ``None``
-                lets only ``max_attempts`` govern.
-            dial_func: Caller-supplied dialer; mutually exclusive with ``cluster=``
-                (which carries its own).
+        ``addresses`` is ignored when ``cluster`` or ``node_store`` is given.
+        ``cluster`` (and the ``node_store`` it is built from) is caller-owned — the
+        pool does not close it — and lets multiple pools share one cluster;
+        ``cluster``/``node_store`` are mutually exclusive, as are ``cluster`` and
+        ``dial_func`` (the cluster carries its own). ``min_size`` connections are
+        pre-warmed at ``initialize()`` but are NOT a steady-state floor — the pool
+        does not replenish after a drain. ``timeout`` is per-RPC-phase (each phase
+        gets the full budget, so a call can take ~N × ``timeout``) and is the
+        default for ``dial_timeout``/``attempt_timeout`` and the per-acquire
+        wall-clock clamp. ``max_total_rows`` (``None`` disables, dropping the
+        slow-drip memory bound — avoid in production) and ``max_continuation_frames``
+        bound decode work against a server sending one row per frame.
+        ``trust_server_heartbeat`` widens the per-read deadline to the
+        server-advertised heartbeat (300 s cap). ``close()`` drains serially, so
+        total close wall-clock ~ qsize × ``close_timeout``; size it against SIGTERM
+        grace periods. ``max_attempts`` (``None`` uses the cluster default of 3,
+        must be >= 1) and ``max_elapsed_seconds`` (``None`` lets only
+        ``max_attempts`` govern) bound leader discovery.
         """
         # Reject bool first: True/False coerce to valid int sizes and would mask
         # a caller accidentally passing a flag.

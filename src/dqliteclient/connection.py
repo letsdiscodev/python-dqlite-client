@@ -754,27 +754,18 @@ class DqliteConnection:
     ) -> None:
         """Initialize connection (does not connect yet).
 
-        Args:
-            address: Node address in "host:port" format.
-            database: Database name to open.
-            timeout: Per-RPC-phase timeout in seconds — applied to each
-                phase independently, so one call can take up to N ×
-                ``timeout``. Wrap in ``asyncio.timeout`` for a true deadline.
-            dial_timeout: Per-dial TCP-establish budget; defaults to ``timeout``.
-            attempt_timeout: Per-attempt envelope over dial + handshake +
-                ``open_database``; defaults to ``timeout``.
-            max_total_rows: Cumulative row cap across continuation frames;
-                ``None`` disables.
-            max_continuation_frames: Cap on continuation frames per query;
-                ``None`` disables.
-            trust_server_heartbeat: When True, widen the per-read deadline to
-                the server heartbeat (300 s hard cap); else ``timeout`` rules.
-            close_timeout: Budget for the best-effort transport drain in
-                ``close()`` so an unresponsive peer cannot stall shutdown.
-            dial_func: Caller-supplied dialer replacing the default TCP path
-                (and its socket options). ``None`` keeps the default.
-            max_message_size: Inbound frame-size ceiling enforced by the wire
-                ``ReadBuffer``; defaults to 64 MiB. Tighten or loosen per workload.
+        ``timeout`` is per-RPC-phase, applied to each phase independently, so one
+        call can take up to N × ``timeout``; wrap in ``asyncio.timeout`` for a true
+        deadline. ``dial_timeout`` (per-dial TCP establish) and ``attempt_timeout``
+        (per-attempt dial + handshake + ``open_database``) each default to
+        ``timeout``. ``max_total_rows`` and ``max_continuation_frames`` bound decode
+        work; ``None`` disables. ``trust_server_heartbeat`` widens the per-read
+        deadline to the server heartbeat (300 s hard cap). ``close_timeout`` bounds
+        the best-effort transport drain in ``close()`` so an unresponsive peer
+        cannot stall shutdown. ``dial_func`` replaces the default TCP path and its
+        socket options (``None`` keeps the default). ``max_message_size`` is the
+        inbound frame-size ceiling enforced by the wire ``ReadBuffer`` (default
+        64 MiB).
         """
         validate_timeout(timeout)
         validate_timeout(
