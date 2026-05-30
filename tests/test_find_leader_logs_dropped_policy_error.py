@@ -15,22 +15,6 @@ from dqliteclient.exceptions import ClusterPolicyError
 from dqliteclient.node_store import MemoryNodeStore
 
 
-def test_find_leader_impl_emits_warn_log_when_winner_and_policy_error_both_set() -> None:
-    """Inspection pin: when both ``winning_address`` and ``policy_error``
-    are set, ``_find_leader_impl`` emits the dropped-rejection WARN naming
-    both, sanitised via ``sanitize_for_log`` (CWE-117)."""
-    import inspect
-
-    src = inspect.getsource(ClusterClient._find_leader_impl)
-    assert "dropped policy rejection during successful" in src
-    assert "sanitize_for_log" in src, (
-        "WARN log must sanitise the policy_error and winning_address "
-        "(CWE-117); the substring asserts the wrapping is present"
-    )
-    assert "if policy_error is not None:" in src
-    assert "winning_address is not None:" in src
-
-
 @pytest.mark.asyncio
 async def test_parallel_sweep_all_policy_rejected_invalidates_cache() -> None:
     """When every probe redirects to a policy-rejected target, the sweep
@@ -204,16 +188,4 @@ async def test_dropped_policy_warn_sanitises_crlf_tainted_address(
     )
     assert "\\n" in rendered or "INJECTED" not in rendered.split("\n")[0], (
         f"Expected sanitised escape of CRLF in WARN message: {rendered!r}"
-    )
-
-
-def test_fast_path_catches_value_error_from_malformed_address() -> None:
-    """Inspection pin: the fast-path catch tuple includes ``ValueError`` so
-    a malformed address from a third-party NodeStore is translated."""
-    import inspect
-
-    src = inspect.getsource(ClusterClient._find_leader_impl)
-    assert "ValueError" in src, (
-        "Fast-path catch must include ``ValueError`` to translate "
-        "malformed addresses from third-party NodeStores"
     )

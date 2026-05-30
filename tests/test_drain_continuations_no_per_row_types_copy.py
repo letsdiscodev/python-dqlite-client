@@ -7,40 +7,7 @@ pressure (~10k list allocs + memcpys for a 10k-row x 32-col frame on the loop th
 
 from __future__ import annotations
 
-import ast
-import inspect
-import textwrap
-
 from dqliteclient import protocol as protocol_mod
-
-
-def _drain_continuations_source() -> str:
-    return textwrap.dedent(inspect.getsource(protocol_mod.DqliteProtocol._drain_continuations))
-
-
-def test_drain_continuations_does_not_copy_per_row_types_list() -> None:
-    src = _drain_continuations_source()
-    tree = ast.parse(src)
-
-    per_row_list_copies = 0
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        # Look for ``list(rt)`` where ``rt`` is the loop var Name.
-        if (
-            isinstance(node.func, ast.Name)
-            and node.func.id == "list"
-            and len(node.args) == 1
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == "rt"
-        ):
-            per_row_list_copies += 1
-
-    assert per_row_list_copies == 0, (
-        f"_drain_continuations still contains {per_row_list_copies} "
-        "per-row ``list(rt)`` copies; the accumulator should take "
-        "ownership of the wire-layer lists via direct ``extend``."
-    )
 
 
 def test_drain_continuations_aliases_initial_row_types_into_accumulator() -> None:

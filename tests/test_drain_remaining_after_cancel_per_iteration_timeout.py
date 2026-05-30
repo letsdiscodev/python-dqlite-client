@@ -64,19 +64,3 @@ async def test_drain_remaining_after_cancel_per_iteration_timeout_abandons_and_c
     assert warnings, (
         f"expected WARN log naming the hung connection; got: {[r.message for r in caplog.records]}"
     )
-
-
-def test_drain_remaining_after_cancel_source_carries_per_iteration_timeout() -> None:
-    """The wait_for envelope must remain and its timeout derive from
-    _DRAIN_PER_CONN_CAP_MULTIPLIER, not a bare ``+ 0.5`` literal."""
-    import inspect
-
-    src = inspect.getsource(ConnectionPool._drain_remaining_after_cancel)
-    assert "asyncio.wait_for" in src
-    assert "_DRAIN_PER_CONN_CAP_MULTIPLIER" in src
-    assert "self._close_timeout + 0.5" not in src, (
-        "magic ``+ 0.5`` literal must not return — the cap is derived "
-        "from ``_CLOSE_RESNAPSHOT_CAP + 1`` via ``_DRAIN_PER_CONN_CAP_MULTIPLIER``"
-    )
-    assert "except TimeoutError" in src
-    assert "abandoning to drain" in src

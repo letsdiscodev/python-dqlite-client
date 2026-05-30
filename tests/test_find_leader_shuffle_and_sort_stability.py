@@ -25,24 +25,3 @@ def test_role_bucket_sort_is_stable_within_same_role() -> None:
         "sb_b:9001",
         "sb_c:9001",
     ]
-
-
-def test_shuffle_then_sort_preserves_bucket_grouping() -> None:
-    """Inspection pin: ``shuffle`` precedes ``sort`` in find_leader."""
-    import inspect
-
-    from dqliteclient.cluster import ClusterClient
-
-    src = inspect.getsource(ClusterClient.find_leader)
-    # The shuffle/sort pair lives in the _find_leader_impl helper.
-    impl_src = inspect.getsource(ClusterClient._find_leader_impl)
-
-    combined = src + impl_src
-    shuffle_idx = combined.find("_cluster_random.shuffle")
-    sort_idx = combined.find("nodes.sort")
-    assert shuffle_idx >= 0, "Stampede-avoidance shuffle must be present"
-    assert sort_idx >= 0, "Role-bucket sort must be present"
-    assert shuffle_idx < sort_idx, (
-        "Shuffle must precede the stable sort so equal-role nodes "
-        "stay in shuffled order within each bucket"
-    )

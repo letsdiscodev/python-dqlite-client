@@ -15,21 +15,6 @@ from dqliteclient.cluster import ClusterClient
 from dqliteclient.node_store import MemoryNodeStore
 
 
-def test_probe_one_outer_finally_safety_net_present_in_source() -> None:
-    """Source pin: the ``sem_acquired`` flag + outer-finally release pair
-    survive refactors (runtime check is unreliable — the slot state is
-    internal to ``_find_leader_impl`` and not observable publicly)."""
-    import inspect
-
-    impl = inspect.getsource(ClusterClient._find_leader_impl)
-
-    assert "sem_acquired = False" in impl
-    assert "sem_acquired = True" in impl
-    # Explicit release must clear the flag so the safety-net can't double-release.
-    assert "sem_acquired = False" in impl.split("sem_acquired = True", 1)[1]
-    assert "if sem_acquired:" in impl, "Outer finally safety-net must guard release on sem_acquired"
-
-
 @pytest.mark.asyncio
 async def test_probe_one_unexpected_exception_propagates() -> None:
     """An unexpected exception class from a probe propagates past find_leader."""

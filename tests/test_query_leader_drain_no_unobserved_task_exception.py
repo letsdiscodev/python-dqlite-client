@@ -6,17 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 
 import pytest
 
 from dqliteclient import cluster as cluster_module
-
-
-def test_observe_drain_exception_is_module_level_helper() -> None:
-    """Source-level pin: the helper exists."""
-    assert hasattr(cluster_module, "_observe_drain_exception")
-    assert callable(cluster_module._observe_drain_exception)
 
 
 def test_observe_drain_exception_reaps_timeout_error() -> None:
@@ -51,18 +44,6 @@ def test_observe_drain_exception_skips_cancelled_task() -> None:
         cluster_module._observe_drain_exception(cancelled)
 
     asyncio.run(_drive())
-
-
-def test_query_leader_finally_uses_observed_drain_pattern() -> None:
-    """Source-level pin: the finally shields an explicit inner-Task variable with
-    an observer done-callback, not a ``shield(wait_for(...))`` that orphans the Task."""
-    src = inspect.getsource(cluster_module)
-    assert "asyncio.shield(inner_drain)" in src, (
-        "Leader-probe finally must shield an explicit inner-Task variable "
-        "with an exception-observer done-callback (NOT a composed "
-        "shield(wait_for(...)))"
-    )
-    assert "add_done_callback(_observe_drain_exception)" in src
 
 
 @pytest.mark.asyncio

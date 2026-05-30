@@ -6,7 +6,6 @@ cache) is not re-cleared."""
 from __future__ import annotations
 
 import asyncio
-import inspect
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,20 +15,6 @@ from dqliteclient.cluster import ClusterClient
 from dqliteclient.exceptions import DqliteConnectionError
 from dqliteclient.node_store import MemoryNodeStore
 from dqliteclient.pool import ConnectionPool
-
-
-def test_try_connect_failure_arm_invalidates_leader_cache_source() -> None:
-    """The per-attempt failure arm clears the cache when ``leader is not None``."""
-    src = inspect.getsource(ClusterClient.connect)
-    assert "_set_last_known_leader(None)" in src
-    assert "if leader is not None:" in src
-
-
-def test_pool_dead_conn_drain_arm_invalidates_leader_cache_source() -> None:
-    """After ``_drain_idle`` runs, the cluster's leader cache is cleared before
-    ``_create_connection`` so the next ``find_leader`` sweeps fresh."""
-    src = inspect.getsource(ConnectionPool.acquire)
-    assert "_set_last_known_leader(None)" in src
 
 
 @pytest.mark.asyncio

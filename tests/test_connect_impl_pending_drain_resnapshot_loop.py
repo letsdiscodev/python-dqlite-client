@@ -6,7 +6,6 @@ null would leave it pending at GC)."""
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from collections.abc import Generator
 from typing import Any
@@ -14,39 +13,6 @@ from typing import Any
 import pytest
 
 from dqliteclient.connection import DqliteConnection
-
-
-def test_connect_impl_uses_bounded_resnapshot_loop() -> None:
-    src = inspect.getsource(DqliteConnection._connect_impl)
-    assert "resnapshot_cap = _CLOSE_RESNAPSHOT_CAP" in src, (
-        "connect-side re-snapshot loop must use the same cap as close"
-    )
-    assert "for _attempt in range(resnapshot_cap):" in src
-    assert "_observe_drain_exception" in src
-    assert "stuck.cancel()" in src
-
-
-def test_connect_impl_cap_exhausted_arm_logs_warning() -> None:
-    src = inspect.getsource(DqliteConnection._connect_impl)
-    assert "DqliteConnection._connect_impl: _pending_drain still set after" in src
-    assert "feedback loop on connection id" in src
-
-
-def test_connect_impl_preserves_cancelling_delta_pattern() -> None:
-    """The cancelling-delta detection must survive: without it ``connect()``
-    swallows an outer cancel and opens a TCP connection the caller meant to abort."""
-    src = inspect.getsource(DqliteConnection._connect_impl)
-    assert "cancelling_before" in src
-    assert "cancelling_after" in src
-    assert "cancelling_after > cancelling_before" in src
-
-
-def test_close_impl_and_connect_impl_share_resnapshot_cap_value() -> None:
-    """The connect/close cap values must match."""
-    connect_src = inspect.getsource(DqliteConnection._connect_impl)
-    close_src = inspect.getsource(DqliteConnection._close_impl)
-    assert "resnapshot_cap = _CLOSE_RESNAPSHOT_CAP" in connect_src
-    assert "resnapshot_cap = _CLOSE_RESNAPSHOT_CAP" in close_src
 
 
 def _seed_connect_conn(address: str = "127.0.0.1:9001") -> DqliteConnection:

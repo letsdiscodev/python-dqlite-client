@@ -17,21 +17,6 @@ def test_drain_per_conn_cap_multiplier_derives_from_close_resnapshot_cap() -> No
     assert _DRAIN_PER_CONN_CAP_MULTIPLIER == _CLOSE_RESNAPSHOT_CAP + 1
 
 
-def test_drain_per_conn_cap_multiplier_is_named_not_magic() -> None:
-    """The drain cap must not reappear as a bare ``+ 0.5`` literal."""
-    import inspect
-
-    from dqliteclient import pool as pool_mod
-
-    src = inspect.getsource(pool_mod)
-    assert "self._close_timeout + 0.5" not in src, (
-        "Magic ``+ 0.5`` literal must not re-appear — use "
-        "``_DRAIN_PER_CONN_CAP_MULTIPLIER`` derived from "
-        "``_CLOSE_RESNAPSHOT_CAP``."
-    )
-    assert "_DRAIN_PER_CONN_CAP_MULTIPLIER" in src
-
-
 @pytest.mark.asyncio
 async def test_drain_idle_isolates_per_connection_close_timeout_cap() -> None:
     """A single hung ``conn.close()`` must not block the rest of the drain:

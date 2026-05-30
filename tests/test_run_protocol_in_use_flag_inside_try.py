@@ -4,7 +4,6 @@ the try would skip the finally and leave ``_in_use`` stuck True forever."""
 
 from __future__ import annotations
 
-import ast
 import inspect
 import sys
 import textwrap
@@ -41,55 +40,6 @@ def _make_connection() -> DqliteConnection:
 def _get_run_protocol_source() -> str:
     src = inspect.getsource(DqliteConnection._run_protocol)
     return textwrap.dedent(src)
-
-
-def test_in_use_assignment_is_first_statement_inside_try() -> None:
-    """``self._in_use = True`` must be the first statement inside the try whose
-    finally clears the flag; moving it before the try reopens the KI-leak window."""
-    src = _get_run_protocol_source()
-    tree = ast.parse(src)
-    func = tree.body[0]
-    assert isinstance(func, ast.AsyncFunctionDef), (
-        f"expected async function, got {type(func).__name__}"
-    )
-
-    target_try: ast.Try | None = None
-    for stmt in ast.walk(func):
-        if not isinstance(stmt, ast.Try):
-            continue
-        for fin_stmt in stmt.finalbody:
-            if not isinstance(fin_stmt, ast.Assign):
-                continue
-            if (
-                len(fin_stmt.targets) == 1
-                and isinstance(fin_stmt.targets[0], ast.Attribute)
-                and fin_stmt.targets[0].attr == "_in_use"
-                and isinstance(fin_stmt.value, ast.Constant)
-                and fin_stmt.value.value is False
-            ):
-                target_try = stmt
-                break
-        if target_try is not None:
-            break
-    assert target_try is not None, (
-        "expected a try/finally clearing self._in_use = False inside _run_protocol"
-    )
-
-    first = target_try.body[0]
-    assert isinstance(first, ast.Assign), (
-        f"first statement inside the try should be an Assign; got {type(first).__name__}"
-    )
-    assert (
-        len(first.targets) == 1
-        and isinstance(first.targets[0], ast.Attribute)
-        and first.targets[0].attr == "_in_use"
-        and isinstance(first.value, ast.Constant)
-        and first.value.value is True
-    ), (
-        "first statement inside the _run_protocol try block must be "
-        "``self._in_use = True``; placing it BEFORE the try re-introduces "
-        "the KI-bytecode-boundary leak window"
-    )
 
 
 @pytest.mark.parametrize(

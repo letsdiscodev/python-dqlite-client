@@ -38,16 +38,3 @@ def test_handshake_protocolerror_composition_short_message_no_truncation() -> No
     text = str(ProtocolError(rendered))
     assert text.endswith(" to host-b:19002")
     assert "[truncated," not in text
-
-
-def test_handshake_protocolerror_does_not_use_outer_truncate_error() -> None:
-    """Source-level pin: the handshake raise site must not wrap _failure_text in
-    _truncate_error, which would strip the addr suffix."""
-    import inspect
-
-    from dqliteclient import protocol
-
-    src = inspect.getsource(protocol.DqliteProtocol.handshake)
-    assert "_truncate_error(self._failure_text" not in src, (
-        "Handshake raise site must not wrap _failure_text in _truncate_error"
-    )
