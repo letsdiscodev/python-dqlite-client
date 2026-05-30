@@ -28,8 +28,7 @@ __all__ = [
 ]
 
 # Best-effort per-socket keepalive tuning: idle 30s + 3 probes × 10s =
-# ~60s to detect a black-holed peer. Deliberately diverges from Go's
-# 15s/15s/9 (~150s worst case). Applied only where the TCP_* options
+# ~60s to detect a black-holed peer. Applied only where the TCP_* options
 # exist; the unconditional SO_KEEPALIVE=1 still applies everywhere.
 _TCP_KEEPIDLE_S: Final[int] = 30
 _TCP_KEEPINTVL_S: Final[int] = 10
