@@ -34,7 +34,7 @@ from dqliteclient.exceptions import (
     ProtocolError,
 )
 from dqliteclient.node_store import NodeStore
-from dqliteclient.protocol import validate_positive_int_or_none
+from dqliteclient.protocol import _is_int_not_bool, validate_positive_int_or_none
 from dqlitewire import (
     DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
 )
@@ -221,13 +221,11 @@ class ConnectionPool:
         """
         # Reject bool first: True/False coerce to valid int sizes and would mask
         # a caller accidentally passing a flag.
-        if isinstance(min_size, bool) or not isinstance(min_size, int):
+        if not _is_int_not_bool(min_size):
             raise TypeError(f"min_size must be int, got {type(min_size).__name__}")
-        if isinstance(max_size, bool) or not isinstance(max_size, int):
+        if not _is_int_not_bool(max_size):
             raise TypeError(f"max_size must be int, got {type(max_size).__name__}")
-        if max_attempts is not None and (
-            isinstance(max_attempts, bool) or not isinstance(max_attempts, int)
-        ):
+        if max_attempts is not None and not _is_int_not_bool(max_attempts):
             raise TypeError(f"max_attempts must be int or None, got {type(max_attempts).__name__}")
         if min_size < 0:
             raise ValueError(f"min_size must be non-negative, got {min_size}")
@@ -752,7 +750,7 @@ class ConnectionPool:
                 "contract violation — callers must use 'async with self._lock' "
                 "in the same coroutine frame)"
             )
-        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+        if not _is_int_not_bool(n) or n < 1:
             raise ValueError(f"_release_reservations_locked requires n >= 1 (int), got {n!r}")
         if self._size < n:
             logger.error(

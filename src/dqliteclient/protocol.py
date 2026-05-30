@@ -4,7 +4,7 @@ import asyncio
 import logging
 import secrets
 from collections.abc import Sequence
-from typing import Any, Final, NoReturn, cast
+from typing import Any, Final, NoReturn, TypeIs, cast
 
 from dqliteclient.exceptions import DqliteConnectionError, OperationalError, ProtocolError
 from dqlitewire import (
@@ -123,6 +123,11 @@ def _failure_message(message: str, addr_suffix: str) -> str:
     return body + addr_suffix
 
 
+def _is_int_not_bool(v: object) -> TypeIs[int]:
+    """True for a genuine int; rejects bool (an int subclass) intentionally."""
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
 def validate_positive_int_or_none(value: int | None, name: str) -> int | None:
     """Validate a positive-int-or-None parameter; None disables the cap.
 
@@ -130,7 +135,7 @@ def validate_positive_int_or_none(value: int | None, name: str) -> int | None:
     """
     if value is None:
         return None
-    if not isinstance(value, int) or isinstance(value, bool):
+    if not _is_int_not_bool(value):
         raise TypeError(f"{name} must be int or None, got {type(value).__name__}")
     if value <= 0:
         raise ValueError(f"{name} must be > 0 or None, got {value}")
@@ -224,6 +229,20 @@ class DqliteProtocol:
         wire desync through the ProtocolError exception chain.
         """
         return not self._decoder.is_poisoned
+
+    def _compute_pending_size(self) -> int:
+        """Best-effort decoder header peek for the offload threshold; 0 on any
+        stub/MagicMock decoder whose non-int arithmetic would raise."""
+        from dqlitewire.constants import WORD_SIZE
+
+        try:
+            pending = self._decoder._buffer.peek_header()
+            pending_size = 8 + pending[0] * WORD_SIZE if pending is not None else 0
+            if not isinstance(pending_size, int):
+                pending_size = 0
+        except (AttributeError, TypeError, IndexError):
+            pending_size = 0
+        return pending_size
 
     async def negotiate_protocol_only(self) -> None:
         """Probe-only handshake: write the version bytes with no ClientRequest.
@@ -961,22 +980,13 @@ class DqliteProtocol:
         if deadline is None:  # pragma: no cover
             # Defensive: in-tree callers always pass a deadline.
             deadline = self._operation_deadline()
-        from dqlitewire.constants import WORD_SIZE
 
         try:
             while True:
                 # Threshold-gated decode offload (mirror of _read_response).
                 # decode_continuation is stateful so it must run as a unit; the
-                # _lock serialises decoder access. Best-effort header peek
-                # wrapped in try/except so stub/MagicMock decoders in tests
-                # (and their non-int arithmetic) fall back to the in-loop path.
-                try:
-                    pending = self._decoder._buffer.peek_header()
-                    pending_size = 8 + pending[0] * WORD_SIZE if pending is not None else 0
-                    if not isinstance(pending_size, int):
-                        pending_size = 0
-                except (AttributeError, TypeError, IndexError):
-                    pending_size = 0
+                # _lock serialises decoder access.
+                pending_size = self._compute_pending_size()
                 if pending_size >= _DECODE_OFFLOAD_THRESHOLD:
                     result = await asyncio.to_thread(self._decoder.decode_continuation)
                 else:
@@ -1037,17 +1047,7 @@ class DqliteProtocol:
             # Threshold-gated decode offload. ``decode`` is stateful (sets
             # continuation state, counters, column snapshots) so it must run as
             # a unit; the _lock makes the worker-thread call safe.
-            from dqlitewire.constants import WORD_SIZE
-
-            # Best-effort header peek; try/except so stub/MagicMock decoders in
-            # tests (and their non-int arithmetic) fall back to the in-loop path.
-            try:
-                pending = self._decoder._buffer.peek_header()
-                pending_size = 8 + pending[0] * WORD_SIZE if pending is not None else 0
-                if not isinstance(pending_size, int):
-                    pending_size = 0
-            except (AttributeError, TypeError, IndexError):
-                pending_size = 0
+            pending_size = self._compute_pending_size()
             if pending_size >= _DECODE_OFFLOAD_THRESHOLD:
                 message = await asyncio.to_thread(self._decoder.decode)
             else:

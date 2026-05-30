@@ -14,6 +14,7 @@ from typing import Any, Final, NoReturn, Protocol, final, runtime_checkable
 
 from dqliteclient import connection as _conn_mod
 from dqliteclient.exceptions import ClusterError, InterfaceError
+from dqliteclient.protocol import _is_int_not_bool
 from dqlitewire import NodeRole
 from dqlitewire import sanitize_server_text as _sanitize_display_text
 
@@ -70,7 +71,7 @@ class NodeInfo:
             object.__setattr__(self, "role", coerced)
         # Reject bool (int subclass), non-int, and < 1: id 0 is the upstream
         # "no node" sentinel, so it can't be a real cluster member.
-        if isinstance(self.node_id, bool) or not isinstance(self.node_id, int):
+        if not _is_int_not_bool(self.node_id):
             raise TypeError(f"NodeInfo.node_id must be int, got {type(self.node_id).__name__}")
         if self.node_id < 1:
             raise ValueError(f"NodeInfo.node_id must be >= 1, got {self.node_id}")

@@ -18,7 +18,7 @@ from dqliteclient.connection import DqliteConnection
 
 def test_connect_impl_uses_bounded_resnapshot_loop() -> None:
     src = inspect.getsource(DqliteConnection._connect_impl)
-    assert "resnapshot_cap = 3" in src, (
+    assert "resnapshot_cap = _CLOSE_RESNAPSHOT_CAP" in src, (
         "connect-side re-snapshot loop must use the same cap as close"
     )
     assert "for _attempt in range(resnapshot_cap):" in src
@@ -45,8 +45,8 @@ def test_close_impl_and_connect_impl_share_resnapshot_cap_value() -> None:
     """The connect/close cap values must match."""
     connect_src = inspect.getsource(DqliteConnection._connect_impl)
     close_src = inspect.getsource(DqliteConnection._close_impl)
-    assert "resnapshot_cap = 3" in connect_src
-    assert "resnapshot_cap = 3" in close_src
+    assert "resnapshot_cap = _CLOSE_RESNAPSHOT_CAP" in connect_src
+    assert "resnapshot_cap = _CLOSE_RESNAPSHOT_CAP" in close_src
 
 
 def _seed_connect_conn(address: str = "127.0.0.1:9001") -> DqliteConnection:

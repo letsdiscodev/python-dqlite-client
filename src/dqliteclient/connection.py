@@ -910,6 +910,22 @@ class DqliteConnection:
         cannot leak the tx). Mirrors stdlib ``sqlite3.in_transaction``."""
         return self._in_transaction or self._has_untracked_savepoint
 
+    def _clear_savepoint_state(self) -> None:
+        """Reset the three savepoint-tracking fields to their no-savepoint state."""
+        self._savepoint_stack.clear()
+        self._savepoint_implicit_begin = False
+        self._has_untracked_savepoint = False
+
+    def _clear_tx_state(self) -> None:
+        """Reset all transaction + savepoint bookkeeping to the idle state."""
+        self._in_transaction = False
+        self._tx_owner = None
+        self._clear_savepoint_state()
+
+    def _find_savepoint_index(self, name: str) -> int:
+        """Return the rightmost index of ``name`` (SQLite's LIFO duplicate rule)."""
+        return len(self._savepoint_stack) - 1 - self._savepoint_stack[::-1].index(name)
+
     async def connect(self) -> None:
         """Establish connection to the database."""
         self._check_in_use()
@@ -943,7 +959,7 @@ class DqliteConnection:
         # ``_invalidate`` (via ``call_soon_threadsafe``) can publish a fresh
         # task during ``await pending``. See ``_close_impl`` for the
         # cap-exhausted arm.
-        resnapshot_cap = 3
+        resnapshot_cap = _CLOSE_RESNAPSHOT_CAP
         for _attempt in range(resnapshot_cap):
             pending = self._pending_drain
             self._pending_drain = None
@@ -1157,11 +1173,7 @@ class DqliteConnection:
             self._protocol = None
             self._db_id = None
             self._pending_drain = None
-            self._in_transaction = False
-            self._tx_owner = None
-            self._savepoint_stack.clear()
-            self._savepoint_implicit_begin = False
-            self._has_untracked_savepoint = False
+            self._clear_tx_state()
             self._bound_loop_ref = None
             # Clear the in-use guard so a child-process caller is not locked
             # out; the post-shortcut finally is not reached on this path.
@@ -1197,7 +1209,7 @@ class DqliteConnection:
         # Bounded re-snapshot loop because a concurrent ``_invalidate`` (via
         # ``call_soon_threadsafe``) can create a fresh drain during
         # ``await pending``; cap at 3 to fail loudly on a feedback loop.
-        resnapshot_cap = 3
+        resnapshot_cap = _CLOSE_RESNAPSHOT_CAP
         for _attempt in range(resnapshot_cap):
             pending = self._pending_drain
             self._pending_drain = None
@@ -1242,11 +1254,7 @@ class DqliteConnection:
         # ``_protocol is None`` early-return so a raw-BEGIN-then-close leaves
         # no stale ``_in_transaction`` that would lie or trip the nested-tx
         # guard on reconnect. (Pool path clears via ``_reset_connection``.)
-        self._in_transaction = False
-        self._tx_owner = None
-        self._savepoint_stack.clear()
-        self._savepoint_implicit_begin = False
-        self._has_untracked_savepoint = False
+        self._clear_tx_state()
         # Drop the cached cause: its traceback can pin a large object graph
         # (e.g. a failed executemany's bind list) across close/reconnect.
         self._invalidation_cause = None
@@ -1510,11 +1518,7 @@ class DqliteConnection:
         # invalidation skips ``transaction()``'s finally, leaving a stale
         # ``_in_transaction`` / dead ``_tx_owner`` that the next caller reads
         # as a misleading "owned by another task".
-        self._in_transaction = False
-        self._tx_owner = None
-        self._savepoint_stack.clear()
-        self._savepoint_implicit_begin = False
-        self._has_untracked_savepoint = False
+        self._clear_tx_state()
         # Clear the loop binding so a fresh-loop reconnect is not rejected.
         self._bound_loop_ref = None
         # Preserve the FIRST cause: ``_run_protocol`` re-invalidates with the
@@ -1607,11 +1611,7 @@ class DqliteConnection:
             elif _primary_sqlite_code(e.code) in _TX_AUTO_ROLLBACK_PRIMARY_CODES:
                 # Engine auto-rolled-back the tx; connection stays healthy.
                 # Clear the local tx flags + savepoint stack so they don't lie.
-                self._in_transaction = False
-                self._tx_owner = None
-                self._savepoint_stack.clear()
-                self._savepoint_implicit_begin = False
-                self._has_untracked_savepoint = False
+                self._clear_tx_state()
             elif _primary_sqlite_code(e.code) == _SQLITE_BUSY and any(
                 frag in (getattr(e, "raw_message", None) or e.message or "").lower()
                 for frag in _RAFT_BUSY_MESSAGE_FRAGMENTS
@@ -1620,11 +1620,7 @@ class DqliteConnection:
                 # message distinguishes them. "checkpoint in progress" is the
                 # one Raft-side case where the tx-state-clear is known safe
                 # (other Raft-BUSY paths are indistinguishable — user retries).
-                self._in_transaction = False
-                self._tx_owner = None
-                self._savepoint_stack.clear()
-                self._savepoint_implicit_begin = False
-                self._has_untracked_savepoint = False
+                self._clear_tx_state()
                 # Rewrap so SA's ``is_disconnect`` (which can't catch a coded
                 # BUSY) recycles the pool slot via the connection-class arm.
                 raise DqliteConnectionError(
@@ -1688,11 +1684,7 @@ class DqliteConnection:
                 _primary_sqlite_code(e.code) == 19  # SQLITE_CONSTRAINT
                 and self._sql_is_outermost_release_or_commit(trigger_stmt)
             ):
-                self._in_transaction = False
-                self._tx_owner = None
-                self._savepoint_stack.clear()
-                self._savepoint_implicit_begin = False
-                self._has_untracked_savepoint = False
+                self._clear_tx_state()
                 deferred_fk_cleared = True
 
             # Multi-statement partial failure: an early piece may have opened
@@ -1799,7 +1791,7 @@ class DqliteConnection:
             if name in self._savepoint_stack:
                 # RELEASE pops the named frame and all above it. Reverse-search
                 # so SQLite's LIFO duplicate-name rule holds.
-                idx = len(self._savepoint_stack) - 1 - self._savepoint_stack[::-1].index(name)
+                idx = self._find_savepoint_index(name)
                 del self._savepoint_stack[idx:]
                 # Empty stack + autobegin means the implicit tx ends.
                 if not self._savepoint_stack and self._savepoint_implicit_begin:
@@ -1838,7 +1830,7 @@ class DqliteConnection:
                     return
                 if name in self._savepoint_stack:
                     # Reverse-search for SQLite's LIFO duplicate-name rule.
-                    idx = len(self._savepoint_stack) - 1 - self._savepoint_stack[::-1].index(name)
+                    idx = self._find_savepoint_index(name)
                     del self._savepoint_stack[idx + 1 :]
                 else:
                     # Name absent locally: leave the stack untouched (frames
@@ -1846,17 +1838,11 @@ class DqliteConnection:
                     self._has_untracked_savepoint = True
                 return
             if self._in_transaction:
-                self._in_transaction = False
-                self._tx_owner = None
-                self._savepoint_stack.clear()
-                self._savepoint_implicit_begin = False
-                self._has_untracked_savepoint = False
+                self._clear_tx_state()
             else:
                 # ROLLBACK with no active tx is a server no-op; defensively
                 # clear all fields so a state-machine bug can't leak entries.
-                self._savepoint_stack.clear()
-                self._savepoint_implicit_begin = False
-                self._has_untracked_savepoint = False
+                self._clear_savepoint_state()
             return
         if upper.startswith("COMMIT") or upper.startswith("END"):
             # COMMIT / END close the outer transaction.
@@ -1868,9 +1854,7 @@ class DqliteConnection:
                 # Clear unconditionally: the autobegin-deferral path can leave
                 # a non-empty stack with _in_transaction=False that a COMMIT of
                 # the server's autobegun tx would otherwise leave as a ghost.
-                self._savepoint_stack.clear()
-                self._savepoint_implicit_begin = False
-                self._has_untracked_savepoint = False
+                self._clear_savepoint_state()
                 return
 
     async def query_raw(
@@ -2062,9 +2046,7 @@ class DqliteConnection:
                         )
                         # No active tx means the savepoint stack is gone too;
                         # clear it so pool reset doesn't re-issue a ROLLBACK.
-                        self._savepoint_stack.clear()
-                        self._savepoint_implicit_begin = False
-                        self._has_untracked_savepoint = False
+                        self._clear_savepoint_state()
                     else:
                         logger.debug(
                             "transaction(address=%s, id=%s): rollback failed "
@@ -2093,8 +2075,4 @@ class DqliteConnection:
         finally:
             # Defence-in-depth: the paths above already clear these; clearing
             # again keeps the invariant local to transaction()'s exit. Idempotent.
-            self._tx_owner = None
-            self._in_transaction = False
-            self._savepoint_stack.clear()
-            self._savepoint_implicit_begin = False
-            self._has_untracked_savepoint = False
+            self._clear_tx_state()

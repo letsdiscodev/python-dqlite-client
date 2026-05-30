@@ -29,7 +29,7 @@ from dqliteclient.exceptions import (
 )
 from dqliteclient.node_store import MemoryNodeStore, NodeStore
 from dqliteclient.node_store import NodeInfo as _StoreNodeInfo
-from dqliteclient.protocol import DqliteProtocol, validate_positive_int_or_none
+from dqliteclient.protocol import DqliteProtocol, _is_int_not_bool, validate_positive_int_or_none
 from dqliteclient.retry import retry_with_backoff
 from dqlitewire import (
     DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
@@ -139,10 +139,19 @@ def _truncate_error(message: str) -> str:
 def _validate_node_id(node_id: object) -> None:
     """Validate node_id: reject bool, non-int, and < 1. Node id 0 is the
     upstream "no node" sentinel, so it can never be a real member."""
-    if isinstance(node_id, bool) or not isinstance(node_id, int):
+    if not _is_int_not_bool(node_id):
         raise TypeError(f"node_id must be int, got {type(node_id).__name__}")
     if node_id < 1:
         raise ValueError(f"node_id must be >= 1, got {node_id}")
+
+
+def _validate_address(address: str, context: str) -> None:
+    """Surface a malformed address as a clean ValueError before it reaches the
+    Raft log / a deep dial failure; ``context`` names the calling method."""
+    try:
+        parse_address(address)
+    except ValueError as exc:
+        raise ValueError(f"{context}: invalid address {address!r}: {exc}") from exc
 
 
 def _observe_drain_exception(t: asyncio.Task[None]) -> None:
@@ -223,9 +232,7 @@ class ClusterClient:
             validate_timeout(dial_timeout, name="dial_timeout")
         if attempt_timeout is not None:
             validate_timeout(attempt_timeout, name="attempt_timeout")
-        if isinstance(concurrent_leader_conns, bool) or not isinstance(
-            concurrent_leader_conns, int
-        ):
+        if not _is_int_not_bool(concurrent_leader_conns):
             raise TypeError(
                 f"concurrent_leader_conns must be int, got {type(concurrent_leader_conns).__name__}"
             )
@@ -250,7 +257,7 @@ class ClusterClient:
         # probe; ``None`` defers to the wire-layer default (64 MiB). Validate
         # at construction; reject bool (operators mean a count, not a flag).
         if max_message_size is not None:
-            if isinstance(max_message_size, bool) or not isinstance(max_message_size, int):
+            if not _is_int_not_bool(max_message_size):
                 raise TypeError(
                     f"max_message_size must be int or None, got {type(max_message_size).__name__}"
                 )
@@ -940,9 +947,7 @@ class ClusterClient:
         only; passing one defeats find_leader's single-flight collapse.
         """
         # Reject bool before the < 1 check so True/False don't coerce to 1/0.
-        if max_attempts is not None and (
-            isinstance(max_attempts, bool) or not isinstance(max_attempts, int)
-        ):
+        if max_attempts is not None and not _is_int_not_bool(max_attempts):
             raise TypeError(f"max_attempts must be int or None, got {type(max_attempts).__name__}")
         attempts_cap = max_attempts if max_attempts is not None else _DEFAULT_CONNECT_MAX_ATTEMPTS
         if attempts_cap < 1:
@@ -1177,7 +1182,7 @@ class ClusterClient:
             ProtocolError: wire-level shape mismatch.
         """
         # Validate locally so callers see a clean TypeError, not a wire-decode error.
-        if isinstance(target_node_id, bool) or not isinstance(target_node_id, int):
+        if not _is_int_not_bool(target_node_id):
             raise TypeError(f"target_node_id must be int, got {type(target_node_id).__name__}")
         if target_node_id < 1:
             raise ValueError(f"target_node_id must be >= 1, got {target_node_id}")
@@ -1311,10 +1316,7 @@ class ClusterClient:
             raise TypeError(f"role must be a NodeRole, got {type(role).__name__}")
         # Validate shape now: an unvalidated malformed address would be stored
         # in the Raft log and only fail later when a node tries to dial it.
-        try:
-            parse_address(address)
-        except ValueError as exc:
-            raise ValueError(f"add_node: invalid address {address!r}: {exc}") from exc
+        _validate_address(address, "add_node")
 
         leader_addr = await self.find_leader()
         try:
@@ -1395,10 +1397,7 @@ class ClusterClient:
         if address is not None:
             # Validate shape at the call site (like add_node) so a malformed
             # address surfaces as a clean ValueError, not a deep dial failure.
-            try:
-                parse_address(address)
-            except ValueError as exc:
-                raise ValueError(f"describe: invalid address {address!r}: {exc}") from exc
+            _validate_address(address, "describe")
         leader_targeted = address is None
         target = address if address is not None else await self.find_leader()
         try:
@@ -1427,7 +1426,7 @@ class ClusterClient:
             OperationalError: node rejected.
             ProtocolError: wire-level shape mismatch.
         """
-        if isinstance(weight, bool) or not isinstance(weight, int):
+        if not _is_int_not_bool(weight):
             raise TypeError(f"weight must be int, got {type(weight).__name__}")
         if weight < 0:
             raise ValueError(f"weight must be >= 0, got {weight}")
@@ -1437,10 +1436,7 @@ class ClusterClient:
         self._check_pid()
         if address is not None:
             # Validate shape at the call site (like add_node / describe).
-            try:
-                parse_address(address)
-            except ValueError as exc:
-                raise ValueError(f"set_weight: invalid address {address!r}: {exc}") from exc
+            _validate_address(address, "set_weight")
         leader_targeted = address is None
         target = address if address is not None else await self.find_leader()
         try:

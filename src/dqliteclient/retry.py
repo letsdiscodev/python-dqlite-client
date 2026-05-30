@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Final
 
 from dqliteclient.exceptions import ClusterError, ClusterPolicyError, DqliteConnectionError
+from dqliteclient.protocol import _is_int_not_bool
 
 __all__ = ["retry_with_backoff"]
 
@@ -47,7 +48,7 @@ async def retry_with_backoff[T](
     max_elapsed_seconds is an optional wall-clock cap complementing max_attempts.
     excluded_exceptions are non-retryable subclasses of retryable_exceptions, matched first.
     """
-    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
+    if not _is_int_not_bool(max_attempts):
         raise TypeError(f"max_attempts must be an int, got {type(max_attempts).__name__}")
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
