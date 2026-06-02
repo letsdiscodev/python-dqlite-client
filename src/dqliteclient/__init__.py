@@ -61,7 +61,7 @@ DEFAULT_CLOSE_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_CLOSE_TIMEOUT_SECONDS
 DEFAULT_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_TIMEOUT_SECONDS
 DEFAULT_MAX_MESSAGE_SIZE: _Final[int] = _DEFAULT_MAX_MESSAGE_SIZE
 
-__version__: _Final[str] = "0.2.2"
+__version__: _Final[str] = "0.3.0"
 
 logger = logging.getLogger(__name__)
 # NullHandler suppresses the lastResort stderr emission for apps that have

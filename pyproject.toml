@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dqlite-client"
-version = "0.2.2"
+version = "0.3.0"
 description = "Async Python client for dqlite with connection pooling and leader detection"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Database :: Database Engines/Servers",
     "Typing :: Typed",
 ]
-dependencies = ["dqlite-wire>=0.2.2,<0.3.0"]
+dependencies = ["dqlite-wire>=0.3.0,<0.4.0"]
 
 [tool.uv.sources]
 dqlite-wire = { path = "../python-dqlite-wire", editable = true }
