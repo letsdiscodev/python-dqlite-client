@@ -754,18 +754,10 @@ class DqliteConnection:
     ) -> None:
         """Initialize connection (does not connect yet).
 
-        ``timeout`` is per-RPC-phase, applied to each phase independently, so one
-        call can take up to N × ``timeout``; wrap in ``asyncio.timeout`` for a true
-        deadline. ``dial_timeout`` (per-dial TCP establish) and ``attempt_timeout``
-        (per-attempt dial + handshake + ``open_database``) each default to
-        ``timeout``. ``max_total_rows`` and ``max_continuation_frames`` bound decode
-        work; ``None`` disables. ``trust_server_heartbeat`` widens the per-read
-        deadline to the server heartbeat (300 s hard cap). ``close_timeout`` bounds
-        the best-effort transport drain in ``close()`` so an unresponsive peer
-        cannot stall shutdown. ``dial_func`` replaces the default TCP path and its
-        socket options (``None`` keeps the default). ``max_message_size`` is the
-        inbound frame-size ceiling enforced by the wire ``ReadBuffer`` (default
-        64 MiB).
+        ``timeout`` is applied per RPC-phase, so one call can take up to N ×
+        ``timeout`` — wrap in ``asyncio.timeout`` for a true deadline.
+        ``trust_server_heartbeat`` widens the per-read deadline to the server
+        heartbeat (300 s hard cap).
         """
         validate_timeout(timeout)
         validate_timeout(

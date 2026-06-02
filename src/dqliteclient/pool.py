@@ -187,24 +187,12 @@ class ConnectionPool:
     ) -> None:
         """Initialize a connection pool (does not connect until ``initialize()``).
 
-        ``addresses`` is ignored when ``cluster`` or ``node_store`` is given.
-        ``cluster`` (and the ``node_store`` it is built from) is caller-owned — the
-        pool does not close it — and lets multiple pools share one cluster;
-        ``cluster``/``node_store`` are mutually exclusive, as are ``cluster`` and
-        ``dial_func`` (the cluster carries its own). ``min_size`` connections are
-        pre-warmed at ``initialize()`` but are NOT a steady-state floor — the pool
-        does not replenish after a drain. ``timeout`` is per-RPC-phase (each phase
-        gets the full budget, so a call can take ~N × ``timeout``) and is the
-        default for ``dial_timeout``/``attempt_timeout`` and the per-acquire
-        wall-clock clamp. ``max_total_rows`` (``None`` disables, dropping the
-        slow-drip memory bound — avoid in production) and ``max_continuation_frames``
-        bound decode work against a server sending one row per frame.
-        ``trust_server_heartbeat`` widens the per-read deadline to the
-        server-advertised heartbeat (300 s cap). ``close()`` drains serially, so
-        total close wall-clock ~ qsize × ``close_timeout``; size it against SIGTERM
-        grace periods. ``max_attempts`` (``None`` uses the cluster default of 3,
-        must be >= 1) and ``max_elapsed_seconds`` (``None`` lets only
-        ``max_attempts`` govern) bound leader discovery.
+        ``cluster``/``node_store`` are caller-owned (the pool does not close them)
+        and mutually exclusive with each other and with ``dial_func``. ``min_size``
+        is a pre-warm count, NOT a steady-state floor — the pool does not replenish
+        after a drain. ``close()`` drains serially, so total close time ~ qsize ×
+        ``close_timeout``; size it against SIGTERM grace. Disabling
+        ``max_total_rows`` drops the slow-drip memory bound — avoid in production.
         """
         # Reject bool first: True/False coerce to valid int sizes and would mask
         # a caller accidentally passing a flag.

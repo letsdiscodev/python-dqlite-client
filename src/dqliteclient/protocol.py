@@ -249,9 +249,8 @@ class DqliteProtocol:
 
         Write-only: unlike :meth:`handshake`, this does NOT read a response —
         the server's first frame stays buffered for the caller's next RPC to
-        consume (e.g. ``cluster.py`` calls this then ``get_leader``). Leader
-        probes can skip registration (``handle_leader`` needs no client_id),
-        avoiding a per-client server slot. DO NOT use for connections issuing
+        consume. Leader probes can skip registration (``handle_leader`` needs no
+        client_id), avoiding a per-client server slot. DO NOT use for connections issuing
         real queries — those need :meth:`handshake`.
         """
         await self._send(self._encoder.encode_handshake())
