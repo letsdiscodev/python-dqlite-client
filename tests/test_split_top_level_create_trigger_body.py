@@ -4,7 +4,7 @@ A bare top-level ``BEGIN`` is transaction-control and must still split."""
 
 from __future__ import annotations
 
-from dqliteclient.connection import _split_top_level_statements
+from dqliteclient.sql import split_statements as _split_top_level_statements
 
 
 class TestCreateTriggerBodyKeptTogether:

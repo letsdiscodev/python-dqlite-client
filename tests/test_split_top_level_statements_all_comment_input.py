@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dqliteclient.connection import _split_top_level_statements
+from dqliteclient.sql import split_statements as _split_top_level_statements
 
 
 def test_line_comment_only_returns_single_piece() -> None:

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dqliteclient.connection import _starts_with_tx_verb, _strip_leading_comments
+from dqliteclient.connection import _starts_with_tx_verb
+from dqliteclient.sql import strip_leading_comments as _strip_leading_comments
 
 _BOM = "﻿"
 

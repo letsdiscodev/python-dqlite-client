@@ -77,6 +77,8 @@ For SQLAlchemy/ORM use, prefer
 - [Connection pooling](docs/connection-pooling.md) — sizing, startup, and leader behavior.
 - [Deployment: forking & multiprocessing](docs/deployment.md) — read this
   if you use gunicorn, Celery, or `multiprocessing`.
+- `dqliteclient.sql` — the lexical SQL helpers (comment stripping,
+  top-level statement splitting) the client and the dbapi layer share.
 - [Data types & NULL handling](docs/data-types.md) — the row model and a
   server-version gotcha for NULLs in typed columns.
 

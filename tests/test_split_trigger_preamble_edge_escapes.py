@@ -4,7 +4,7 @@ out to ordinary ``;``-splitting."""
 
 from __future__ import annotations
 
-from dqliteclient.connection import _split_top_level_statements
+from dqliteclient.sql import split_statements as _split_top_level_statements
 
 
 def test_trigger_preamble_doubled_single_quote_escape_keeps_body_together() -> None:

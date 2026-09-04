@@ -609,7 +609,7 @@ class TestSplitTopLevelStatements:
     """Direct splitter tests for tokenisation edge-cases."""
 
     def test_doubled_single_quote_inside_string(self) -> None:
-        from dqliteclient.connection import _split_top_level_statements
+        from dqliteclient.sql import split_statements as _split_top_level_statements
 
         assert _split_top_level_statements("SELECT 'a''b;c'; BEGIN") == [
             "SELECT 'a''b;c'",
@@ -617,7 +617,7 @@ class TestSplitTopLevelStatements:
         ]
 
     def test_doubled_double_quote_inside_identifier(self) -> None:
-        from dqliteclient.connection import _split_top_level_statements
+        from dqliteclient.sql import split_statements as _split_top_level_statements
 
         assert _split_top_level_statements('SELECT "a""b;c"; BEGIN') == [
             'SELECT "a""b;c"',
@@ -625,7 +625,7 @@ class TestSplitTopLevelStatements:
         ]
 
     def test_square_bracket_identifier_terminates_only_at_close(self) -> None:
-        from dqliteclient.connection import _split_top_level_statements
+        from dqliteclient.sql import split_statements as _split_top_level_statements
 
         # Square-bracket identifiers don't escape; the first ``]`` ends them.
         assert _split_top_level_statements("SELECT [a;b]; BEGIN") == [
@@ -634,7 +634,7 @@ class TestSplitTopLevelStatements:
         ]
 
     def test_backtick_identifier_with_doubled_escape(self) -> None:
-        from dqliteclient.connection import _split_top_level_statements
+        from dqliteclient.sql import split_statements as _split_top_level_statements
 
         assert _split_top_level_statements("SELECT `a``b;c`; BEGIN") == [
             "SELECT `a``b;c`",
@@ -642,7 +642,7 @@ class TestSplitTopLevelStatements:
         ]
 
     def test_unterminated_string_literal_eats_to_eof(self) -> None:
-        from dqliteclient.connection import _split_top_level_statements
+        from dqliteclient.sql import split_statements as _split_top_level_statements
 
         # Malformed input must not crash; the whole tail becomes one piece.
         assert _split_top_level_statements("SELECT 'unterminated; BEGIN") == [
@@ -650,12 +650,12 @@ class TestSplitTopLevelStatements:
         ]
 
     def test_empty_pieces_dropped(self) -> None:
-        from dqliteclient.connection import _split_top_level_statements
+        from dqliteclient.sql import split_statements as _split_top_level_statements
 
         assert _split_top_level_statements(";;BEGIN;;") == ["BEGIN"]
 
     def test_empty_input_returns_empty_list(self) -> None:
-        from dqliteclient.connection import _split_top_level_statements
+        from dqliteclient.sql import split_statements as _split_top_level_statements
 
         assert _split_top_level_statements("") == []
         assert _split_top_level_statements("   ") == []
