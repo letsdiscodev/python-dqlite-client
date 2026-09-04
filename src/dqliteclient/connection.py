@@ -31,6 +31,9 @@ from dqliteclient.protocol import (
     DqliteProtocol,
     validate_positive_int_or_none,
 )
+from dqliteclient.sql import is_keyword_boundary as _is_keyword_boundary
+from dqliteclient.sql import split_statements as _split_top_level_statements
+from dqliteclient.sql import strip_leading_comments as _strip_leading_comments
 from dqlitewire import DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES
 from dqlitewire import DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS
 from dqlitewire import (
@@ -98,254 +101,6 @@ _BARE_IDENT_REST: Final[frozenset[str]] = frozenset(string.ascii_letters + strin
 _RAFT_BUSY_MESSAGE_FRAGMENTS: Final[tuple[str, ...]] = ("checkpoint in progress",)
 
 
-def _is_keyword_boundary(s: str, kw_len: int) -> bool:
-    """True if position ``kw_len`` in ``s`` ends an SQL keyword.
-
-    Not ``str.isalnum``: SQLite treats ``_`` as an identifier char, so a
-    boundary check using isalnum would split ``SAVEPOINT_foo`` mid-token.
-    """
-    return len(s) == kw_len or s[kw_len] not in _BARE_IDENT_REST
-
-
-def _split_top_level_statements(sql: str) -> list[str]:
-    """Split SQL on top-level ``;`` boundaries, returning stripped pieces.
-
-    The dqlite EXEC path runs multi-statement input, but the tx tracker's
-    prefix-sniff sees only the leading verb, so splitting lets it
-    re-classify each piece. Skips ``;`` inside string/identifier literals
-    and comments. Inside a ``CREATE [TEMP] TRIGGER ... BEGIN ... END``
-    body, ``;`` is an inner terminator and must not split the outer DDL.
-    """
-    out: list[str] = []
-    start = 0
-    i = 0
-    n = len(sql)
-    # ``case_depth`` lets an inner ``CASE WHEN ... END`` close before its
-    # ``END`` decrements ``trigger_depth`` (BEGIN..END nesting depth).
-    in_trigger_body = False
-    trigger_depth = 0
-    case_depth = 0
-    trigger_scan_start = 0
-    while i < n:
-        c = sql[i]
-        if c == "'":
-            i += 1
-            while i < n:
-                if sql[i] == "'":
-                    if i + 1 < n and sql[i + 1] == "'":
-                        i += 2
-                        continue
-                    i += 1
-                    break
-                i += 1
-            continue
-        if c == '"':
-            i += 1
-            while i < n:
-                if sql[i] == '"':
-                    if i + 1 < n and sql[i + 1] == '"':
-                        i += 2
-                        continue
-                    i += 1
-                    break
-                i += 1
-            continue
-        if c == "[":
-            i += 1
-            while i < n and sql[i] != "]":
-                i += 1
-            if i < n:
-                i += 1
-            continue
-        if c == "`":
-            i += 1
-            while i < n:
-                if sql[i] == "`":
-                    if i + 1 < n and sql[i + 1] == "`":
-                        i += 2
-                        continue
-                    i += 1
-                    break
-                i += 1
-            continue
-        if c == "-" and i + 1 < n and sql[i + 1] == "-":
-            nl = sql.find("\n", i + 2)
-            i = n if nl == -1 else nl + 1
-            continue
-        if c == "/" and i + 1 < n and sql[i + 1] == "*":
-            end = sql.find("*/", i + 2)
-            i = n if end == -1 else end + 2
-            continue
-        if c.isalpha() and (i == 0 or not _is_word_char(sql[i - 1])):
-            kw_end = i
-            while kw_end < n and _is_word_char(sql[kw_end]):
-                kw_end += 1
-            kw = sql[i:kw_end].upper()
-            if not in_trigger_body:
-                if kw == "CREATE" and i >= trigger_scan_start:
-                    j = _scan_for_trigger_begin(sql, kw_end, n)
-                    if j > 0:
-                        in_trigger_body = True
-                        trigger_depth = 1
-                        i = j
-                        continue
-            else:
-                if kw == "BEGIN":
-                    trigger_depth += 1
-                    i = kw_end
-                    continue
-                if kw == "CASE":
-                    case_depth += 1
-                    i = kw_end
-                    continue
-                if kw == "END":
-                    if case_depth > 0:
-                        case_depth -= 1
-                    else:
-                        trigger_depth -= 1
-                        if trigger_depth == 0:
-                            in_trigger_body = False
-                    i = kw_end
-                    continue
-            i = kw_end
-            continue
-        if c == ";" and not in_trigger_body:
-            piece = sql[start:i].strip()
-            if piece:
-                out.append(piece)
-            start = i + 1
-            trigger_scan_start = start
-        i += 1
-    tail = sql[start:].strip()
-    if tail:
-        out.append(tail)
-    return out
-
-
-def _is_word_char(c: str) -> bool:
-    """True if ``c`` is part of a SQL keyword/identifier word."""
-    return c.isalnum() or c == "_"
-
-
-def _skip_ws_and_comments(sql: str, i: int, n: int) -> int:
-    """Advance past whitespace and SQL comments (``--`` line, ``/* */`` block)."""
-    while i < n:
-        c = sql[i]
-        if c.isspace():
-            i += 1
-            continue
-        if c == "-" and i + 1 < n and sql[i + 1] == "-":
-            nl = sql.find("\n", i + 2)
-            i = n if nl == -1 else nl + 1
-            continue
-        if c == "/" and i + 1 < n and sql[i + 1] == "*":
-            end = sql.find("*/", i + 2)
-            i = n if end == -1 else end + 2
-            continue
-        break
-    return i
-
-
-def _scan_for_trigger_begin(sql: str, after_create: int, n: int) -> int:
-    """Look ahead from just after ``CREATE`` for ``[TEMP|TEMPORARY] TRIGGER
-    ... BEGIN``; return the index past ``BEGIN`` on success, else 0.
-
-    Skips quoted identifiers, comments, and parenthesised sub-expressions
-    (the ``WHEN (...)`` clause). Stops at any ``;`` or end-of-input.
-    """
-    i = after_create
-    i = _skip_ws_and_comments(sql, i, n)
-    if i >= n:
-        return 0
-    j = i
-    while j < n and _is_word_char(sql[j]):
-        j += 1
-    word = sql[i:j].upper()
-    if word in ("TEMP", "TEMPORARY"):
-        i = _skip_ws_and_comments(sql, j, n)
-        j = i
-        while j < n and _is_word_char(sql[j]):
-            j += 1
-        word = sql[i:j].upper()
-    if word != "TRIGGER":
-        return 0
-    i = j
-    # Scan for the next standalone BEGIN at the same nesting level.
-    paren_depth = 0
-    while i < n:
-        c = sql[i]
-        if c == "'":
-            i += 1
-            while i < n:
-                if sql[i] == "'":
-                    if i + 1 < n and sql[i + 1] == "'":
-                        i += 2
-                        continue
-                    i += 1
-                    break
-                i += 1
-            continue
-        if c == '"':
-            i += 1
-            while i < n:
-                if sql[i] == '"':
-                    if i + 1 < n and sql[i + 1] == '"':
-                        i += 2
-                        continue
-                    i += 1
-                    break
-                i += 1
-            continue
-        if c == "[":
-            i += 1
-            while i < n and sql[i] != "]":
-                i += 1
-            if i < n:
-                i += 1
-            continue
-        if c == "`":
-            i += 1
-            while i < n:
-                if sql[i] == "`":
-                    if i + 1 < n and sql[i + 1] == "`":
-                        i += 2
-                        continue
-                    i += 1
-                    break
-                i += 1
-            continue
-        if c == "-" and i + 1 < n and sql[i + 1] == "-":
-            nl = sql.find("\n", i + 2)
-            i = n if nl == -1 else nl + 1
-            continue
-        if c == "/" and i + 1 < n and sql[i + 1] == "*":
-            end = sql.find("*/", i + 2)
-            i = n if end == -1 else end + 2
-            continue
-        if c == "(":
-            paren_depth += 1
-            i += 1
-            continue
-        if c == ")":
-            if paren_depth > 0:
-                paren_depth -= 1
-            i += 1
-            continue
-        if c == ";":
-            # CREATE TRIGGER ended without a BEGIN (short-form trigger).
-            return 0
-        if paren_depth == 0 and c.isalpha() and (i == 0 or not _is_word_char(sql[i - 1])):
-            j = i
-            while j < n and _is_word_char(sql[j]):
-                j += 1
-            if sql[i:j].upper() == "BEGIN":
-                return j
-            i = j
-            continue
-        i += 1
-    return 0
-
-
 # Longest-first ordered tuple (not a frozenset): ``startswith`` must match
 # the longest candidate first so a future prefix-sharing verb is safe.
 _TX_CONTROL_VERBS: Final[tuple[str, ...]] = (
@@ -372,31 +127,6 @@ def _starts_with_tx_verb(stmt: str) -> bool:
         if upper.startswith(verb) and _is_keyword_boundary(upper, len(verb)):
             return True
     return False
-
-
-def _strip_leading_comments(sql: str) -> str:
-    """Strip leading SQL comments (``--`` and ``/* */``) and whitespace.
-
-    Also strips a leading UTF-8 BOM (``\\ufeff``), which ``str.strip()``
-    does not treat as whitespace, for parity with ``sqlite3_prepare_v2``;
-    otherwise a non-utf-8-sig-decoded SQL file desyncs the tx tracker.
-    """
-    s = sql.lstrip("﻿").strip()
-    while True:
-        if s.startswith("--"):
-            newline = s.find("\n")
-            if newline == -1:
-                return ""
-            s = s[newline + 1 :].strip()
-        elif s.startswith("/*"):
-            end = s.find("*/")
-            if end == -1:
-                # Unterminated block comment consumes everything.
-                return ""
-            s = s[end + 2 :].strip()
-        else:
-            break
-    return s
 
 
 def _parse_savepoint_name(after_keyword: str) -> str | None:
@@ -1129,6 +859,17 @@ class DqliteConnection:
                 inner_drain.add_done_callback(_observe_drain_exception)
                 with contextlib.suppress(OSError, TimeoutError):
                     await asyncio.shield(inner_drain)
+
+    def terminate(self) -> None:
+        """Drop the transport synchronously, without waiting for in-flight work.
+
+        Idempotent and never raises. For shutdown paths that cannot await
+        :meth:`close`; must run on the connection's loop thread, or after that
+        loop has stopped.
+        """
+        self._closed = True
+        with contextlib.suppress(Exception):
+            self._invalidate(DqliteConnectionError("connection terminated"))
 
     async def close(self) -> None:
         """Close the connection. Idempotent.

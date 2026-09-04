@@ -2,7 +2,7 @@
 ``CREATE TRIGGER ... INSERT ...;`` with no BEGIN..END; otherwise it would treat
 the rest of the script as trigger body and swallow subsequent statements."""
 
-from dqliteclient.connection import _scan_for_trigger_begin
+from dqliteclient.sql import _scan_for_trigger_begin
 
 
 def test_short_form_trigger_no_begin_returns_zero() -> None:
