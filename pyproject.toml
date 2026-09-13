@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dqlite-client"
-version = "0.6.0"
+version = "0.7.0"
 description = "Async Python client for dqlite with connection pooling and leader detection"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Database :: Database Engines/Servers",
     "Typing :: Typed",
 ]
-dependencies = ["dqlite-wire>=0.6.0,<0.7.0"]
+dependencies = ["dqlite-wire>=0.7.0,<0.8.0"]
 
 [tool.uv.sources]
 dqlite-wire = { path = "../python-dqlite-wire", editable = true }
@@ -52,27 +52,16 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = ["integration: requires a running dqlite cluster"]
 filterwarnings = [
-    # Promote deprecations to errors so the suite catches stdlib
-    # deprecation surface under the CPython version the workspace
-    # already runs CI on (3.13/3.14). Also lets the package's own
-    # MemoryNodeStore(initial_addresses=...) deprecation emission
-    # actually fail CI when callers still pass the deprecated kwarg.
-    # Whitelist genuine third-party noise with explicit
-    # ``ignore:<pattern>:DeprecationWarning:<module>`` entries below.
     "error::DeprecationWarning",
     "error::PendingDeprecationWarning",
-    # In-tree deprecation: re-allow it so the suite's own pin tests
-    # for the deprecation message keep passing. Callers in production
-    # code MUST not pass the deprecated kwarg; the in-tree pin tests
-    # explicitly call it to confirm the warning is emitted.
-    "ignore::DeprecationWarning:dqliteclient.node_store",
 ]
 
 [tool.mypy]
 strict = true
 python_version = "3.13"
-# Tests live under ``tests/`` with no ``__init__.py``; mypy needs
+# Tests are not a package; mypy needs
 # ``explicit_package_bases`` (or namespace packages) to avoid the
 # duplicate-conftest module-name collision when scanning sibling
 # integration/ subdirectories. ``mypy_path`` mirrors the

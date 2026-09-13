@@ -46,7 +46,7 @@ CLOSE_TIMEOUT_FLOOR_RATIONALE: _Final[str] = _CLOSE_TIMEOUT_FLOOR_RATIONALE
 DEFAULT_CLOSE_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_CLOSE_TIMEOUT_SECONDS
 DEFAULT_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_TIMEOUT_SECONDS
 
-__version__: _Final[str] = "0.6.0"
+__version__: _Final[str] = "0.7.0"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
