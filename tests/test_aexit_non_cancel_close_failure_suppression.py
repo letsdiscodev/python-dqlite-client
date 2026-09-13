@@ -21,6 +21,7 @@ async def test_aexit_close_oserror_does_not_supplant_body_valueerror(
     conn = DqliteConnection("localhost:9001", database="test", timeout=5.0)
 
     with (
+        patch.object(DqliteConnection, "connect", new=AsyncMock()),
         patch.object(
             DqliteConnection,
             "close",
@@ -52,6 +53,7 @@ async def test_aexit_clean_body_close_oserror_propagates() -> None:
     conn = DqliteConnection("localhost:9001", database="test", timeout=5.0)
 
     with (
+        patch.object(DqliteConnection, "connect", new=AsyncMock()),
         patch.object(
             DqliteConnection,
             "close",
