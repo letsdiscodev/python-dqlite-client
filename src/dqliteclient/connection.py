@@ -40,7 +40,6 @@ from dqlitewire import (
     LEADER_ERROR_CODES,
     LEADER_LOST_DB_LOOKUP_SUBSTRING,
     NO_TRANSACTION_MESSAGE_SUBSTRINGS,
-    SQLITE_BUSY,
     SQLITE_IOERR_LEADERSHIP_LOST,
     SQLITE_IOERR_LEADERSHIP_LOST_LEGACY,
     SQLITE_NOTFOUND,
@@ -55,7 +54,6 @@ __all__ = ["DqliteConnection"]
 
 logger = logging.getLogger(__name__)
 
-_RAFT_BUSY_FRAGMENT: Final[str] = "checkpoint in progress"
 _LEADERSHIP_LOST_CODES: Final[frozenset[int]] = frozenset(
     {SQLITE_IOERR_LEADERSHIP_LOST, SQLITE_IOERR_LEADERSHIP_LOST_LEGACY}
 )
@@ -383,14 +381,6 @@ class DqliteConnection:
         primary = primary_sqlite_code(exc.code)
         if primary in TX_AUTO_ROLLBACK_PRIMARY_CODES or is_no_transaction_error(exc):
             self._in_transaction = False
-        elif primary == SQLITE_BUSY and _RAFT_BUSY_FRAGMENT in (exc.raw_message or "").lower():
-            # A raft checkpoint discarded the in-flight transaction; the session is unusable.
-            self._invalidate()
-            raise DqliteConnectionError(
-                f"raft-checkpoint reset the in-flight transaction: {exc}",
-                code=exc.code,
-                raw_message=exc.raw_message,
-            ) from exc
 
     def _track_transaction(self, sql: str) -> None:
         for statement in split_statements(sql):

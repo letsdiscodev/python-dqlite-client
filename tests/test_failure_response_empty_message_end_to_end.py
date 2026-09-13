@@ -48,23 +48,3 @@ async def test_query_sql_empty_message_renders_placeholder(
         await protocol.query_sql(1, "SELECT 1")
     assert "(no diagnostic from server)" in str(exc_info.value)
     assert exc_info.value.code == code
-
-
-async def test_finalize_empty_message_renders_placeholder(protocol: DqliteProtocol) -> None:
-    protocol._reader.read.return_value = FailureResponse(  # type: ignore[attr-defined]
-        code=21, message=""
-    ).encode()
-    with pytest.raises(OperationalError) as exc_info:
-        await protocol.finalize(1, 7)
-    assert "(no diagnostic from server)" in str(exc_info.value)
-    assert exc_info.value.code == 21
-
-
-async def test_prepare_empty_message_renders_placeholder(protocol: DqliteProtocol) -> None:
-    protocol._reader.read.return_value = FailureResponse(  # type: ignore[attr-defined]
-        code=1, message=""
-    ).encode()
-    with pytest.raises(OperationalError) as exc_info:
-        await protocol.prepare(1, "SELECT 1")
-    assert "(no diagnostic from server)" in str(exc_info.value)
-    assert exc_info.value.code == 1

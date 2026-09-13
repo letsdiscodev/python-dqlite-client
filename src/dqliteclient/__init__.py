@@ -14,7 +14,7 @@ from dqliteclient._validate import CLOSE_TIMEOUT_FLOOR as _CLOSE_TIMEOUT_FLOOR
 from dqliteclient._validate import CLOSE_TIMEOUT_FLOOR_RATIONALE as _CLOSE_TIMEOUT_FLOOR_RATIONALE
 from dqliteclient._validate import DEFAULT_CLOSE_TIMEOUT_SECONDS as _DEFAULT_CLOSE_TIMEOUT_SECONDS
 from dqliteclient._validate import DEFAULT_TIMEOUT_SECONDS as _DEFAULT_TIMEOUT_SECONDS
-from dqliteclient._validate import get_current_pid, parse_address, validate_timeout
+from dqliteclient._validate import parse_address, validate_timeout
 from dqliteclient.cluster import (
     ClusterClient,
     LeaderInfo,
@@ -37,8 +37,6 @@ from dqliteclient.exceptions import (
 )
 from dqliteclient.node_store import MemoryNodeStore, NodeInfo, NodeStore, YamlNodeStore
 from dqliteclient.pool import ConnectionPool
-from dqliteclient.protocol import DEFAULT_MAX_MESSAGE_SIZE as _DEFAULT_MAX_MESSAGE_SIZE
-from dqliteclient.protocol import validate_positive_int_or_none
 from dqliteclient.retry import retry_with_backoff
 from dqlitewire import DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES
 from dqlitewire import DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS
@@ -47,7 +45,6 @@ CLOSE_TIMEOUT_FLOOR: _Final[float] = _CLOSE_TIMEOUT_FLOOR
 CLOSE_TIMEOUT_FLOOR_RATIONALE: _Final[str] = _CLOSE_TIMEOUT_FLOOR_RATIONALE
 DEFAULT_CLOSE_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_CLOSE_TIMEOUT_SECONDS
 DEFAULT_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_TIMEOUT_SECONDS
-DEFAULT_MAX_MESSAGE_SIZE: _Final[int] = _DEFAULT_MAX_MESSAGE_SIZE
 
 __version__: _Final[str] = "0.6.0"
 
@@ -57,7 +54,6 @@ __all__ = [
     "CLOSE_TIMEOUT_FLOOR",
     "CLOSE_TIMEOUT_FLOOR_RATIONALE",
     "DEFAULT_CLOSE_TIMEOUT_SECONDS",
-    "DEFAULT_MAX_MESSAGE_SIZE",
     "DEFAULT_TIMEOUT_SECONDS",
     "AmbiguousCommitError",
     "ClusterClient",
@@ -84,10 +80,8 @@ __all__ = [
     "connect",
     "create_pool",
     "default_safe_redirect_policy",
-    "get_current_pid",
     "parse_address",
     "retry_with_backoff",
-    "validate_positive_int_or_none",
     "validate_timeout",
 ]
 

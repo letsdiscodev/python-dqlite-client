@@ -6,7 +6,7 @@ import os
 import re
 from typing import Final
 
-from dqlitewire.messages.responses import _MAX_ADDRESS_SIZE as _WIRE_MAX_ADDRESS_SIZE
+from dqlitewire import MAX_ADDRESS_SIZE as _WIRE_MAX_ADDRESS_SIZE
 
 __all__ = [
     "validate_max_attempts",
@@ -154,8 +154,7 @@ def parse_address(address: str) -> tuple[str, int]:
 
     IP literals are canonicalized; hostnames lowercased. Invalid hosts
     (credentials-like '@', whitespace/CRLF, non-ASCII, empty) raise
-    ``ValueError``. Stable public surface; the ``_parse_address`` alias
-    is kept for backwards compatibility.
+    ``ValueError``.
     """
     # Length cap first: a misconfigured megabyte-sized seed would otherwise
     # interpolate the full input via ``{address!r}`` into a multi-MB error.
@@ -246,9 +245,6 @@ def parse_address(address: str) -> tuple[str, int]:
 
     host = _canonicalize_host(host, address)
     return host, port
-
-
-# Backwards-compatible alias for the leading-underscore name.
 
 
 def validate_max_attempts(value: int | None) -> int | None:

@@ -6,13 +6,13 @@ import random
 from collections.abc import Awaitable, Callable
 from typing import Final
 
+from dqliteclient._validate import validate_max_attempts
 from dqliteclient.exceptions import (
     ClusterError,
     ClusterPolicyError,
     DqliteConnectionError,
     DqliteError,
 )
-from dqliteclient.protocol import _is_int_not_bool
 
 __all__ = ["retry_with_backoff"]
 
@@ -60,14 +60,11 @@ async def retry_with_backoff[T](
     Raft-committed but before the client sees success, so retry duplicates the write.
     The default retryable set omits OperationalError to avoid retrying SQL-level failures.
 
-    jitter must be in [0, 1): at 1.0, ``1 + uniform(-1, 1)`` can draw 0 and zero the backoff.
+    jitter must be in [0, 1) so the backoff can never be multiplied down to zero.
     max_elapsed_seconds is an optional wall-clock cap complementing max_attempts.
     excluded_exceptions are non-retryable subclasses of retryable_exceptions, matched first.
     """
-    if not _is_int_not_bool(max_attempts):
-        raise TypeError(f"max_attempts must be an int, got {type(max_attempts).__name__}")
-    if max_attempts < 1:
-        raise ValueError("max_attempts must be at least 1")
+    validate_max_attempts(max_attempts)
     # Surface negative/non-finite delays here rather than later inside asyncio.sleep.
     for name, value in (("base_delay", base_delay), ("max_delay", max_delay)):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -77,12 +74,7 @@ async def retry_with_backoff[T](
     if isinstance(jitter, bool) or not isinstance(jitter, (int, float)):
         raise TypeError(f"jitter must be a number, got {type(jitter).__name__}")
     if not math.isfinite(jitter) or not (0 <= jitter < 1):
-        # At jitter=1.0, ``1 + uniform(-1, 1)`` can draw 0 and zero the backoff.
-        raise ValueError(
-            f"jitter must be in [0, 1) — values at or above 1 allow the "
-            f"uniform(-jitter, jitter) draw to zero the backoff, defeating "
-            f"the exponential-backoff contract. Got {jitter}."
-        )
+        raise ValueError(f"jitter must be in [0, 1), got {jitter}")
     if max_elapsed_seconds is not None:
         if isinstance(max_elapsed_seconds, bool) or not isinstance(
             max_elapsed_seconds, (int, float)

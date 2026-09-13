@@ -39,7 +39,7 @@ async def test_drain_continuations_yields_between_prefetched_frames() -> None:
         # No await: mirrors the StreamReader fast path with the next frame already buffered.
         return next(cont_iter)
 
-    proto._read_continuation = fake_read_continuation  # type: ignore[assignment]
+    proto._read_continuation = fake_read_continuation
 
     sibling_ran = 0
 

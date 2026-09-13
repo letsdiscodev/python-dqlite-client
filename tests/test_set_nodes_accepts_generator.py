@@ -24,7 +24,7 @@ async def test_set_nodes_accepts_generator_expression() -> None:
 
 @pytest.mark.asyncio
 async def test_set_nodes_generator_still_subject_to_wire_cap() -> None:
-    from dqlitewire.messages.responses import _MAX_NODE_COUNT as wire_max
+    from dqlitewire import MAX_NODE_COUNT as wire_max
 
     store = MemoryNodeStore()
     over_cap = wire_max + 1

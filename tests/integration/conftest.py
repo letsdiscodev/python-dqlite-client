@@ -18,10 +18,6 @@ DQLITE_TEST_CLUSTER_NODES = os.environ.get(
 )
 
 
-def pytest_configure(config: pytest.Config) -> None:
-    config.addinivalue_line("markers", "integration: marks tests as requiring dqlite cluster")
-
-
 @pytest.fixture
 def cluster_address() -> str:
     return DQLITE_TEST_CLUSTER

@@ -37,7 +37,7 @@ async def test_get_leader_defence_in_depth_rejects_node_id_zero_with_address() -
     with (
         patch.object(protocol, "_send", new=AsyncMock()),
         patch.object(protocol, "_read_response", new=AsyncMock(return_value=malformed)),
-        pytest.raises(ProtocolError, match="expected both or neither"),
+        pytest.raises(ProtocolError, match="with node_id=0"),
     ):
         await protocol.get_leader()
 

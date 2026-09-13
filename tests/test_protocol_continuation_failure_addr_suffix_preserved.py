@@ -39,12 +39,15 @@ async def test_continuation_failure_arm_preserves_addr_suffix_at_wire_cap() -> N
         def feed(self, data: bytes) -> None:
             pass
 
+        def pending_frame_size(self) -> int:
+            return 0
+
     proto._decoder = _StubDecoder()  # type: ignore[assignment]
 
     async def _stub_read_data(deadline: float) -> bytes:
         return b""
 
-    proto._read_data = _stub_read_data  # type: ignore[assignment]
+    proto._read_data = _stub_read_data
 
     proto._timeout = 1.0
     proto._read_timeout = 1.0
@@ -80,12 +83,15 @@ async def test_continuation_failure_arm_short_message_keeps_suffix() -> None:
         def feed(self, data: bytes) -> None:
             pass
 
+        def pending_frame_size(self) -> int:
+            return 0
+
     proto._decoder = _StubDecoder()  # type: ignore[assignment]
 
     async def _stub_read_data(deadline: float) -> bytes:
         return b""
 
-    proto._read_data = _stub_read_data  # type: ignore[assignment]
+    proto._read_data = _stub_read_data
 
     proto._timeout = 1.0
     proto._read_timeout = 1.0

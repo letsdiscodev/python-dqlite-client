@@ -11,8 +11,7 @@ from typing import Any, NoReturn, Protocol, final, runtime_checkable
 
 from dqliteclient._validate import get_current_pid, parse_address
 from dqliteclient.exceptions import ClusterError, InterfaceError
-from dqlitewire import NodeRole
-from dqlitewire.messages.responses import _MAX_NODE_COUNT
+from dqlitewire import MAX_NODE_COUNT, NodeRole
 
 __all__ = ["MemoryNodeStore", "NodeInfo", "NodeStore", "YamlNodeStore"]
 
@@ -75,8 +74,8 @@ def normalise_nodes(nodes: Iterable[NodeInfo]) -> tuple[NodeInfo, ...]:
         unique.append(
             node if address == node.address else NodeInfo(node.node_id, address, node.role)
         )
-        if len(unique) > _MAX_NODE_COUNT:
-            raise ValueError(f"too many nodes: more than {_MAX_NODE_COUNT}")
+        if len(unique) > MAX_NODE_COUNT:
+            raise ValueError(f"too many nodes: more than {MAX_NODE_COUNT}")
     return tuple(unique)
 
 

@@ -142,7 +142,7 @@ class OperationalError(DqliteError):
             # can compute the original size.
             overflow = len(sanitised) - self._MAX_DISPLAY_MESSAGE
             self.message = (
-                f"{sanitised[: self._MAX_DISPLAY_MESSAGE]}... [truncated, {overflow} codepoints]"
+                f"{sanitised[: self._MAX_DISPLAY_MESSAGE]}... [truncated, {overflow} chars]"
             )
         else:
             self.message = sanitised

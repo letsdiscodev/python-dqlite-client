@@ -19,14 +19,10 @@ from dqlitewire.messages import (
     WelcomeResponse,
 )
 
-# Add python-dqlite-dev's testlib (expected as a sibling checkout) to sys.path so
-# the integration suite can import ``dqlitetestlib``; harmless when the sibling is absent.
+# The sibling python-dqlite-dev checkout provides dqlitetestlib (cluster fixtures).
 _TESTLIB = Path(__file__).resolve().parent.parent.parent / "python-dqlite-dev" / "testlib"
 if _TESTLIB.exists() and str(_TESTLIB) not in sys.path:
     sys.path.insert(0, str(_TESTLIB))
-
-# Pytest 8+ requires ``pytest_plugins`` at the top-level conftest. Only register when
-# the testlib resolved so unit-test-only consumers without the sibling repo are unaffected.
 if _TESTLIB.exists():
     pytest_plugins = ["dqlitetestlib.fixtures"]
 

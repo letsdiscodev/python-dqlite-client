@@ -72,6 +72,11 @@ piece is applied in order.
 
 ## Leader discovery
 
+Discovery and redirect verification mirror go-dqlite's connector. One difference:
+`ClusterClient.connect` retries a bounded number of attempts (3 by default, jittered
+backoff capped at 1 s) instead of retrying until the caller's deadline as go-dqlite does;
+pass `max_attempts` / `max_elapsed_seconds` to widen it.
+
 `find_leader` is single-flight per `(trust_server_heartbeat, policy)`: concurrent
 callers await the same sweep. A sweep probes the cached leader first, then
 every node from the store, shuffled and ordered voters first, with at most

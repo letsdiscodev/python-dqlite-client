@@ -34,7 +34,7 @@ uv sync --extra dev
 .venv/bin/pytest tests/ --ignore=tests/integration
 
 # Run all tests (requires Docker cluster)
-cd ../dqlite-test-cluster && docker compose up -d
+(cd ../python-dqlite-dev/cluster && docker compose up -d)
 .venv/bin/pytest tests/
 
 # Run with verbose output
@@ -84,6 +84,16 @@ writing a comment to explain an unclear one.
 When in doubt, leave it out: a missing explanation is a `git blame`
 away; a redundant or stale comment is noise every future reader pays
 for.
+
+## Commit messages
+
+Commit messages must not carry internal workflow vocabulary ("Round N",
+"Phase N", issue tokens, `done/*.md` references). The shared checker lives in
+the sibling `python-dqlite-dev` checkout:
+
+```bash
+../python-dqlite-dev/scripts/check-commit-msg.sh --range origin/main..HEAD
+```
 
 ## Pre-commit Workflow
 

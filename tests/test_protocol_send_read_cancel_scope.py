@@ -56,7 +56,7 @@ async def test_read_data_timeout_surfaces_as_dqlite_connection_error() -> None:
     proto._read_timeout = 0.01
 
     with pytest.raises(DqliteConnectionError, match=r"timed out"):
-        await proto._read_data()
+        await proto._read_data(asyncio.get_running_loop().time() + 60)
 
 
 @pytest.mark.asyncio
@@ -105,7 +105,7 @@ async def test_read_data_outer_cancel_propagates_as_cancel() -> None:
     proto._read_timeout = 60.0
 
     async def run() -> None:
-        await proto._read_data()
+        await proto._read_data(asyncio.get_running_loop().time() + 60)
 
     task = asyncio.create_task(run())
     await read_started.wait()
