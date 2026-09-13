@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -28,7 +28,6 @@ async def test_fresh_slot_create_clamp_translates_at_clamp_scope() -> None:
 
     with (
         patch.object(pool, "_create_connection", new=_slow_create),
-        patch.object(pool, "_drain_idle", new=AsyncMock()),
         pytest.raises(DqliteConnectionError) as exc_info,
     ):
         async with pool.acquire():
@@ -55,7 +54,6 @@ async def test_already_expired_deadline_carries_actionable_cause_text() -> None:
 
     with (
         patch.object(pool, "_create_connection", new=_slow_create),
-        patch.object(pool, "_drain_idle", new=AsyncMock()),
         pytest.raises(DqliteConnectionError) as exc_info,
     ):
         async with pool.acquire():

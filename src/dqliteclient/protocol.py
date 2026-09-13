@@ -116,6 +116,18 @@ def _estimate_request_body_size(request: object) -> int:
 DEFAULT_MAX_MESSAGE_SIZE: Final[int] = ReadBuffer.DEFAULT_MAX_MESSAGE_SIZE
 
 
+_MAX_ERROR_MESSAGE_SNIPPET = 200
+
+
+def _truncate_error(message: str) -> str:
+    """Sanitise server text for display and cap it, reporting the overflow."""
+    safe = _sanitize_display_text(message)
+    if len(safe) <= _MAX_ERROR_MESSAGE_SNIPPET:
+        return safe
+    overflow = len(safe) - _MAX_ERROR_MESSAGE_SNIPPET
+    return safe[:_MAX_ERROR_MESSAGE_SNIPPET] + f"... [truncated, {overflow} chars]"
+
+
 def _failure_message(message: str, addr_suffix: str) -> str:
     """Render a FailureResponse body, substituting a placeholder for empty text
     so log scraping has something to grep instead of ``"[1] "``."""
@@ -214,6 +226,15 @@ class DqliteProtocol:
             f"loop-bound StreamReader / StreamWriter and a stateful "
             f"MessageDecoder; reconstruct from a fresh wire handshake "
             f"in the target process instead."
+        )
+
+    @property
+    def is_alive(self) -> bool:
+        """False once the transport is closing or the peer has sent EOF."""
+        return (
+            not self._writer.is_closing()
+            and not self._reader.at_eof()
+            and not self._decoder.is_poisoned
         )
 
     @property
@@ -954,8 +975,6 @@ class DqliteProtocol:
         display-message cap. Sanitises the server text (display variant) so a
         hostile peer cannot inject log-splitting characters.
         """
-        from dqliteclient.cluster import _truncate_error
-
         truncated_msg = _truncate_error(response.message)
         safe_msg = _sanitize_display_text(truncated_msg)
         return _failure_message(safe_msg, self._addr_suffix())
@@ -1009,8 +1028,6 @@ class DqliteProtocol:
         except _WireServerFailure as e:
             # Surface the SQLite code so SA/dbapi can classify. Pre-truncate
             # before the addr suffix so it survives the display-message cap.
-            from dqliteclient.cluster import _truncate_error
-
             truncated_msg = _truncate_error(e.message)
             raise OperationalError(
                 _failure_message(truncated_msg, self._addr_suffix()),

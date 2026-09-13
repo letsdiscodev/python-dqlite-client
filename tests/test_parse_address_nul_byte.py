@@ -3,7 +3,7 @@
 
 import pytest
 
-from dqliteclient.connection import parse_address
+from dqliteclient import parse_address
 
 
 @pytest.mark.parametrize(

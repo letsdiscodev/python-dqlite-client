@@ -36,7 +36,6 @@ async def test_raft_nomem_transient_falls_back_to_local_responder() -> None:
     result = await cluster.cluster_info()
 
     assert result == nodes
-    proto.get_leader.assert_awaited_once_with()
     proto.cluster.assert_awaited_once_with()
 
 

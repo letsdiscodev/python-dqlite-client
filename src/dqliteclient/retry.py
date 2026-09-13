@@ -6,7 +6,12 @@ import random
 from collections.abc import Awaitable, Callable
 from typing import Final
 
-from dqliteclient.exceptions import ClusterError, ClusterPolicyError, DqliteConnectionError
+from dqliteclient.exceptions import (
+    ClusterError,
+    ClusterPolicyError,
+    DqliteConnectionError,
+    DqliteError,
+)
 from dqliteclient.protocol import _is_int_not_bool
 
 __all__ = ["retry_with_backoff"]
@@ -26,6 +31,17 @@ _DEFAULT_RETRYABLE: Final[tuple[type[BaseException], ...]] = (
 # ClusterPolicyError is a deterministic ClusterError subclass (policy gate rejected an
 # address); retrying the same RPC against the same policy reproduces it, so exclude by default.
 _DEFAULT_EXCLUDED: Final[tuple[type[BaseException], ...]] = (ClusterPolicyError,)
+
+
+_MAX_GROUP_CHILDREN = 20
+
+
+def _bounded_group(message: str, excs: list[BaseException]) -> BaseExceptionGroup[BaseException]:
+    """Group the attempts' failures, keeping the chain small enough to stay picklable."""
+    if len(excs) <= _MAX_GROUP_CHILDREN:
+        return BaseExceptionGroup(message, excs)
+    overflow = DqliteError(f"... and {len(excs) - _MAX_GROUP_CHILDREN} more failures")
+    return BaseExceptionGroup(message, [*excs[:_MAX_GROUP_CHILDREN], overflow])
 
 
 async def retry_with_backoff[T](
@@ -137,8 +153,6 @@ async def retry_with_backoff[T](
     if len(history) > 1:
         # Chain prior failures so the full timeline is visible, not just the last error.
         # _bounded_group caps children to stay picklable. Local import breaks an import cycle.
-        from dqliteclient.cluster import _bounded_group
-
         raise last_error from _bounded_group(
             f"retry exhausted after {len(history)} attempts", history
         )

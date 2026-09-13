@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 import dqliteclient
-from dqliteclient.connection import validate_timeout
+from dqliteclient import validate_timeout
 
 
 def test_validate_timeout_in_public_all() -> None:

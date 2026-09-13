@@ -74,6 +74,9 @@ For SQLAlchemy/ORM use, prefer
 
 ## Documentation
 
+- [Architecture](docs/architecture.md) — layering, the connection
+  lifecycle (a connection that loses its session is closed for good),
+  transaction tracking, leader discovery and the pool.
 - [Connection pooling](docs/connection-pooling.md) — sizing, startup, and leader behavior.
 - [Deployment: forking & multiprocessing](docs/deployment.md) — read this
   if you use gunicorn, Celery, or `multiprocessing`.

@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from dqliteclient.connection import DqliteConnection, validate_timeout
+from dqliteclient import validate_timeout
+from dqliteclient.connection import DqliteConnection
 from dqliteclient.pool import ConnectionPool
 
 

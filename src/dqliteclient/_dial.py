@@ -12,6 +12,8 @@ import socket
 from collections.abc import Awaitable, Callable
 from typing import Final
 
+from dqliteclient._validate import parse_address
+
 # Caller-supplied dialer (go-dqlite ``WithDialFunc`` parity). Receives the
 # full address string and owns ALL socket options (default keepalive/
 # happy-eyeballs are bypassed). Transient faults must subclass OSError or
@@ -97,8 +99,5 @@ async def open_connection(
     """
     if dial_func is not None:
         return await dial_func(address)
-    # Function-scoped: connection imports from _dial, so avoid the cycle.
-    from dqliteclient.connection import parse_address
-
     host, port = parse_address(address)
     return await open_connection_with_keepalive(host, port)

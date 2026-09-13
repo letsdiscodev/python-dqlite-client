@@ -1,17 +1,20 @@
 """Async Python client for dqlite.
 
-Connections and pools are NOT thread-safe and must be used within a single
-event loop; submit cross-thread work via ``asyncio.run_coroutine_threadsafe()``.
-Free-threaded Python (no-GIL) is unsupported (guarded in ``dqlitewire.__init__``).
+Connections and pools belong to one event loop and are not thread-safe; submit work
+from other threads with ``asyncio.run_coroutine_threadsafe()``. Free-threaded Python is
+unsupported (guarded in ``dqlitewire``).
 """
 
-import asyncio
-import contextlib
 import logging
 from collections.abc import Sequence as _Sequence
 from typing import Final as _Final
 
 from dqliteclient._dial import DialFunc
+from dqliteclient._validate import CLOSE_TIMEOUT_FLOOR as _CLOSE_TIMEOUT_FLOOR
+from dqliteclient._validate import CLOSE_TIMEOUT_FLOOR_RATIONALE as _CLOSE_TIMEOUT_FLOOR_RATIONALE
+from dqliteclient._validate import DEFAULT_CLOSE_TIMEOUT_SECONDS as _DEFAULT_CLOSE_TIMEOUT_SECONDS
+from dqliteclient._validate import DEFAULT_TIMEOUT_SECONDS as _DEFAULT_TIMEOUT_SECONDS
+from dqliteclient._validate import get_current_pid, parse_address, validate_timeout
 from dqliteclient.cluster import (
     ClusterClient,
     LeaderInfo,
@@ -20,16 +23,7 @@ from dqliteclient.cluster import (
     allowlist_policy,
     default_safe_redirect_policy,
 )
-from dqliteclient.connection import CLOSE_TIMEOUT_FLOOR as _CLOSE_TIMEOUT_FLOOR
-from dqliteclient.connection import CLOSE_TIMEOUT_FLOOR_RATIONALE as _CLOSE_TIMEOUT_FLOOR_RATIONALE
-from dqliteclient.connection import DEFAULT_CLOSE_TIMEOUT_SECONDS as _DEFAULT_CLOSE_TIMEOUT_SECONDS
-from dqliteclient.connection import DEFAULT_TIMEOUT_SECONDS as _DEFAULT_TIMEOUT_SECONDS
-from dqliteclient.connection import (
-    DqliteConnection,
-    get_current_pid,
-    parse_address,
-    validate_timeout,
-)
+from dqliteclient.connection import DqliteConnection
 from dqliteclient.exceptions import (
     AmbiguousCommitError,
     ClusterError,
@@ -46,15 +40,9 @@ from dqliteclient.pool import ConnectionPool
 from dqliteclient.protocol import DEFAULT_MAX_MESSAGE_SIZE as _DEFAULT_MAX_MESSAGE_SIZE
 from dqliteclient.protocol import validate_positive_int_or_none
 from dqliteclient.retry import retry_with_backoff
-from dqlitewire import (
-    DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES,
-)
-from dqlitewire import (
-    DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS,
-)
+from dqlitewire import DEFAULT_MAX_CONTINUATION_FRAMES as _DEFAULT_MAX_CONTINUATION_FRAMES
+from dqlitewire import DEFAULT_MAX_TOTAL_ROWS as _DEFAULT_MAX_TOTAL_ROWS
 
-# ``Final`` does not propagate through ``from X import Y`` aliases; the
-# re-export is a new binding needing its own annotation, hence the re-pin.
 CLOSE_TIMEOUT_FLOOR: _Final[float] = _CLOSE_TIMEOUT_FLOOR
 CLOSE_TIMEOUT_FLOOR_RATIONALE: _Final[str] = _CLOSE_TIMEOUT_FLOOR_RATIONALE
 DEFAULT_CLOSE_TIMEOUT_SECONDS: _Final[float] = _DEFAULT_CLOSE_TIMEOUT_SECONDS
@@ -63,10 +51,7 @@ DEFAULT_MAX_MESSAGE_SIZE: _Final[int] = _DEFAULT_MAX_MESSAGE_SIZE
 
 __version__: _Final[str] = "0.4.0"
 
-logger = logging.getLogger(__name__)
-# NullHandler suppresses the lastResort stderr emission for apps that have
-# not configured logging (Python logging HOWTO convention).
-logger.addHandler(logging.NullHandler())
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
     "CLOSE_TIMEOUT_FLOOR",
@@ -121,12 +106,7 @@ async def connect(
     dial_func: DialFunc | None = None,
     max_message_size: int | None = None,
 ) -> DqliteConnection:
-    """Connect to a dqlite node.
-
-    ``timeout`` is per-RPC-phase, not end-to-end; wrap in ``asyncio.timeout(...)``
-    for a total deadline. A supplied ``dial_func`` owns all socket options,
-    bypassing the default SO_KEEPALIVE/happy-eyeballs setup.
-    """
+    """Open a connection to one node. ``timeout`` bounds each RPC phase, not a whole call."""
     conn = DqliteConnection(
         address,
         database=database,
@@ -143,24 +123,7 @@ async def connect(
     try:
         await conn.connect()
     except BaseException:
-        # Clean up the partially-built connection so loop-bound primitives
-        # are not left orphaned until GC. The shield lets close() finish even
-        # if a fresh outer cancel lands mid-await, so the bare ``raise`` below
-        # re-delivers the ORIGINAL connect error rather than a CancelledError.
-        # The explicit Task + observer prevents an orphaned shield-created Task
-        # from logging "Task exception was never retrieved" at GC.
-        from dqliteclient.cluster import _observe_drain_exception
-
-        inner_drain = asyncio.ensure_future(conn.close())
-        inner_drain.add_done_callback(_observe_drain_exception)
-        try:
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.shield(inner_drain)
-        except Exception:
-            logger.debug(
-                "connect: cleanup-close after failed connect",
-                exc_info=True,
-            )
+        conn.terminate()
         raise
     return conn
 
@@ -187,14 +150,7 @@ async def create_pool(
     redirect_policy: RedirectPolicy | None = None,
     max_message_size: int | None = None,
 ) -> ConnectionPool:
-    """Create a connection pool with automatic leader detection.
-
-    ``min_size`` is a pre-warm count, not a steady-state floor (see
-    :class:`ConnectionPool` refill semantics). ``timeout`` is per-RPC-phase,
-    not end-to-end. ``addresses`` is validated inline on the loop, which can
-    be costly near the 10_000-entry cap. ``dial_func`` is mutually exclusive
-    with ``cluster=`` (raises ``ValueError``), which carries its own dialer.
-    """
+    """Create a pool and open its ``min_size`` warm-up connections to the leader."""
     pool = ConnectionPool(
         addresses,
         database=database,

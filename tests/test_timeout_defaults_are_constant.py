@@ -5,12 +5,9 @@ from __future__ import annotations
 import inspect
 
 import dqliteclient
+from dqliteclient import DEFAULT_CLOSE_TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS
 from dqliteclient.cluster import ClusterClient
-from dqliteclient.connection import (
-    DEFAULT_CLOSE_TIMEOUT_SECONDS,
-    DEFAULT_TIMEOUT_SECONDS,
-    DqliteConnection,
-)
+from dqliteclient.connection import DqliteConnection
 from dqliteclient.pool import ConnectionPool
 
 

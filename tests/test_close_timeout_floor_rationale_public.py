@@ -6,7 +6,7 @@ contract."""
 from __future__ import annotations
 
 import dqliteclient
-from dqliteclient.connection import CLOSE_TIMEOUT_FLOOR_RATIONALE
+from dqliteclient import CLOSE_TIMEOUT_FLOOR_RATIONALE
 
 
 def test_constant_present_at_package_top_level() -> None:

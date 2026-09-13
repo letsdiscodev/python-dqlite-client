@@ -72,13 +72,9 @@ class TestMemoryNodeStore:
         assert {info1, info2} == {info1}
 
     async def test_memory_store_seeds_with_noderole_voter(self) -> None:
-        import warnings
-
         from dqlitewire import NodeRole
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            store = MemoryNodeStore(initial_addresses=["a:9001", "b:9001"])
+        store = MemoryNodeStore(["a:9001", "b:9001"])
         nodes = await store.get_nodes()
         assert all(isinstance(n.role, NodeRole) for n in nodes)
         assert all(n.role == NodeRole.VOTER for n in nodes)
@@ -102,27 +98,3 @@ def test_memory_store_addresses_kwarg_name() -> None:
     nodes = asyncio.run(store.get_nodes())
     assert len(nodes) == 1
     assert nodes[0].address == "host:9001"
-
-
-def test_memory_store_initial_addresses_still_works() -> None:
-    """Legacy ``initial_addresses=`` kwarg still seeds the store."""
-    import warnings
-
-    from dqliteclient import MemoryNodeStore
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        store = MemoryNodeStore(initial_addresses=["host:9001"])
-    import asyncio
-
-    nodes = asyncio.run(store.get_nodes())
-    assert len(nodes) == 1
-
-
-def test_memory_store_rejects_both_kwargs() -> None:
-    import pytest
-
-    from dqliteclient import MemoryNodeStore
-
-    with pytest.raises(TypeError, match="Pass only one"):
-        MemoryNodeStore(addresses=["a:1"], initial_addresses=["b:2"])
